@@ -1,0 +1,4 @@
+requests>=2.31
+pdfplumber>=0.11
+gspread>=6.0
+python-dotenv>=1.0
