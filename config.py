@@ -25,6 +25,8 @@ CREDS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 # Либо содержимое credentials.json целиком (для хостингов), либо то же в base64
 CREDS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
 
+YM_TOKEN = os.getenv("YANDEX_MARKET_TOKEN", "").strip()  # Яндекс Маркет, токен только на чтение
+
 SHEET_ID = os.getenv("SHEET_ID", "").strip().strip("\"'")
 if "/d/" in SHEET_ID:  # вставили ссылку целиком — достаём из неё код
     SHEET_ID = SHEET_ID.split("/d/")[1].split("/")[0]

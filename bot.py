@@ -18,6 +18,7 @@ import config
 import logic
 import max_client as mx
 import sheets
+import ym
 from max_client import cb, link
 from pdf_parser import parse_pdf
 
@@ -476,6 +477,21 @@ def handle_message(u: dict) -> None:
     # --- личный диалог: сообщение пользователя убираем из чата, ответ — в экране-меню
     if config.CLEAN_CHAT and user_mid:
         ctx.fresh = not mx.delete(user_mid, reply_to)  # не удалилось -> меню пришлём заново внизу
+
+    if cmd == "/ym":  # разведка Яндекс Маркета (только менеджер)
+        if sender_id not in config.MANAGER_IDS:
+            return ctx.show("Команда только для менеджера.", [MENU_BTN])
+        if not config.YM_TOKEN:
+            return ctx.show("Не задана переменная YANDEX_MARKET_TOKEN в настройках бота.", [MENU_BTN])
+        ctx.show("Запрашиваю данные Маркета…", [MENU_BTN])
+        try:
+            parts = ym.discovery()
+        except Exception:
+            log.exception("Ошибка запроса к Яндекс Маркету")
+            parts = ["⚠️ Не получилось связаться с Маркетом, подробности в логах."]
+        for p in parts:
+            mx.send(reply_to, p)
+        return
 
     if cmd == "/stop":
         users.pop(sender_id, None)
