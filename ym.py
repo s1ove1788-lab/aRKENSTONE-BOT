@@ -1,13 +1,12 @@
 """
 Яндекс Маркет API.
-Получение и красивый вывод заказов.
+Получение и красивый вывод незавершённых заказов.
+
 Персональные данные покупателей не выводятся.
 """
 
 import logging
-
 import requests
-
 import config
 
 
@@ -21,9 +20,7 @@ BASE = "https://api.partner.market.yandex.ru"
 # ============================================================
 
 def _get(path: str, params=None):
-    """
-    GET-запрос к API Яндекс Маркета.
-    """
+    """GET-запрос к API Яндекс Маркета."""
 
     return requests.get(
         BASE + path,
@@ -36,14 +33,11 @@ def _get(path: str, params=None):
 
 
 # ============================================================
-# ФОРМАТИРОВАНИЕ СТАТУСОВ
+# СТАТУСЫ
 # ============================================================
 
 def _status_name(status: str, substatus: str = "") -> str:
-    """
-    Преобразует технический статус Яндекс Маркета
-    в понятный человеку.
-    """
+    """Преобразует статус Яндекс Маркета в понятный вид."""
 
     statuses = {
         "PROCESSING": "🟡 В обработке",
@@ -65,8 +59,15 @@ def _status_name(status: str, substatus: str = "") -> str:
     if substatus in substatuses:
         detail = substatuses[substatus]
 
-        base_status = statuses.get(status, "📦")
-        emoji = base_status.split(" ", 1)[0]
+        base_status = statuses.get(
+            status,
+            "📦"
+        )
+
+        emoji = base_status.split(
+            " ",
+            1
+        )[0]
 
         return f"{emoji} {detail}"
 
@@ -77,48 +78,38 @@ def _status_name(status: str, substatus: str = "") -> str:
 
 
 # ============================================================
-# ФОРМАТИРОВАНИЕ ДАТЫ
+# ДАТА
 # ============================================================
 
 def _format_date(date_str: str) -> str:
-    """
-    Пример:
-
-    25-10-2026 18:31:49
-
-    превращается в:
-
-    25.10.2026 18:31
-    """
+    """Преобразует дату Яндекс Маркета в удобный формат."""
 
     if not date_str:
         return "—"
 
     try:
-        date_part, time_part = date_str.split(" ", 1)
+        date_part, time_part = date_str.split(
+            " ",
+            1
+        )
 
         day, month, year = date_part.split("-")
 
-        return f"{day}.{month}.{year} {time_part[:5]}"
+        return (
+            f"{day}.{month}.{year} "
+            f"{time_part[:5]}"
+        )
 
     except Exception:
         return date_str
 
 
 # ============================================================
-# ФОРМАТИРОВАНИЕ ДЕНЕГ
+# ДЕНЬГИ
 # ============================================================
 
 def _format_money(value) -> str:
-    """
-    Пример:
-
-    18725
-
-    превращается в:
-
-    18 725 ₽
-    """
+    """Форматирует сумму в рублях."""
 
     try:
         return (
@@ -127,12 +118,15 @@ def _format_money(value) -> str:
             + " ₽"
         )
 
-    except (TypeError, ValueError):
+    except (
+        TypeError,
+        ValueError
+    ):
         return "—"
 
 
 # ============================================================
-# ФОРМАТИРОВАНИЕ ОДНОГО ЗАКАЗА
+# ОДИН ЗАКАЗ
 # ============================================================
 
 def _format_order(
@@ -140,9 +134,7 @@ def _format_order(
     campaign_name: str,
     model: str
 ) -> str:
-    """
-    Красивое представление одного заказа.
-    """
+    """Формирует красивый текст одного заказа."""
 
     order_id = (
         order.get("id")
@@ -150,20 +142,35 @@ def _format_order(
         or "—"
     )
 
-    status = order.get("status", "")
-    substatus = order.get("substatus", "")
+    status = order.get(
+        "status",
+        ""
+    )
+
+    substatus = order.get(
+        "substatus",
+        ""
+    )
 
     lines = [
         f"📦 Заказ №{order_id}",
-        f"Статус: {_status_name(status, substatus)}",
-        f"Создан: {_format_date(order.get('creationDate'))}",
+        (
+            f"Статус: "
+            f"{_status_name(status, substatus)}"
+        ),
+        (
+            f"Создан: "
+            f"{_format_date(order.get('creationDate'))}"
+        ),
     ]
 
     # --------------------------------------------------------
     # ТОВАРЫ
     # --------------------------------------------------------
 
-    items = order.get("items") or []
+    items = order.get(
+        "items"
+    ) or []
 
     for item in items:
 
@@ -179,13 +186,19 @@ def _format_order(
             or "—"
         )
 
-        count = item.get("count", 1)
-
-        price = (
-            item.get("buyerPrice")
-            if item.get("buyerPrice") is not None
-            else item.get("price")
+        count = item.get(
+            "count",
+            1
         )
+
+        if item.get("buyerPrice") is not None:
+            price = item.get(
+                "buyerPrice"
+            )
+        else:
+            price = item.get(
+                "price"
+            )
 
         lines.extend(
             [
@@ -193,7 +206,10 @@ def _format_order(
                 f"🛏 {name}",
                 f"Артикул: {sku}",
                 f"Количество: {count} шт.",
-                f"💰 Цена: {_format_money(price)}",
+                (
+                    f"💰 Цена: "
+                    f"{_format_money(price)}"
+                ),
             ]
         )
 
@@ -201,17 +217,25 @@ def _format_order(
     # ДОСТАВКА
     # --------------------------------------------------------
 
-    delivery = order.get("delivery") or {}
+    delivery = order.get(
+        "delivery"
+    ) or {}
 
     partner = delivery.get(
         "deliveryPartnerType"
     )
 
-    dates = delivery.get("dates") or {}
+    dates = delivery.get(
+        "dates"
+    ) or {}
 
-    region = delivery.get("region") or {}
+    region = delivery.get(
+        "region"
+    ) or {}
 
-    city = region.get("name")
+    city = region.get(
+        "name"
+    )
 
     if partner == "YANDEX_MARKET":
         delivery_name = "Яндекс Маркет"
@@ -220,7 +244,10 @@ def _format_order(
         delivery_name = "Магазин"
 
     else:
-        delivery_name = partner or "—"
+        delivery_name = (
+            partner
+            or "—"
+        )
 
     lines.extend(
         [
@@ -230,13 +257,17 @@ def _format_order(
     )
 
     if city:
-        lines.append(f"📍 {city}")
+        lines.append(
+            f"📍 {city}"
+        )
 
     # --------------------------------------------------------
     # ДАТА ОТГРУЗКИ
     # --------------------------------------------------------
 
-    shipments = delivery.get("shipments") or []
+    shipments = delivery.get(
+        "shipments"
+    ) or []
 
     if shipments:
 
@@ -253,8 +284,13 @@ def _format_order(
     # ДАТА ДОСТАВКИ
     # --------------------------------------------------------
 
-    from_date = dates.get("fromDate")
-    to_date = dates.get("toDate")
+    from_date = dates.get(
+        "fromDate"
+    )
+
+    to_date = dates.get(
+        "toDate"
+    )
 
     if from_date:
 
@@ -278,15 +314,18 @@ def _format_order(
             )
 
     # --------------------------------------------------------
-    # ИТОГОВАЯ СУММА
+    # ИТОГ
     # --------------------------------------------------------
 
-    total = order.get("buyerTotal")
+    total = order.get(
+        "buyerTotal"
+    )
 
     if total is not None:
 
         lines.append(
-            f"💵 Итого: {_format_money(total)}"
+            f"💵 Итого: "
+            f"{_format_money(total)}"
         )
 
     return "\n".join(lines)
@@ -301,9 +340,7 @@ def _get_orders(
     status: str = None,
     page_size: int = 20
 ):
-    """
-    Получает заказы конкретной кампании.
-    """
+    """Получает заказы конкретной кампании."""
 
     params = {
         "pageSize": page_size
@@ -314,7 +351,7 @@ def _get_orders(
 
     try:
 
-        r = _get(
+        response = _get(
             f"/v2/campaigns/{campaign_id}/orders",
             params
         )
@@ -325,59 +362,52 @@ def _get_orders(
             "Ошибка соединения с Яндекс Маркетом"
         )
 
-        return None, f"Ошибка соединения с API: {e}"
-
-    if r.status_code != 200:
-
-        log.error(
-            "Ошибка получения заказов кампании %s: %s %s",
-            campaign_id,
-            r.status_code,
-            r.text[:500]
+        return (
+            None,
+            f"Ошибка соединения с API: {e}"
         )
 
-        return None, (
-            f"Ошибка API: {r.status_code}"
+    if response.status_code != 200:
+
+        log.error(
+            "Ошибка получения заказов кампании "
+            "%s: %s %s",
+            campaign_id,
+            response.status_code,
+            response.text[:500]
+        )
+
+        return (
+            None,
+            f"Ошибка API: {response.status_code}"
         )
 
     try:
 
-        data = r.json()
+        data = response.json()
 
     except ValueError:
 
-        return None, (
+        return (
+            None,
             "Маркет вернул некорректный JSON"
         )
 
-    return data.get("orders") or [], None
+    return (
+        data.get("orders") or [],
+        None
+    )
 
 
 # ============================================================
-# ГЛАВНАЯ ФУНКЦИЯ /YM
+# /YM
 # ============================================================
 
 def discovery() -> list:
     """
-    Красивый вывод активных заказов Яндекс Маркета.
+    Возвращает список сообщений для команды /ym.
 
-    Показывает:
-
-    - магазины;
-    - модель FBS / DBS;
-    - активные заказы;
-    - товар;
-    - SKU;
-    - количество;
-    - цену;
-    - город;
-    - дату отгрузки;
-    - дату доставки;
-    - статус;
-    - общую сумму.
-
-    Персональные данные покупателей
-    намеренно не выводятся.
+    Показываются только незавершённые заказы.
     """
 
     # --------------------------------------------------------
@@ -386,7 +416,9 @@ def discovery() -> list:
 
     try:
 
-        r = _get("/v2/campaigns")
+        response = _get(
+            "/v2/campaigns"
+        )
 
     except requests.RequestException as e:
 
@@ -400,22 +432,25 @@ def discovery() -> list:
             f"Ошибка: {e}"
         ]
 
-    if r.status_code != 200:
+    if response.status_code != 200:
 
         log.error(
             "Яндекс Маркет вернул %s: %s",
-            r.status_code,
-            r.text[:500]
+            response.status_code,
+            response.text[:500]
         )
 
         return [
-            f"❌ Маркет ответил {r.status_code}.\n"
-            f"{r.text[:300]}"
+            (
+                f"❌ Маркет ответил "
+                f"{response.status_code}.\n"
+                f"{response.text[:300]}"
+            )
         ]
 
     try:
 
-        data = r.json()
+        data = response.json()
 
     except ValueError:
 
@@ -424,34 +459,39 @@ def discovery() -> list:
             "некорректный JSON."
         ]
 
-    camps = data.get("campaigns") or []
+    campaigns = data.get(
+        "campaigns"
+    ) or []
 
-    if not camps:
+    if not campaigns:
 
         return [
-            "❌ Маркет не вернул ни одной кампании.\n"
+            "❌ Маркет не вернул "
+            "ни одной кампании.\n"
             "Проверьте права API-токена."
         ]
 
     # --------------------------------------------------------
-    # ФОРМИРУЕМ ОТВЕТ
+    # НАЧАЛО ОТВЕТА
     # --------------------------------------------------------
 
-    out = []
-
-    out.append("🛒 ЯНДЕКС МАРКЕТ")
-    out.append("")
+    out = [
+        "🛒 ЯНДЕКС МАРКЕТ",
+        ""
+    ]
 
     total_orders = 0
     total_sum = 0
 
     # --------------------------------------------------------
-    # ОБХОДИМ МАГАЗИНЫ
+    # ОБХОДИМ КАМПАНИИ
     # --------------------------------------------------------
 
-    for campaign in camps:
+    for campaign in campaigns:
 
-        campaign_id = campaign.get("id")
+        campaign_id = campaign.get(
+            "id"
+        )
 
         campaign_name = (
             campaign.get("name")
@@ -460,24 +500,23 @@ def discovery() -> list:
         )
 
         model = (
-            campaign.get("placementType")
+            campaign.get(
+                "placementType"
+            )
             or "—"
         )
 
         if model == "FBS":
-
             model_name = "FBS"
 
         elif model == "DBS":
-
             model_name = "DBS"
 
         else:
-
             model_name = model
 
         # ----------------------------------------------------
-        # ЗАГОЛОВОК МАГАЗИНА
+        # МАГАЗИН
         # ----------------------------------------------------
 
         out.append(
@@ -511,7 +550,16 @@ def discovery() -> list:
             continue
 
         # ----------------------------------------------------
-        # ОСТАВЛЯЕМ ТОЛЬКО НЕЗАВЕРШЁННЫЕ ЗАКАЗЫ
+        # ФИЛЬТРУЕМ ЗАКАЗЫ
+        # ----------------------------------------------------
+        #
+        # ОСТАВЛЯЕМ ТОЛЬКО НЕЗАВЕРШЁННЫЕ.
+        #
+        # УБИРАЕМ:
+        # CANCELLED
+        # DELIVERED
+        # DELIVERY_SERVICE_DELIVERED
+        #
         # ----------------------------------------------------
 
         active_orders = [
@@ -519,11 +567,15 @@ def discovery() -> list:
             for order in orders
             if order.get("status") not in {
                 "CANCELLED",
-                "DELIVERED",
+                "DELIVERED"
             }
             and order.get("substatus")
             != "DELIVERY_SERVICE_DELIVERED"
         ]
+
+        # ----------------------------------------------------
+        # ЕСЛИ ЗАКАЗОВ НЕТ
+        # ----------------------------------------------------
 
         if not active_orders:
 
@@ -545,6 +597,8 @@ def discovery() -> list:
         )
 
         out.append("")
+
+        campaign_sum = 0
 
         # ----------------------------------------------------
         # ВЫВОДИМ ЗАКАЗЫ
@@ -573,18 +627,23 @@ def discovery() -> list:
             try:
 
                 total = float(
-                    order.get("buyerTotal") or 0
+                    order.get(
+                        "buyerTotal"
+                    ) or 0
                 )
 
                 campaign_sum += total
                 total_sum += total
 
-            except (TypeError, ValueError):
+            except (
+                TypeError,
+                ValueError
+            ):
 
                 pass
 
         # ----------------------------------------------------
-        # СУММА ПО КАМПАНИИ
+        # СУММА КАМПАНИИ
         # ----------------------------------------------------
 
         out.append(
@@ -602,7 +661,9 @@ def discovery() -> list:
         "━━━━━━━━━━━━━━━━━━━━"
     )
 
-    out.append("📊 ИТОГО")
+    out.append(
+        "📊 ИТОГО"
+    )
 
     out.append(
         f"📦 Активных заказов: "
