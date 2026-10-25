@@ -1,11 +1,12 @@
 """
-Бот для MAX: принимает PDF с заказами от менеджера, добавляет новые заказы
-в Google Таблицу и уведомляет всех подписчиков.
+Бот заказов для MAX.
+Роли: менеджер (грузит PDF, видит таблицы), курьер (доставки на сегодня),
+производство (план и остатки). Данные хранятся в Google Таблице.
 """
-import base64
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 import time
@@ -13,388 +14,472 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-import gspread
-import requests
-from dotenv import load_dotenv
+import config
+import logic
+import max_client as mx
+import sheets
+from max_client import cb, link
+from pdf_parser import parse_pdf
 
-from pdf_parser import Order, parse_pdf
-
-load_dotenv()
-
-# ---------------------------------------------------------------- настройки
-TOKEN = (os.getenv("MAX_BOT_TOKEN") or os.getenv("BOT_TOKEN") or "").strip()
-API = os.getenv("MAX_API_BASE", "https://platform-api.max.ru").rstrip("/")
-def _parse_ids(raw: str) -> set:
-    ids = set()
-    for part in raw.replace(" ", "").replace(";", ",").split(","):
-        if part.lstrip("-").isdigit():
-            ids.add(int(part))
-        elif part:
-            print(f"ВНИМАНИЕ: в MANAGER_IDS должно быть число, а не «{part}» — пропускаю", flush=True)
-    return ids
-
-
-MANAGER_IDS = _parse_ids(os.getenv("MANAGER_IDS", ""))
-CREDS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
-# Либо содержимое credentials.json целиком (для хостингов), либо то же в base64
-CREDS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
-SUBS_TAB = "Подписчики"  # лист, где хранится список подписчиков
-SHEET_ID = os.getenv("SHEET_ID", "").strip().strip("\"'")
-if "/d/" in SHEET_ID:  # вставили ссылку целиком — достаём из неё код
-    SHEET_ID = SHEET_ID.split("/d/")[1].split("/")[0]
-SHEET_TAB = os.getenv("SHEET_TAB", "").strip()  # пусто = первый лист
-TIMEZONE = os.getenv("TIMEZONE", "Europe/Moscow")
-STATE_FILE = Path(os.getenv("STATE_FILE", "state.json"))
-
-MAX_PDF_BYTES = 20 * 1024 * 1024
-MAX_TEXT_LEN = 3500  # у MAX лимит на сообщение ~4000 символов
-
-HEADERS = [
-    "Добавлен", "Канал", "Тип", "Дата отгрузки", "Дата доставки", "Размер",
-    "Цвет", "Номер заказа", "Артикул", "Отгрузка / телефон", "Адрес",
-]
-ORDER_COL = HEADERS.index("Номер заказа") + 1  # по этой колонке ищем дубли
-
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(message)s",
-    stream=sys.stdout,
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
 log = logging.getLogger("orders-bot")
 
-HELP_TEXT = (
-    "Привет! Я бот заказов.\n\n"
-    "• Менеджер присылает мне PDF с заказами — я добавляю новые в таблицу.\n"
-    "• Все подписчики получают уведомление о новых заказах.\n\n"
-    "Команды:\n"
-    "/start — подписаться на уведомления (в личке)\n"
-    "/subscribe — подписать на уведомления групповой чат (написать в группе)\n"
-    "/stop — отписаться\n"
-    "/id — показать ваш ID"
-)
+users: dict = {}    # id -> {"name": ..., "role": "manager" | "courier" | "prod"}
+groups: list = []   # id групповых чатов, куда слать уведомления
+pending: dict = {}  # id -> код размера, по которому ждём число (остаток)
+RELOAD_EVERY = 300  # раз в 5 минут перечитываем список пользователей из таблицы
 
-# ------------------------------------------------------------- состояние
-def load_state() -> dict:
-    """Маркер последнего события храним в файле (если он переживёт перезапуск),
-    а подписчиков — в Google Таблице, на листе «Подписчики»."""
-    st = {"marker": None, "subscribers": []}
-    if STATE_FILE.exists():
+
+def now_date():
+    return datetime.now(ZoneInfo(config.TIMEZONE)).date()
+
+
+# -------------------------------------------------------------- контекст
+class Ctx:
+    """Куда и как отвечать человеку: на нажатие кнопки (правим сообщение) или новым сообщением."""
+
+    def __init__(self, uid: int, callback_id=None):
+        self.uid = uid
+        self.cid = callback_id
+        self.target = {"type": "user", "id": uid}
+
+    def show(self, text: str, rows=None, notification=None) -> None:
+        if self.cid and mx.answer(self.cid, text=text, rows=rows, notification=notification):
+            return
+        mx.send(self.target, text, rows)
+
+    def toast(self, text: str) -> None:
+        if self.cid:
+            mx.answer(self.cid, notification=text)
+
+
+# ----------------------------------------------------------------- экраны
+CHANGE_ROLE = [cb("🔁 Сменить роль", "role:change")]
+MENU_BTN = [cb("🏠 Меню", "menu")]
+
+
+def role_rows() -> list:
+    return [[cb("👔 Менеджер", "role:manager")],
+            [cb("🚚 Курьер", "role:courier")],
+            [cb("🏭 Отдел производства", "role:prod")]]
+
+
+def role_choice(ctx: Ctx, intro: str = "", notification=None) -> None:
+    text = (intro + "\n\n" if intro else "") + "Кто вы? Выберите роль:"
+    ctx.show(text, role_rows(), notification)
+
+
+def home(ctx: Ctx, notification=None) -> None:
+    user = users.get(ctx.uid)
+    if not user:
+        return role_choice(ctx, notification=notification)
+    role = user["role"]
+    if role == "manager":
+        rows = []
         try:
-            st["marker"] = json.loads(STATE_FILE.read_text(encoding="utf-8")).get("marker")
+            rows.append([link("📊 Таблица заказов", sheets.sheet_url("orders"))])
+            rows.append([link("📦 Таблица остатков", sheets.sheet_url("stock"))])
         except Exception:
-            log.warning("Не смог прочитать %s, начинаю с чистого состояния", STATE_FILE)
-    return st
+            log.exception("Не смог получить ссылки на таблицы")
+        rows.append(CHANGE_ROLE)
+        text = ("👔 Меню менеджера\n\nЧтобы добавить заказы, просто пришлите мне PDF-файл в этот чат.\n"
+                "Таблицы открываются в Google Таблицах — там их можно редактировать.")
+    elif role == "courier":
+        rows = [[cb("🚚 Доставки", "c:home")], CHANGE_ROLE]
+        text = "🚚 Меню курьера"
+    else:
+        rows = [[cb("📋 План производства", "p:plan")], [cb("📦 Остатки", "p:stock")], CHANGE_ROLE]
+        text = "🏭 Меню производства"
+    ctx.show(text, rows, notification)
 
 
-def save_state() -> None:
+def choose_role(ctx: Ctx, name: str, key: str) -> None:
+    if key == "change":
+        return role_choice(ctx)
+    if key not in config.ROLE_LABELS:
+        return
+    if key == "manager" and ctx.uid not in config.MANAGER_IDS:
+        return ctx.show(
+            f"Роль менеджера выдаёт администратор бота.\nВаш ID: {ctx.uid} — передайте его администратору.\n\n"
+            "Пока можно выбрать другую роль:", role_rows(), "Нет доступа")
+    users[ctx.uid] = {"name": name, "role": key}
+    pending.pop(ctx.uid, None)
     try:
-        STATE_FILE.write_text(json.dumps({"marker": state["marker"]}), encoding="utf-8")
+        sheets.save_user(ctx.uid, name, key)
     except Exception:
-        log.warning("Не смог сохранить %s (не страшно)", STATE_FILE)
+        log.exception("Не смог записать пользователя в таблицу")
+    home(ctx, notification=f"Роль: {config.ROLE_LABELS[key]}")
 
 
-state = load_state()
+# ----------------------------------------------------------------- курьер
+def _items(today):
+    return logic.courier_items(sheets.read_orders(), today)
 
 
-def load_subscribers() -> None:
-    ws = get_subs_sheet()
-    subs = []
-    for row in ws.get_all_values()[1:]:
-        if len(row) >= 2 and row[0] in ("user", "chat") and row[1].strip().lstrip("-").isdigit():
-            subs.append({"type": row[0], "id": int(row[1])})
-    state["subscribers"] = subs
-    log.info("Подписчиков: %d", len(subs))
+def courier_home(ctx: Ctx, today, notification=None) -> None:
+    items = _items(today)
+    ru = [it for it in items if not logic.is_city(it[0])]
+    city = [it for it in items if logic.is_city(it[0])]
+    if not items:
+        return ctx.show(f"На сегодня ({today:%d.%m}) доставок нет 🎉",
+                        [[cb("🔄 Обновить", "c:home")], MENU_BTN], notification)
+    rows = []
+    if ru:
+        rows.append([cb(f"По России: {len(ru)} шт.", "c:ru")])
+    if city:
+        rows.append([cb(f"Город: {len(city)} шт.", "c:city")])
+    rows += [[cb("🔄 Обновить", "c:home")], MENU_BTN]
+    ctx.show(f"🚚 Доставки на {today:%d.%m}", rows, notification)
 
 
-def subscribe(target: dict) -> bool:
-    if target in state["subscribers"]:
-        return False
-    state["subscribers"].append(target)
+def courier_ru(ctx: Ctx, today, notification=None) -> None:
+    groups_ = logic.russia_groups(_items(today))
+    if not groups_:
+        return courier_home(ctx, today, notification)
+    rows = []
+    for g in groups_[:28]:
+        no = f" №{g['shipment']}" if g["shipment"] else ""
+        rows.append([cb(f"{'⏰ ' if g['late'] else ''}{g['channel']}{no} · {len(g['orders'])} шт.",
+                        f"c:g:{g['key']}")])
+    rows.append([cb("⬅️ Назад", "c:home")])
+    text = "🚚 По России — выберите отгрузку:"
+    if any(g["late"] for g in groups_):
+        text += "\n⏰ — не доставлено в прошлые дни"
+    ctx.show(text, rows, notification)
+
+
+def courier_city(ctx: Ctx, today, notification=None) -> None:
+    items = logic.city_items(_items(today))
+    if not items:
+        return courier_home(ctx, today, notification)
+    rows = [[cb(f"{'⏰ ' if late else ''}{logic.short(o['address'])}", f"c:o:{o['order_no']}")]
+            for o, late in items[:28]]
+    rows.append([cb("⬅️ Назад", "c:home")])
+    text = "🏙 Город — выберите адрес:"
+    if any(late for _, late in items):
+        text += "\n⏰ — не доставлено в прошлые дни"
+    ctx.show(text, rows, notification)
+
+
+def _decision_rows(kind: str, ident: str, back: str) -> list:
+    return [[cb("✅ Доставлен сегодня", f"c:done:{kind}:{ident}")],
+            [cb("❌ Не доставлен", f"c:fail:{kind}:{ident}")],
+            [cb("⬅️ К списку", back)]]
+
+
+def courier(ctx: Ctx, payload: str) -> None:
+    today = now_date()
+    parts = payload.split(":", 3)
+    action = parts[1] if len(parts) > 1 else ""
+    if action == "home":
+        return courier_home(ctx, today)
+    if action == "ru":
+        return courier_ru(ctx, today)
+    if action == "city":
+        return courier_city(ctx, today)
+
+    if action in ("g", "o") and len(parts) >= 3:
+        kind, ident = action, payload.split(":", 2)[2]
+    elif action in ("done", "fail") and len(parts) == 4:
+        kind, ident = parts[2], parts[3]
+    else:
+        return home(ctx)
+
+    items = _items(today)
+    if kind == "g":
+        found = next((g for g in logic.russia_groups(items) if g["key"] == ident), None)
+        orders = found["orders"] if found else []
+        back = courier_ru
+    else:
+        o = next((o for o, _ in items if o["order_no"] == ident and logic.is_city(o)), None)
+        orders = [o] if o else []
+        found = o
+        back = courier_city
+    if not found:
+        return back(ctx, today, "Уже обработано")
+
+    if action in ("g", "o"):
+        text = logic.russia_card(found) if kind == "g" else logic.city_card(found)
+        return ctx.show(text, _decision_rows(kind, ident, "c:ru" if kind == "g" else "c:city"))
+    if action == "done":
+        sheets.mark_delivered([o["order_no"] for o in orders])
+        return back(ctx, today, "✅ Записано: доставлено")
+    return back(ctx, today, "Оставлено в списке")
+
+
+# ------------------------------------------------------------ производство
+def production(ctx: Ctx, payload: str) -> None:
+    parts = payload.split(":", 2)
+    action = parts[1] if len(parts) > 1 else ""
+    if action in ("plan", "stock", "cur"):
+        pending.pop(ctx.uid, None)
+
+    if action == "plan":
+        text = logic.production_plan(sheets.read_orders(), now_date())
+        return ctx.show(text, [[cb("📦 Остатки", "p:stock")], MENU_BTN])
+
+    if action == "stock":
+        codes = config.STOCK_CODES
+        rows = [[cb(c, f"p:s:{c}") for c in codes[i:i + 2]] for i in range(0, len(codes), 2)]
+        rows += [[cb("📊 Текущие остатки", "p:cur")], MENU_BTN]
+        return ctx.show("📦 Остатки\nВыберите размер (число — ширина; 04 — чёрная, 06 — белая):", rows)
+
+    if action == "s" and len(parts) == 3 and parts[2] in config.STOCK_CODES:
+        pending[ctx.uid] = parts[2]
+        return ctx.show(f"Остаток {parts[2]}: напишите числом, сколько штук сейчас (например, 5).",
+                        [[cb("↩️ Отмена", "p:stock")]])
+
+    if action == "cur":
+        stock = sheets.latest_stock()
+        lines = ["📊 Текущие остатки", ""]
+        for code in config.STOCK_CODES:
+            if code in stock:
+                qty, when = stock[code]
+                lines.append(f"{code} — {qty} шт. ({when.split(' ')[0]})")
+            else:
+                lines.append(f"{code} — нет данных")
+        return ctx.show("\n".join(lines), [[cb("✏️ Внести остаток", "p:stock")], MENU_BTN])
+
+    home(ctx)
+
+
+def save_stock_from_text(ctx: Ctx, name: str, text: str) -> None:
+    m = re.fullmatch(r"\s*(\d{1,4})\s*(шт\.?)?\s*", text, re.I)
+    if not m:
+        return ctx.show("Нужно просто число, например 5. Или нажмите «Отмена».",
+                        [[cb("↩️ Отмена", "p:stock")]])
+    code = pending.pop(ctx.uid)
+    qty = int(m.group(1))
+    sheets.add_stock(code, qty, name)
+    ctx.show(f"✅ Записал: {code} — {qty} шт.",
+             [[cb("✏️ Внести ещё", "p:stock")], [cb("📊 Текущие остатки", "p:cur")], MENU_BTN])
+
+
+# ---------------------------------------------------------- нажатия кнопок
+def on_payload(ctx: Ctx, name: str, payload: str) -> None:
+    if payload.startswith("role:"):
+        return choose_role(ctx, name, payload[5:])
+    user = users.get(ctx.uid)
+    if not user:
+        return role_choice(ctx)
+    if payload == "menu":
+        pending.pop(ctx.uid, None)
+        return home(ctx)
+    if payload.startswith("c:") and user["role"] == "courier":
+        return courier(ctx, payload)
+    if payload.startswith("p:") and user["role"] == "prod":
+        return production(ctx, payload)
+    home(ctx, notification="Эта кнопка вам недоступна")
+
+
+def handle_callback(u: dict) -> None:
+    cbk = u.get("callback") or {}
+    cid, uid = cbk.get("callback_id"), (cbk.get("user") or {}).get("user_id")
+    if not cid or not uid:
+        return
+    user = cbk.get("user") or {}
+    name = user.get("name") or user.get("first_name") or ""
     try:
-        get_subs_sheet().append_row([target["type"], str(target["id"])], value_input_option="RAW")
+        on_payload(Ctx(uid, cid), name, cbk.get("payload") or "")
     except Exception:
-        log.exception("Не смог записать подписчика в таблицу")
-    return True
+        log.exception("Ошибка при обработке кнопки %r", cbk.get("payload"))
+        mx.answer(cid, notification="⚠️ Ошибка, попробуйте ещё раз")
 
 
-def unsubscribe(target: dict) -> bool:
-    if target not in state["subscribers"]:
-        return False
-    state["subscribers"].remove(target)
-    try:
-        ws = get_subs_sheet()
-        for i, row in enumerate(ws.get_all_values(), start=1):
-            if len(row) >= 2 and row[0] == target["type"] and row[1] == str(target["id"]):
-                ws.delete_rows(i)
-                break
-    except Exception:
-        log.exception("Не смог удалить подписчика из таблицы")
-    return True
-
-
-# ------------------------------------------------------------------ MAX API
-def _headers() -> dict:
-    return {"Authorization": TOKEN}
-
-
-def send(target: dict, text: str) -> bool:
-    """target = {"type": "user" | "chat", "id": 123}. Длинный текст режется на части."""
-    key = "user_id" if target["type"] == "user" else "chat_id"
-    ok = True
-    for chunk in split_text(text):
-        try:
-            r = requests.post(
-                f"{API}/messages",
-                params={key: target["id"]},
-                headers=_headers(),
-                json={"text": chunk},
-                timeout=30,
-            )
-            if r.status_code != 200:
-                log.warning("Не отправилось %s: %s %s", target, r.status_code, r.text[:300])
-                ok = False
-        except requests.RequestException:
-            log.exception("Ошибка сети при отправке %s", target)
-            ok = False
-        time.sleep(0.3)  # не частим
-    return ok
-
-
-def split_text(text: str) -> list[str]:
-    parts, cur = [], ""
-    for line in text.split("\n"):
-        if len(cur) + len(line) + 1 > MAX_TEXT_LEN and cur:
-            parts.append(cur)
-            cur = ""
-        cur += line + "\n"
-    if cur.strip():
-        parts.append(cur.rstrip("\n"))
-    return parts or [""]
-
-
-def download(url: str, dest: str) -> None:
-    r = requests.get(url, stream=True, timeout=60)
-    if r.status_code in (401, 403):
-        r = requests.get(url, stream=True, timeout=60, headers=_headers())
-    r.raise_for_status()
-    size = 0
-    with open(dest, "wb") as f:
-        for part in r.iter_content(65536):
-            size += len(part)
-            if size > MAX_PDF_BYTES:
-                raise ValueError("Файл слишком большой (больше 20 МБ).")
-            f.write(part)
-
-
-# --------------------------------------------------------- Google Таблица
-_book = None
-_ws = None
-
-
-def get_book():
-    global _book
-    if _book is None:
-        if CREDS_JSON:
-            raw = CREDS_JSON
-            if not raw.startswith("{"):
-                raw = base64.b64decode(raw).decode("utf-8")
-            gc = gspread.service_account_from_dict(json.loads(raw))
-        else:
-            gc = gspread.service_account(filename=CREDS_FILE)
-        _book = gc.open_by_key(SHEET_ID)
-    return _book
-
-
-def get_sheet():
-    global _ws
-    if _ws is None:
-        book = get_book()
-        _ws = book.worksheet(SHEET_TAB) if SHEET_TAB else book.sheet1
-        if not _ws.row_values(1):
-            _ws.append_row(HEADERS, value_input_option="RAW")
-    return _ws
-
-
-def get_subs_sheet():
-    book = get_book()
-    try:
-        return book.worksheet(SUBS_TAB)
-    except gspread.WorksheetNotFound:
-        ws = book.add_worksheet(title=SUBS_TAB, rows=100, cols=2)
-        ws.append_row(["Тип", "ID"], value_input_option="RAW")
-        return ws
-
-
-def add_to_sheet(orders: list[Order]) -> list[Order]:
-    """Добавляет в таблицу только те заказы, которых там ещё нет. Возвращает добавленные."""
-    ws = get_sheet()
-    existing = {v.strip() for v in ws.col_values(ORDER_COL)}
-    new = [o for o in orders if o.order_no not in existing]
-    if new:
-        now = datetime.now(ZoneInfo(TIMEZONE)).strftime("%d.%m.%Y %H:%M")
-        rows = [
-            [now, o.channel, o.kind, o.ship_date, o.delivery_date, o.size, o.color,
-             o.order_no, o.article, o.shipment_or_phone, o.address]
-            for o in new
-        ]
-        # RAW — чтобы длинные номера и телефоны не превращались в числа
-        ws.append_rows(rows, value_input_option="RAW")
-    return new
-
-
-# ------------------------------------------------------------- уведомления
-def format_order(o: Order) -> str:
+# ------------------------------------------------------ PDF и уведомления
+def format_order(o) -> str:
     what = " ".join(x for x in (o.size, o.color) if x)
-    return (
-        f"• {o.channel} · {what} · {o.address}\n"
-        f"  отгрузка {o.ship_date}, доставка {o.delivery_date} · № {o.order_no}"
-    )
+    return (f"• {o.channel} · {what} · {o.address}\n"
+            f"  отгрузка {o.ship_date}, доставка {o.delivery_date} · № {o.order_no}")
 
 
-def notify_all(new: list[Order], who: str) -> None:
+def notify_all(new: list, who: str) -> None:
     lines = [f"🆕 Новых заказов: {len(new)}" + (f" (загрузил(а): {who})" if who else "")]
     lines += [format_order(o) for o in new]
-    if SHEET_ID:
-        lines.append(f"\nТаблица: https://docs.google.com/spreadsheets/d/{SHEET_ID}")
     text = "\n".join(lines)
-    for target in list(state["subscribers"]):
-        send(target, text)
+    targets = [{"type": "user", "id": uid} for uid, u in users.items() if u["role"] in config.NOTIFY_ROLES]
+    targets += [{"type": "chat", "id": c} for c in groups]
+    for t in targets:
+        mx.send(t, text)
 
 
-# --------------------------------------------------------------- обработка
 def process_pdf(url: str, filename: str, reply_to: dict, who: str) -> None:
-    send(reply_to, f"Читаю файл «{filename}»…")
+    mx.send(reply_to, f"Читаю файл «{filename}»…")
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "orders.pdf")
         try:
-            download(url, path)
+            mx.download(url, path)
             orders = parse_pdf(path)
         except ValueError as e:
-            send(reply_to, f"⚠️ {e}")
-            return
+            return mx.send(reply_to, f"⚠️ {e}")
         except Exception:
             log.exception("Ошибка при чтении PDF")
-            send(reply_to, "⚠️ Не получилось скачать или прочитать файл. Попробуйте отправить ещё раз.")
-            return
-
+            return mx.send(reply_to, "⚠️ Не получилось скачать или прочитать файл. Попробуйте отправить ещё раз.")
     try:
-        new = add_to_sheet(orders)
+        new = sheets.add_orders(orders)
     except Exception:
         log.exception("Ошибка при записи в Google Таблицу")
-        send(reply_to, "⚠️ Заказы прочитал, но записать в таблицу не вышло. Сообщите администратору.")
-        return
-
-    dups = len(orders) - len(new)
+        return mx.send(reply_to, "⚠️ Заказы прочитал, но записать в таблицу не вышло. Сообщите администратору.")
     if not new:
-        send(reply_to, f"Все {len(orders)} заказов из файла уже есть в таблице, ничего не добавлял.")
-        return
+        return mx.send(reply_to, f"Все {len(orders)} заказов из файла уже есть в таблице, ничего не добавлял.")
     notify_all(new, who)
     summary = f"✅ Добавлено в таблицу: {len(new)}"
-    if dups:
-        summary += f"\nПропущено (уже были): {dups}"
-    send(reply_to, summary)
+    if len(orders) - len(new):
+        summary += f"\nПропущено (уже были): {len(orders) - len(new)}"
+    mx.send(reply_to, summary)
 
 
-def handle_update(u: dict) -> None:
-    kind = u.get("update_type")
-
-    if kind == "bot_started":
-        user = u.get("user") or {}
-        if user.get("user_id"):
-            target = {"type": "user", "id": user["user_id"]}
-            subscribe(target)
-            send(target, HELP_TEXT + "\n\n✅ Вы подписаны на уведомления.")
-        return
-
-    if kind != "message_created":
-        return
-
+# --------------------------------------------------------------- сообщения
+def handle_message(u: dict) -> None:
     msg = u.get("message") or {}
     sender = msg.get("sender") or {}
     if sender.get("is_bot"):
         return
     sender_id = sender.get("user_id")
+    name = sender.get("name") or sender.get("first_name") or ""
     recipient = msg.get("recipient") or {}
     in_group = recipient.get("chat_type") == "chat"
-    if in_group:
-        reply_to = {"type": "chat", "id": recipient.get("chat_id")}
-    else:
-        reply_to = {"type": "user", "id": sender_id}
+    reply_to = ({"type": "chat", "id": recipient.get("chat_id")} if in_group
+                else {"type": "user", "id": sender_id})
     if not reply_to["id"]:
         return
-
     body = msg.get("body") or {}
-    text = (body.get("text") or "").strip().lower().split("@")[0].split(" ")[0]
+    raw = (body.get("text") or "").strip()
+    cmd = raw.lower().split("@")[0].split(" ")[0] if raw.startswith("/") else ""
 
-    if text == "/id":
-        send(reply_to, f"Ваш ID: {sender_id}")
-        return
-    if text in ("/start", "/subscribe"):
-        if subscribe(reply_to):
-            send(reply_to, HELP_TEXT + "\n\n✅ Подписал на уведомления.")
-        else:
-            send(reply_to, "Уже подписаны ✅")
-        return
-    if text == "/stop":
-        send(reply_to, "Отписал." if unsubscribe(reply_to) else "Вы и не были подписаны.")
-        return
+    if cmd == "/id":
+        return mx.send(reply_to, f"Ваш ID: {sender_id}")
 
+    # PDF от менеджера
+    handled_file = False
     for att in body.get("attachments") or []:
         if att.get("type") != "file":
             continue
+        handled_file = True
         filename = att.get("filename") or "file.pdf"
         if not filename.lower().endswith(".pdf"):
             if not in_group:
-                send(reply_to, "Мне нужен именно PDF-файл.")
+                mx.send(reply_to, "Мне нужен именно PDF-файл.")
             continue
-        if sender_id not in MANAGER_IDS:
+        if sender_id not in config.MANAGER_IDS:
             if not in_group:
-                send(reply_to, f"Загружать файлы может только менеджер. Ваш ID: {sender_id}")
+                mx.send(reply_to, f"Загружать файлы может только менеджер. Ваш ID: {sender_id}")
             continue
         url = (att.get("payload") or {}).get("url")
         if not url:
-            send(reply_to, "⚠️ MAX не передал ссылку на файл. Попробуйте отправить ещё раз.")
+            mx.send(reply_to, "⚠️ MAX не передал ссылку на файл. Попробуйте отправить ещё раз.")
             continue
-        who = sender.get("name") or sender.get("first_name") or ""
-        process_pdf(url, filename, reply_to, who)
+        process_pdf(url, filename, reply_to, name)
+    if handled_file:
+        return
+
+    if in_group:  # в группах бот только присылает уведомления
+        chat_id = reply_to["id"]
+        if cmd in ("/start", "/subscribe"):
+            if chat_id not in groups:
+                groups.append(chat_id)
+                try:
+                    sheets.add_group(chat_id)
+                except Exception:
+                    log.exception("Не смог записать группу")
+            mx.send(reply_to, "✅ Буду присылать сюда уведомления о новых заказах.")
+        elif cmd == "/stop":
+            if chat_id in groups:
+                groups.remove(chat_id)
+                try:
+                    sheets.remove_group(chat_id)
+                except Exception:
+                    log.exception("Не смог удалить группу")
+            mx.send(reply_to, "Отписал этот чат от уведомлений.")
+        return
+
+    ctx = Ctx(sender_id)
+    if cmd == "/stop":
+        users.pop(sender_id, None)
+        pending.pop(sender_id, None)
+        try:
+            sheets.delete_user(sender_id)
+        except Exception:
+            log.exception("Не смог удалить пользователя")
+        return mx.send(reply_to, "Вы вышли. Напишите /start, чтобы выбрать роль заново.")
+    if cmd == "/role":
+        return role_choice(ctx)
+    if cmd in ("/start", "/menu"):
+        pending.pop(sender_id, None)
+        if sender_id in users:
+            return home(ctx)
+        return role_choice(ctx, "Привет! Я бот заказов.")
+    if sender_id in pending and raw and not cmd:
+        return save_stock_from_text(ctx, name, raw)
+    if sender_id in users:
+        return home(ctx)
+    role_choice(ctx, "Привет! Я бот заказов.")
 
 
-# -------------------------------------------------------------------- запуск
+def handle_update(u: dict) -> None:
+    kind = u.get("update_type")
+    if kind == "message_callback":
+        handle_callback(u)
+    elif kind == "message_created":
+        handle_message(u)
+    elif kind == "bot_started":
+        uid = (u.get("user") or {}).get("user_id")
+        if uid:
+            ctx = Ctx(uid)
+            if uid in users:
+                home(ctx)
+            else:
+                role_choice(ctx, "Привет! Я бот заказов.")
+
+
+# ------------------------------------------------------------------- запуск
+def reload_directory() -> None:
+    users.clear()
+    users.update(sheets.load_users())
+    groups[:] = sheets.load_groups()
+    log.info("Пользователей: %d, групп: %d", len(users), len(groups))
+
+
+def load_marker():
+    p = Path(config.STATE_FILE)
+    try:
+        return json.loads(p.read_text(encoding="utf-8")).get("marker") if p.exists() else None
+    except Exception:
+        return None
+
+
+def save_marker(marker) -> None:
+    try:
+        Path(config.STATE_FILE).write_text(json.dumps({"marker": marker}), encoding="utf-8")
+    except Exception:
+        pass  # не страшно: дубли заказов всё равно отсекаются
+
+
 def main() -> None:
-    if not TOKEN or not SHEET_ID:
-        wanted = ["MAX_BOT_TOKEN", "BOT_TOKEN", "SHEET_ID", "GOOGLE_CREDENTIALS_JSON", "MANAGER_IDS"]
-        seen = ", ".join(f"{k}={'есть' if os.getenv(k) else 'ПУСТО'}" for k in wanted)
-        extra = [k for k in os.environ if "SHEET" in k.upper() and k != "SHEET_ID"]
-        hint = f" Похожие по названию: {extra}." if extra else ""
-        sys.exit(
-            "Не хватает настроек (переменные окружения в панели хостинга или файл .env). "
-            f"Бот видит: {seen}.{hint} Проверьте написание ключей: латиница, заглавные, без пробелов."
-        )
-    if not MANAGER_IDS:
-        log.warning("MANAGER_IDS пуст: никто не сможет загружать файлы. "
-                    "Напишите боту /id и впишите свой ID в .env")
-
-    me = requests.get(f"{API}/me", headers=_headers(), timeout=30)
+    config.check()
+    if not config.MANAGER_IDS:
+        log.warning("MANAGER_IDS пуст: никто не сможет стать менеджером и загружать PDF. "
+                    "Напишите боту /id и впишите свой ID в настройки.")
+    me = mx.get_me()
     if me.status_code in (401, 403):
-        sys.exit("MAX не принял токен. Проверьте MAX_BOT_TOKEN в .env")
+        sys.exit("MAX не принял токен. Проверьте MAX_BOT_TOKEN.")
     me.raise_for_status()
     log.info("Бот запущен: %s", me.json().get("name") or me.json())
 
     try:
-        load_subscribers()
+        reload_directory()
     except Exception:
-        log.exception("Не смог загрузить подписчиков из таблицы. Проверьте SHEET_ID, "
+        log.exception("Не смог загрузить пользователей из таблицы. Проверьте SHEET_ID, "
                       "ключ Google и доступ сервисного аккаунта к таблице")
+    last_reload = time.time()
 
-    marker = state.get("marker")
+    marker = load_marker()
+    import requests  # локально, чтобы не тащить наверх ради одного except
     while True:
-        params = {"timeout": 30, "limit": 100, "types": "message_created,bot_started"}
-        if marker is not None:
-            params["marker"] = marker
         try:
-            r = requests.get(f"{API}/updates", params=params, headers=_headers(), timeout=45)
+            r = mx.get_updates(marker)
             if r.status_code in (401, 403):
-                sys.exit("MAX не принял токен. Проверьте MAX_BOT_TOKEN в .env")
+                sys.exit("MAX не принял токен. Проверьте MAX_BOT_TOKEN.")
             r.raise_for_status()
             data = r.json()
         except requests.RequestException:
@@ -407,11 +492,16 @@ def main() -> None:
                 handle_update(update)
             except Exception:
                 log.exception("Ошибка при обработке события")
-
         if data.get("marker") is not None:
             marker = data["marker"]
-            state["marker"] = marker
-            save_state()
+            save_marker(marker)
+
+        if time.time() - last_reload > RELOAD_EVERY:
+            last_reload = time.time()
+            try:
+                reload_directory()
+            except Exception:
+                log.exception("Не смог обновить список пользователей")
 
 
 if __name__ == "__main__":
