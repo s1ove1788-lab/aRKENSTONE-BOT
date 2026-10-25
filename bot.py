@@ -26,7 +26,8 @@ log = logging.getLogger("orders-bot")
 
 users: dict = {}    # id -> {"name": ..., "role": "manager" | "courier" | "prod"}
 groups: list = []   # id групповых чатов, куда слать уведомления
-pending: dict = {}  # id -> код размера, по которому ждём число (остаток)
+pending: dict = {}  # id -> ("stock", код) | ("ship", None): чего бот ждёт от человека текстом
+screens: dict = {}  # id -> id сообщения-«экрана» с меню, которое бот правит на месте
 RELOAD_EVERY = 300  # раз в 5 минут перечитываем список пользователей из таблицы
 
 
@@ -36,17 +37,27 @@ def now_date():
 
 # -------------------------------------------------------------- контекст
 class Ctx:
-    """Куда и как отвечать человеку: на нажатие кнопки (правим сообщение) или новым сообщением."""
+    """Куда и как отвечать человеку. Бот держит одно «экранное» сообщение и правит его на месте,
+    чтобы чат не засорялся. fresh=True — прислать экран новым сообщением (внизу чата)."""
 
     def __init__(self, uid: int, callback_id=None):
         self.uid = uid
         self.cid = callback_id
         self.target = {"type": "user", "id": uid}
+        self.fresh = False
 
     def show(self, text: str, rows=None, notification=None) -> None:
-        if self.cid and mx.answer(self.cid, text=text, rows=rows, notification=notification):
+        old = screens.get(self.uid)
+        if self.cid:
+            if mx.answer(self.cid, text=text, rows=rows, notification=notification):
+                return
+        elif old and not self.fresh and config.CLEAN_CHAT and mx.edit(old, text, rows, self.target):
             return
-        mx.send(self.target, text, rows)
+        new = mx.send(self.target, text, rows)
+        if new:
+            screens[self.uid] = new
+            if old and old != new and config.CLEAN_CHAT:
+                mx.delete(old, self.target)  # старое меню убираем, чтобы не копились
 
     def toast(self, text: str) -> None:
         if self.cid:
@@ -88,7 +99,8 @@ def home(ctx: Ctx, notification=None) -> None:
         rows = [[cb("🚚 Доставки", "c:home")], CHANGE_ROLE]
         text = "🚚 Меню курьера"
     else:
-        rows = [[cb("📋 План производства", "p:plan")], [cb("📦 Остатки", "p:stock")], CHANGE_ROLE]
+        rows = [[cb("📋 План производства", "p:plan")], [cb("📤 Отгрузка", "p:ship")],
+                [cb("📦 Остатки", "p:stock")], CHANGE_ROLE]
         text = "🏭 Меню производства"
     ctx.show(text, rows, notification)
 
@@ -211,12 +223,15 @@ def courier(ctx: Ctx, payload: str) -> None:
 def production(ctx: Ctx, payload: str) -> None:
     parts = payload.split(":", 2)
     action = parts[1] if len(parts) > 1 else ""
-    if action in ("plan", "stock", "cur"):
+    if action in ("plan", "stock", "cur", "ship"):
         pending.pop(ctx.uid, None)
 
     if action == "plan":
         text = logic.production_plan(sheets.read_orders(), now_date())
         return ctx.show(text, [[cb("📦 Остатки", "p:stock")], MENU_BTN])
+
+    if action == "ship":
+        return ship_screen(ctx)
 
     if action == "stock":
         codes = config.STOCK_CODES
@@ -225,7 +240,7 @@ def production(ctx: Ctx, payload: str) -> None:
         return ctx.show("📦 Остатки\nВыберите размер (число — ширина; 04 — чёрная, 06 — белая):", rows)
 
     if action == "s" and len(parts) == 3 and parts[2] in config.STOCK_CODES:
-        pending[ctx.uid] = parts[2]
+        pending[ctx.uid] = ("stock", parts[2])
         return ctx.show(f"Остаток {parts[2]}: напишите числом, сколько штук сейчас (например, 5).",
                         [[cb("↩️ Отмена", "p:stock")]])
 
@@ -248,11 +263,46 @@ def save_stock_from_text(ctx: Ctx, name: str, text: str) -> None:
     if not m:
         return ctx.show("Нужно просто число, например 5. Или нажмите «Отмена».",
                         [[cb("↩️ Отмена", "p:stock")]])
-    code = pending.pop(ctx.uid)
+    code = pending.pop(ctx.uid)[1]
     qty = int(m.group(1))
     sheets.add_stock(code, qty, name)
     ctx.show(f"✅ Записал: {code} — {qty} шт.",
              [[cb("✏️ Внести ещё", "p:stock")], [cb("📊 Текущие остатки", "p:cur")], MENU_BTN])
+
+
+def ship_screen(ctx: Ctx, results=None) -> None:
+    pending[ctx.uid] = ("ship", None)
+    today = now_date()
+    plan = logic.ship_plan(sheets.read_orders(), today)
+    shipped = sheets.shipped_on(today)
+    ctx.show(logic.ship_text(today, plan, shipped, results),
+             [[cb("📦 Остатки", "p:stock")], MENU_BTN])
+
+
+def save_shipments_from_text(ctx: Ctx, name: str, text: str) -> None:
+    """«160/30 ч» -> записываем отгрузку и списываем 1 шт. с остатка (если остаток есть)."""
+    items = logic.parse_shipments(text)
+    stock = sheets.latest_stock()
+    today = now_date()
+    lines = []
+    for it in items:
+        if "error" in it:
+            lines.append(f"⚠️ «{it['line']}»: {it['error']}")
+            continue
+        code, qty = it["code"], it["qty"]
+        before = stock[code][0] if code in stock else None
+        if before is None:
+            after, note = None, "остатка в таблице нет, не списывал"
+        elif before >= qty:
+            after, note = before - qty, f"остаток {before} → {before - qty}"
+        else:
+            after, note = None, f"⚠️ на остатке всего {before} шт., не списывал — проверьте остаток"
+        sheets.add_shipment(code, qty, name, before, after, today)
+        if after is not None:
+            sheets.add_stock(code, after, f"{name} (отгрузка)")
+            stock[code] = (after, "")
+        lines.append(f"✅ {logic.code_name(code)} ×{qty} — {note}")
+    ship_screen(ctx, lines or ["Не понял сообщение. Пример: 160/30 ч"])
 
 
 # ---------------------------------------------------------- нажатия кнопок
@@ -279,6 +329,10 @@ def handle_callback(u: dict) -> None:
         return
     user = cbk.get("user") or {}
     name = user.get("name") or user.get("first_name") or ""
+    msg = u.get("message") or cbk.get("message") or {}
+    mid = (msg.get("body") or {}).get("mid")
+    if mid:
+        screens[uid] = mid  # сообщение с кнопкой, на которую нажали, — это и есть текущий экран
     try:
         on_payload(Ctx(uid, cid), name, cbk.get("payload") or "")
     except Exception:
@@ -293,40 +347,52 @@ def format_order(o) -> str:
             f"  отгрузка {o.ship_date}, доставка {o.delivery_date} · № {o.order_no}")
 
 
-def notify_all(new: list, who: str) -> None:
+def notify_all(new: list, who: str, skip_uid=None) -> None:
     lines = [f"🆕 Новых заказов: {len(new)}" + (f" (загрузил(а): {who})" if who else "")]
     lines += [format_order(o) for o in new]
     text = "\n".join(lines)
-    targets = [{"type": "user", "id": uid} for uid, u in users.items() if u["role"] in config.NOTIFY_ROLES]
-    targets += [{"type": "chat", "id": c} for c in groups]
-    for t in targets:
-        mx.send(t, text)
+    for uid, u in list(users.items()):
+        if u["role"] not in config.NOTIFY_ROLES:
+            continue
+        mx.send({"type": "user", "id": uid}, text)
+        if config.CLEAN_CHAT and uid != skip_uid and uid not in pending:
+            ctx = Ctx(uid)
+            ctx.fresh = True  # уведомление пришло ниже меню — поднимаем меню вниз
+            home(ctx)
+    for c in groups:
+        mx.send({"type": "chat", "id": c}, text)
 
 
-def process_pdf(url: str, filename: str, reply_to: dict, who: str) -> None:
-    mx.send(reply_to, f"Читаю файл «{filename}»…")
+def process_pdf(url: str, filename: str, say, who: str, uid=None) -> bool:
+    """Читает PDF и пишет заказы в таблицу. say(text, rows) — как отвечать. True — файл обработан."""
+    say(f"Читаю файл «{filename}»…")
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "orders.pdf")
         try:
             mx.download(url, path)
             orders = parse_pdf(path)
         except ValueError as e:
-            return mx.send(reply_to, f"⚠️ {e}")
+            say(f"⚠️ {e}", [MENU_BTN])
+            return False
         except Exception:
             log.exception("Ошибка при чтении PDF")
-            return mx.send(reply_to, "⚠️ Не получилось скачать или прочитать файл. Попробуйте отправить ещё раз.")
+            say("⚠️ Не получилось скачать или прочитать файл. Попробуйте отправить ещё раз.", [MENU_BTN])
+            return False
     try:
         new = sheets.add_orders(orders)
     except Exception:
         log.exception("Ошибка при записи в Google Таблицу")
-        return mx.send(reply_to, "⚠️ Заказы прочитал, но записать в таблицу не вышло. Сообщите администратору.")
+        say("⚠️ Заказы прочитал, но записать в таблицу не вышло. Сообщите администратору.", [MENU_BTN])
+        return False
     if not new:
-        return mx.send(reply_to, f"Все {len(orders)} заказов из файла уже есть в таблице, ничего не добавлял.")
-    notify_all(new, who)
+        say(f"Все {len(orders)} заказов из файла уже есть в таблице, ничего не добавлял.", [MENU_BTN])
+        return True
+    notify_all(new, who, skip_uid=uid)
     summary = f"✅ Добавлено в таблицу: {len(new)}"
     if len(orders) - len(new):
         summary += f"\nПропущено (уже были): {len(orders) - len(new)}"
-    mx.send(reply_to, summary)
+    say(summary, [MENU_BTN])
+    return True
 
 
 # --------------------------------------------------------------- сообщения
@@ -346,34 +412,45 @@ def handle_message(u: dict) -> None:
     body = msg.get("body") or {}
     raw = (body.get("text") or "").strip()
     cmd = raw.lower().split("@")[0].split(" ")[0] if raw.startswith("/") else ""
+    user_mid = body.get("mid")
 
     if cmd == "/id":
         return mx.send(reply_to, f"Ваш ID: {sender_id}")
 
-    # PDF от менеджера
-    handled_file = False
-    for att in body.get("attachments") or []:
-        if att.get("type") != "file":
-            continue
-        handled_file = True
-        filename = att.get("filename") or "file.pdf"
-        if not filename.lower().endswith(".pdf"):
-            if not in_group:
-                mx.send(reply_to, "Мне нужен именно PDF-файл.")
-            continue
-        if sender_id not in config.MANAGER_IDS:
-            if not in_group:
-                mx.send(reply_to, f"Загружать файлы может только менеджер. Ваш ID: {sender_id}")
-            continue
-        url = (att.get("payload") or {}).get("url")
-        if not url:
-            mx.send(reply_to, "⚠️ MAX не передал ссылку на файл. Попробуйте отправить ещё раз.")
-            continue
-        process_pdf(url, filename, reply_to, name)
-    if handled_file:
+    ctx = None if in_group else Ctx(sender_id)
+
+    def say(text: str, rows=None) -> None:
+        if ctx:
+            ctx.show(text, rows)
+            ctx.fresh = False
+        else:
+            mx.send(reply_to, text)
+
+    # --- PDF от менеджера
+    files = [a for a in body.get("attachments") or [] if a.get("type") == "file"]
+    if files:
+        if ctx:
+            ctx.fresh = True  # статус покажем новым сообщением под файлом, потом файл уберём
+        ok_any = False
+        for att in files:
+            filename = att.get("filename") or "file.pdf"
+            url = (att.get("payload") or {}).get("url")
+            if not filename.lower().endswith(".pdf"):
+                if ctx:
+                    say("Мне нужен именно PDF-файл.", [MENU_BTN])
+            elif sender_id not in config.MANAGER_IDS:
+                if ctx:
+                    say(f"Загружать файлы может только менеджер. Ваш ID: {sender_id}", [MENU_BTN])
+            elif not url:
+                say("⚠️ MAX не передал ссылку на файл. Попробуйте отправить ещё раз.")
+            else:
+                ok_any = process_pdf(url, filename, say, name, sender_id) or ok_any
+        if ctx and ok_any and config.CLEAN_CHAT and user_mid:
+            mx.delete(user_mid, reply_to)  # PDF уже в таблице — убираем из чата
         return
 
-    if in_group:  # в группах бот только присылает уведомления
+    # --- групповые чаты: только уведомления
+    if in_group:
         chat_id = reply_to["id"]
         if cmd in ("/start", "/subscribe"):
             if chat_id not in groups:
@@ -393,7 +470,10 @@ def handle_message(u: dict) -> None:
             mx.send(reply_to, "Отписал этот чат от уведомлений.")
         return
 
-    ctx = Ctx(sender_id)
+    # --- личный диалог: сообщение пользователя убираем из чата, ответ — в экране-меню
+    if config.CLEAN_CHAT and user_mid:
+        ctx.fresh = not mx.delete(user_mid, reply_to)  # не удалилось -> меню пришлём заново внизу
+
     if cmd == "/stop":
         users.pop(sender_id, None)
         pending.pop(sender_id, None)
@@ -401,7 +481,7 @@ def handle_message(u: dict) -> None:
             sheets.delete_user(sender_id)
         except Exception:
             log.exception("Не смог удалить пользователя")
-        return mx.send(reply_to, "Вы вышли. Напишите /start, чтобы выбрать роль заново.")
+        return ctx.show("Вы вышли. Напишите /start, чтобы выбрать роль заново.")
     if cmd == "/role":
         return role_choice(ctx)
     if cmd in ("/start", "/menu"):
@@ -409,8 +489,16 @@ def handle_message(u: dict) -> None:
         if sender_id in users:
             return home(ctx)
         return role_choice(ctx, "Привет! Я бот заказов.")
-    if sender_id in pending and raw and not cmd:
-        return save_stock_from_text(ctx, name, raw)
+
+    mode = pending.get(sender_id)
+    if mode and raw and not cmd:
+        try:
+            if mode[0] == "ship":
+                return save_shipments_from_text(ctx, name, raw)
+            return save_stock_from_text(ctx, name, raw)
+        except Exception:
+            log.exception("Ошибка при записи отгрузки/остатка")
+            return ctx.show("⚠️ Не получилось записать. Попробуйте ещё раз.", [MENU_BTN])
     if sender_id in users:
         return home(ctx)
     role_choice(ctx, "Привет! Я бот заказов.")

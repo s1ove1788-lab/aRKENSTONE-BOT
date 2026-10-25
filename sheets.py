@@ -22,6 +22,8 @@ STATUS_COL = 12  # «Статус» — любая непустая отметк
 USERS_HEADERS = ["ID", "Имя", "Роль"]
 GROUPS_HEADERS = ["Тип", "ID"]
 STOCK_HEADERS = ["Дата и время", "Размер", "Остаток, шт.", "Кто внёс"]
+SHIP_HEADERS = ["Дата и время", "Дата отгрузки", "Код", "Размер", "Цвет", "Кол-во",
+                "Остаток до", "Остаток после", "Кто внёс"]
 
 CACHE_TTL = 5  # секунд: чтобы не дёргать Google при каждом нажатии кнопки
 _book = None
@@ -206,6 +208,30 @@ def latest_stock() -> dict:
         if len(v) >= 3 and v[1].strip():
             try:
                 res[v[1].strip()] = (int(float(v[2])), v[0])
+            except ValueError:
+                continue
+    return res
+
+
+# -------------------------------------------------------------- отгрузки
+def add_shipment(code: str, qty: int, who: str, before, after, day) -> None:
+    """Запись «производство отдало в доставку»; before/after — остаток до и после (None, если не списывали)."""
+    width, color = code.split(".")
+    _tab(config.SHIP_TAB, SHIP_HEADERS).append_row(
+        [_now_str(), day.strftime("%d.%m.%Y"), code, f"{width}/30",
+         {"04": "чёрная", "06": "белая"}.get(color, color), qty,
+         "" if before is None else before, "" if after is None else after, who],
+        value_input_option="RAW")
+
+
+def shipped_on(day) -> dict:
+    """{'160.04': 2} — сколько отгружено в указанный день."""
+    want = day.strftime("%d.%m.%Y")
+    res: dict = {}
+    for v in _tab(config.SHIP_TAB, SHIP_HEADERS).get_all_values()[1:]:
+        if len(v) >= 6 and v[1].strip() == want:
+            try:
+                res[v[2].strip()] = res.get(v[2].strip(), 0) + int(float(v[5]))
             except ValueError:
                 continue
     return res

@@ -37,6 +37,11 @@ STATE_FILE = os.getenv("STATE_FILE", "state.json")
 USERS_TAB = "Пользователи"
 GROUPS_TAB = "Подписчики"
 STOCK_TAB = "Остатки"
+SHIP_TAB = "Отгрузки"
+
+# «Чистый чат»: бот правит одно сообщение-меню и пытается удалять сообщения пользователей.
+# Отключить: переменная окружения CLEAN_CHAT=0
+CLEAN_CHAT = os.getenv("CLEAN_CHAT", "1").strip().lower() not in ("0", "false", "no", "нет")
 
 # Роли: ключ -> как называется в таблице и на кнопках
 ROLE_LABELS = {"manager": "Менеджер", "courier": "Курьер", "prod": "Производство"}

@@ -10,6 +10,8 @@ _RANGE = re.compile(r"(\d{1,2})\s*[-–—]\s*(\d{1,2})\s*[.\s]?\s*([а-яё]{3,
 _NUM = re.compile(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?")
 _SINGLE = re.compile(r"(\d{1,2})\s*[.\s]\s*([а-яё]{3,})", re.I)
 
+import config
+
 CITY_CHANNELS = {"ЯМ ГОРОД", "WB ГОРОД", "ОЗ"}
 
 
@@ -71,17 +73,21 @@ def key_range(o: dict, today: date):
 
 # ------------------------------------------------------------- выборки
 def courier_items(orders: list, today: date) -> list:
-    """[(заказ, просрочен?)] — то, что курьеру нужно сделать сегодня + недоставленное за прошлые дни."""
+    """[(заказ, просрочен?)] для курьера.
+    По России (СГТ, ПЭК и т.п.): только заказы с датой на сегодня, никаких хвостов с прошлых дней.
+    Город: сегодняшние + недоставленные за прошлые дни (с пометкой «просрочено»)."""
     res = []
     for o in orders:
         if o["status"]:
             continue
+        city = is_city(o)
         r = key_range(o, today)
         if r is None:
-            res.append((o, False))  # дату не поняли — лучше показать, чем потерять
+            if city:
+                res.append((o, False))  # дату не поняли — лучше показать, чем потерять
         elif r[0] <= today <= r[1]:
             res.append((o, False))
-        elif r[1] < today:
+        elif r[1] < today and city:
             res.append((o, True))
     return res
 
@@ -162,4 +168,92 @@ def production_plan(orders: list, today: date) -> str:
         parts = ", ".join(f"{name} ×{n}" for name, n in sorted(cnt.items()))
         lines.append(f"{label} — {parts}")
     lines += ["", f"Всего: {total} шт."]
+    return "\n".join(lines)
+
+
+# ------------------------------------------------------------- отгрузка
+_WIDTHS = sorted({int(c.split(".")[0]) for c in config.STOCK_CODES})
+
+
+def order_code(o: dict):
+    """Код размера заказа: '160.04' (ширина.цвет) — из артикула, запасной вариант из размера и цвета."""
+    m = re.search(r"\.(\d{2,3})\.(\d{2})$", o["article"])
+    if m:
+        return f"{m.group(1)}.{m.group(2)}"
+    w = re.match(r"\d+", o["size"])
+    c = {"чёрный": "04", "черный": "04", "белый": "06"}.get(o["color"].lower())
+    return f"{w.group()}.{c}" if w and c else None
+
+
+def code_name(code: str) -> str:
+    width, color = code.split(".")
+    return f"{width}/30 " + {"04": "чёрная", "06": "белая"}.get(color, color)
+
+
+def ship_plan(orders: list, today: date) -> Counter:
+    """Что по таблице нужно отгрузить сегодня: {'160.04': 1}."""
+    plan: Counter = Counter()
+    for o in orders:
+        st = o["status"].lower()
+        if st and not st.startswith("доставлен"):  # «Отмена» и т.п. не считаем
+            continue
+        r = key_range(o, today)
+        if r and r[0] <= today <= r[1]:
+            code = order_code(o)
+            if code:
+                plan[code] += 1
+    return plan
+
+
+def _parse_ship_line(line: str) -> dict:
+    s = line.lower().replace("ё", "е")
+    m = next((m for m in re.finditer(r"(?<!\d)(\d{3})(?!\d)", s) if int(m.group(1)) in _WIDTHS), None)
+    if not m:
+        return {"line": line, "error": "не нашёл размер (например: 160/30 ч)"}
+    width = int(m.group(1))
+    after = re.sub(r"^\s*[/\\x×*\-]?\s*30(?!\d)", "", s[m.end():], count=1)  # «/30» — высота
+    rest = s[:m.start()] + " " + after
+    color = None
+    for w in re.findall(r"[а-я]+", rest):
+        if w.startswith("ч"):
+            color = "04"
+            break
+        if w.startswith("б"):
+            color = "06"
+            break
+    if color is None:
+        mc = re.search(r"(?<!\d)0([46])(?!\d)", rest)
+        if mc:
+            color = "0" + mc.group(1)
+            rest = rest[:mc.start()] + " " + rest[mc.end():]
+    if color is None:
+        return {"line": line, "error": "не понял цвет (ч — чёрная, б — белая)"}
+    nums = re.findall(r"\d+", rest)
+    qty = int(nums[0]) if nums else 1
+    if not 1 <= qty <= 999:
+        return {"line": line, "error": "странное количество"}
+    return {"line": line, "code": f"{width}.{color}", "qty": qty}
+
+
+def parse_shipments(text: str) -> list:
+    """'160/30 ч' -> код 160.04, 1 шт; '180/30 б 2' -> 180.06, 2 шт. Несколько позиций — по строкам."""
+    return [_parse_ship_line(x.strip()) for x in re.split(r"[\n;]+", text or "") if x.strip()]
+
+
+def _fmt_counts(c: dict) -> str:
+    return ", ".join(f"{code_name(k)} ×{v}" for k, v in sorted(c.items()))
+
+
+def ship_text(today: date, plan: dict, shipped: dict, results=None) -> str:
+    lines = [f"📤 Отгрузка на {today:%d.%m}", ""]
+    lines.append("К отгрузке: " + (_fmt_counts(plan) if plan else "по таблице на сегодня ничего нет"))
+    lines.append("Отгружено: " + (_fmt_counts(shipped) if shipped else "пока ничего"))
+    if plan:
+        rem = {k: v - shipped.get(k, 0) for k, v in plan.items() if v - shipped.get(k, 0) > 0}
+        lines.append("Осталось: " + (_fmt_counts(rem) if rem else "всё отгружено 🎉"))
+    if results:
+        lines += ["", *results]
+    lines += ["", "Пришлите сообщением, что отгрузили:",
+              "160/30 ч — одна чёрная; 180/30 б 2 — две белых.",
+              "Несколько позиций — каждая с новой строки."]
     return "\n".join(lines)

@@ -56,11 +56,21 @@ def _throttle(target: dict) -> None:
     _last_sent[key] = time.time()
 
 
-def send(target: dict, text: str, rows=None) -> bool:
-    """target = {"type": "user" | "chat", "id": 123}; rows — ряды кнопок (необязательно)."""
+def _ok(r) -> bool:
+    if r.status_code != 200:
+        return False
+    try:
+        return r.json().get("success", True) is not False
+    except ValueError:
+        return True
+
+
+def send(target: dict, text: str, rows=None):
+    """Отправляет сообщение. Возвращает id сообщения (строка), '' если id не пришёл, None при ошибке.
+    target = {"type": "user" | "chat", "id": 123}; rows — ряды кнопок (необязательно)."""
     param = "user_id" if target["type"] == "user" else "chat_id"
     chunks = split_text(text)
-    ok = True
+    ok, last = True, ""
     for i, chunk in enumerate(chunks):
         body = {"text": chunk}
         if rows and i == len(chunks) - 1:
@@ -72,10 +82,56 @@ def send(target: dict, text: str, rows=None) -> bool:
             if r.status_code != 200:
                 log.warning("Не отправилось %s: %s %s", target, r.status_code, r.text[:300])
                 ok = False
+            else:
+                try:
+                    msg = r.json().get("message") or {}
+                    last = (msg.get("body") or {}).get("mid") or last
+                except ValueError:
+                    pass
         except requests.RequestException:
             log.exception("Ошибка сети при отправке %s", target)
             ok = False
-    return ok
+    return last if ok else None
+
+
+def edit(message_id: str, text: str, rows=None, target=None) -> bool:
+    """Заменяет текст и кнопки у уже отправленного сообщения."""
+    if target:
+        _throttle(target)
+    try:
+        r = requests.put(f"{config.API}/messages", params={"message_id": message_id},
+                         headers=_headers(),
+                         json={"text": text[:4000], "attachments": _keyboard(rows)}, timeout=30)
+        if not _ok(r):
+            log.info("Не удалось изменить сообщение: %s %s", r.status_code, r.text[:200])
+            return False
+        return True
+    except requests.RequestException:
+        log.exception("Ошибка сети при изменении сообщения")
+        return False
+
+
+_delete_warned = False
+
+
+def delete(message_id: str, target=None) -> bool:
+    """Пытается удалить сообщение. Если MAX не разрешает, один раз пишет об этом в лог."""
+    global _delete_warned
+    if target:
+        _throttle(target)
+    try:
+        r = requests.delete(f"{config.API}/messages", params={"message_id": message_id},
+                            headers=_headers(), timeout=30)
+        ok = _ok(r)
+        if not ok and not _delete_warned:
+            _delete_warned = True
+            log.warning("MAX не дал удалить сообщение (%s %s). Если так будет всегда, сообщения "
+                        "пользователей в чате останутся — бот просто будет присылать меню заново "
+                        "внизу чата.", r.status_code, r.text[:200])
+        return ok
+    except requests.RequestException:
+        log.exception("Ошибка сети при удалении сообщения")
+        return False
 
 
 def answer(callback_id: str, text=None, rows=None, notification=None) -> bool:
