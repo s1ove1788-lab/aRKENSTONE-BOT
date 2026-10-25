@@ -510,25 +510,32 @@ def discovery() -> list:
 
             continue
 
-        # ----------------------------------------------------
-        # УБИРАЕМ ОТМЕНЁННЫЕ
-        # ----------------------------------------------------
+# --------------------------------------------------------
+# ОСТАВЛЯЕМ ТОЛЬКО НЕЗАВЕРШЁННЫЕ ЗАКАЗЫ
+# --------------------------------------------------------
 
-        active_orders = [
-            order
-            for order in orders
-            if order.get("status") != "CANCELLED"
-        ]
+active_orders = []
 
-        if not active_orders:
+for order in orders:
 
-            out.append(
-                "📭 Активных заказов нет."
-            )
+    status = order.get("status", "")
+    substatus = order.get("substatus", "")
 
-            out.append("")
+    # Финальные заказы нам больше не нужны
+    if status in {
+        "CANCELLED",
+        "DELIVERED",
+    }:
+        continue
 
-            continue
+    # Иногда Яндекс может оставить статус DELIVERY,
+    # но подстатус уже означает, что заказ доставлен
+    if substatus in {
+        "DELIVERY_SERVICE_DELIVERED",
+    }:
+        continue
+
+    active_orders.append(order)
 
         # ----------------------------------------------------
         # КОЛИЧЕСТВО
