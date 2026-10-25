@@ -89,9 +89,9 @@ def home(ctx: Ctx, notification=None) -> None:
         rows = []
         try:
             rows.append([link("📊 Таблица заказов", sheets.sheet_url("orders"))])
-            rows.append([link("📦 Таблица остатков", sheets.sheet_url("stock"))])
         except Exception:
-            log.exception("Не смог получить ссылки на таблицы")
+            log.exception("Не смог получить ссылку на таблицу заказов")
+        rows.append([cb("📦 Таблица остатков", "p:cur")])
         rows.append(CHANGE_ROLE)
         text = ("👔 Меню менеджера\n\nЧтобы добавить заказы, просто пришлите мне PDF-файл в этот чат.\n"
                 "Таблицы открываются в Google Таблицах — там их можно редактировать.")
@@ -317,8 +317,11 @@ def on_payload(ctx: Ctx, name: str, payload: str) -> None:
         return home(ctx)
     if payload.startswith("c:") and user["role"] == "courier":
         return courier(ctx, payload)
-    if payload.startswith("p:") and user["role"] == "prod":
-        return production(ctx, payload)
+    if payload.startswith("p:"):
+        # производство — всё; менеджер — только остатки (просмотр и внесение)
+        section = payload.split(":")[1]
+        if user["role"] == "prod" or (user["role"] == "manager" and section in ("stock", "s", "cur")):
+            return production(ctx, payload)
     home(ctx, notification="Эта кнопка вам недоступна")
 
 
