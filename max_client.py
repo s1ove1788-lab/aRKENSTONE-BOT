@@ -12,6 +12,54 @@ MAX_PDF_BYTES = 20 * 1024 * 1024
 MAX_TEXT_LEN = 3500  # у MAX лимит на сообщение ~4000 символов
 _last_sent: dict = {}
 
+# Журнал сообщений для команды /clear: бот помнит, что и кому отправлял (и что писали ему).
+# Хранится в файле рядом с ботом; если контейнер пересоздан, журнал начинается заново.
+_TRACK_FILE = "sent_messages.json"
+_TRACK_LIMIT = 300  # на один чат
+tracked: dict = {}
+
+
+def _tkey(target: dict) -> str:
+    return f"{target['type']}:{target['id']}"
+
+
+def _load_tracked() -> None:
+    import json
+    try:
+        with open(_TRACK_FILE, encoding="utf-8") as f:
+            tracked.update(json.load(f))
+    except (OSError, ValueError):
+        pass
+
+
+def _save_tracked() -> None:
+    import json
+    try:
+        with open(_TRACK_FILE, "w", encoding="utf-8") as f:
+            json.dump(tracked, f)
+    except OSError:
+        pass
+
+
+def track(target: dict, mid) -> None:
+    if not mid:
+        return
+    lst = tracked.setdefault(_tkey(target), [])
+    if mid not in lst:
+        lst.append(mid)
+        del lst[:-_TRACK_LIMIT]
+        _save_tracked()
+
+
+def forget(target: dict, mids) -> None:
+    key = _tkey(target)
+    if key in tracked:
+        tracked[key] = [m for m in tracked[key] if m not in set(mids)]
+        _save_tracked()
+
+
+_load_tracked()
+
 
 def _headers() -> dict:
     return {"Authorization": config.TOKEN}
@@ -86,6 +134,7 @@ def send(target: dict, text: str, rows=None):
                 try:
                     msg = r.json().get("message") or {}
                     last = (msg.get("body") or {}).get("mid") or last
+                    track(target, (msg.get("body") or {}).get("mid"))
                 except ValueError:
                     pass
         except requests.RequestException:
@@ -123,6 +172,8 @@ def delete(message_id: str, target=None) -> bool:
         r = requests.delete(f"{config.API}/messages", params={"message_id": message_id},
                             headers=_headers(), timeout=30)
         ok = _ok(r)
+        if ok and target:
+            forget(target, [message_id])
         if not ok and not _delete_warned:
             _delete_warned = True
             log.warning("MAX не дал удалить сообщение (%s %s). Если так будет всегда, сообщения "

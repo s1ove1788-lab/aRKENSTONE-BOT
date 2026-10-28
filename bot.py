@@ -353,6 +353,35 @@ def format_order(o) -> str:
             f"  отгрузка {o.ship_date}, доставка {o.delivery_date} · № {o.order_no}")
 
 
+def clear_all() -> tuple:
+    """Удаляет из чатов всё, что бот помнит (свои сообщения и сообщения людей), кроме текущих экранов-меню.
+    Потом обновляет меню у всех. Возвращает (удалено, не удалось)."""
+    removed = failed = 0
+    for key, mids in list(mx.tracked.items()):
+        kind, _, raw = key.partition(":")
+        try:
+            target = {"type": kind, "id": int(raw)}
+        except ValueError:
+            continue
+        keep = screens.get(target["id"]) if kind == "user" else None
+        for mid in list(mids):
+            if mid == keep:
+                continue
+            if mx.delete(mid, target):
+                removed += 1
+            else:
+                failed += 1
+                mx.forget(target, [mid])  # безнадёжные (старые) больше не трогаем
+    for uid in list(users):
+        try:
+            ctx = Ctx(uid)
+            if uid not in pending:
+                home(ctx)
+        except Exception:
+            log.exception("Не смог обновить меню после /clear")
+    return removed, failed
+
+
 def broadcast(text: str, skip_uid=None) -> None:
     """Рассылает текст всем, кто зарегистрирован (роли из NOTIFY_ROLES), и в подписанные группы."""
     for uid, u in list(users.items()):
@@ -523,9 +552,22 @@ def handle_message(u: dict) -> None:
             mx.send(reply_to, "Отписал этот чат от уведомлений.")
         return
 
+    if user_mid:
+        mx.track(reply_to, user_mid)  # запоминаем, чтобы /clear мог убрать и сообщения людей
+
     # --- личный диалог: сообщение пользователя убираем из чата, ответ — в экране-меню
     if config.CLEAN_CHAT and user_mid:
         ctx.fresh = not mx.delete(user_mid, reply_to)  # не удалилось -> меню пришлём заново внизу
+
+    if cmd == "/clear":  # чистка чатов бота у всех (только админ = менеджер из MANAGER_IDS)
+        if sender_id not in config.MANAGER_IDS:
+            return
+        ctx.show("🧹 Чищу чаты…", [MENU_BTN])
+        removed, failed = clear_all()
+        text = f"🧹 Готово: удалено сообщений — {removed}."
+        if failed:
+            text += f"\nНе удалилось: {failed} (MAX не разрешает удалять старые сообщения или чужие)."
+        return ctx.show(text, [MENU_BTN])
 
     if cmd == "/ym":  # разведка Яндекс Маркета (только менеджер)
         if sender_id not in config.MANAGER_IDS:

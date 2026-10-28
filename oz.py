@@ -13,12 +13,16 @@ import requests
 import config
 import logic
 import sheets
+from pdf_parser import COLOR_CODES, Order, parse_article
+from zoneinfo import ZoneInfo
 
 log = logging.getLogger("orders-bot")
 BASE = "https://api-seller.ozon.ru"
 BASELINE = "_baseline_"
 MONTHS = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
 MAX_IN_MESSAGE = 15
+MONTHS_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа",
+              "сентября", "октября", "ноября", "декабря"]
 PII_WHOLE = {"addressee", "customer"}  # заменяются целиком
 PII_KEYS = {"phone", "address_tail", "comment", "zip_code", "latitude", "longitude", "email", "name_"}
 
@@ -77,12 +81,9 @@ def fetch_unfulfilled(limit: int = 100, max_pages: int = 10, only_active: bool =
 
 # ------------------------------------------------------------ оформление
 def _date(s: str) -> str:
-    """'2026-10-29T10:00:00Z' -> '29.окт'."""
-    try:
-        d = datetime.strptime((s or "")[:10], "%Y-%m-%d")
-        return f"{d.day:02d}.{MONTHS[d.month - 1]}"
-    except ValueError:
-        return "—"
+    """'2026-10-25T21:00:00Z' -> '26.окт' (по московскому времени, как в таблице)."""
+    d = _local(s)
+    return f"{d.day:02d}.{MONTHS[d.month - 1]}" if d else "—"
 
 
 def region_text(p: dict) -> str:
@@ -113,9 +114,59 @@ def format_posting(p: dict) -> str:
             f"Отгрузка до {_date(p.get('shipment_date'))}" + (f" · {method}" if method else ""))
 
 
-def build_message(found: list) -> str:
+def _local(s: str):
+    """'2026-10-09T21:00:00Z' -> дата по времени таблицы (Москва). None, если не разобрать."""
+    try:
+        d = datetime.strptime((s or "")[:19], "%Y-%m-%dT%H:%M:%S").replace(tzinfo=timezone.utc)
+        return d.astimezone(ZoneInfo(config.TIMEZONE)).date()
+    except ValueError:
+        return None
+
+
+def _delivery_text(p: dict) -> str:
+    """Как у менеджера: «7-8 ноября»."""
+    a = p.get("analytics_data") or {}
+    d1, d2 = _local(a.get("delivery_date_begin")), _local(a.get("delivery_date_end"))
+    if not d1:
+        return "—"
+    if not d2 or d2 == d1:
+        return f"{d1.day} {MONTHS_GEN[d1.month - 1]}"
+    if d1.month == d2.month:
+        return f"{d1.day}-{d2.day} {MONTHS_GEN[d1.month - 1]}"
+    return f"{d1.day} {MONTHS_GEN[d1.month - 1]} – {d2.day} {MONTHS_GEN[d2.month - 1]}"
+
+
+def to_table_order(p: dict):
+    """Отправление Озона -> строка таблицы (формат менеджера: «ОЗ ПЭК», тип «пэк», номер отгрузки = трек ПЭК).
+    None — если автоматически добавлять нельзя (городской заказ, несколько позиций, незнакомый артикул)."""
+    if channel_guess(p) != "ПЭК":
+        return None
+    items = p.get("products") or []
+    if len(items) != 1 or int(items[0].get("quantity") or 1) != 1:
+        return None
+    art = items[0].get("offer_id") or ""
+    a = parse_article(art)
+    if not a:
+        return None
+    ship = _local(p.get("shipment_date"))
+    return Order(
+        kind="пэк", channel="ОЗ ПЭК",
+        ship_date=f"{ship.day:02d}.{MONTHS[ship.month - 1]}" if ship else "—",
+        delivery_date=_delivery_text(p),
+        size=f"{a['width']}×{a['legs']}", color=COLOR_CODES.get(a["color_code"], ""),
+        order_no=str(p.get("posting_number")), article=art,
+        shipment_or_phone=str(p.get("tracking_number") or ""), address="")
+
+
+def build_message(found: list, tags: dict = None) -> str:
+    tags = tags or {}
     head = "🛒 Новый заказ на Озоне" if len(found) == 1 else f"🛒 Новых заказов на Озоне: {len(found)}"
-    blocks = [format_posting(p) for p in found[:MAX_IN_MESSAGE]]
+    blocks = []
+    for p in found[:MAX_IN_MESSAGE]:
+        t = format_posting(p)
+        if tags.get(str(p.get("posting_number"))):
+            t += "\n" + tags[str(p.get("posting_number"))]
+        blocks.append(t)
     if len(found) > MAX_IN_MESSAGE:
         blocks.append(f"…и ещё {len(found) - MAX_IN_MESSAGE}")
     return head + "\n\n" + "\n\n".join(blocks)
@@ -156,6 +207,27 @@ def poll(notify) -> dict:
     fresh = sorted((p for pn, p in current.items() if pn not in seen), key=lambda p: p.get("in_process_at") or "")
     if fresh:
         sheets.oz_add([[p["posting_number"], now, "", "новый"] for p in fresh])  # сначала запоминаем
-        notify(build_message(fresh))
-        log.info("Озон: новых отправлений %d", len(fresh))
+        tags, added = {}, 0
+        if config.YM_AUTOADD:
+            to_add = []
+            for p in fresh:
+                row = to_table_order(p)
+                pn = str(p["posting_number"])
+                if row:
+                    to_add.append(row)
+                else:
+                    tags[pn] = "➕ в таблицу не добавлен (городской заказ, несколько позиций или незнакомый артикул), внесите вручную"
+            try:
+                new_rows = sheets.add_orders(to_add) if to_add else []
+                added = len(new_rows)
+                added_nos = {x.order_no for x in new_rows}
+                for r in to_add:
+                    tags[r.order_no] = ("✅ добавлен в таблицу, адрес впишите вручную (Озон его не отдаёт)"
+                                        if r.order_no in added_nos else "уже был в таблице")
+            except Exception:
+                log.exception("Не удалось записать заказы Озона в таблицу")
+                for r in to_add:
+                    tags[r.order_no] = "⚠️ в таблицу записать не удалось, внесите вручную"
+        notify(build_message(fresh, tags))
+        log.info("Озон: новых отправлений %d, добавлено в таблицу %d", len(fresh), added)
     return {"total": len(current), "new": len(fresh), "baseline": False, "sample": sample}
