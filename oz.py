@@ -173,11 +173,28 @@ def build_message(found: list, tags: dict = None) -> str:
 
 
 # ----------------------------------------------------------------- разведка
-def discovery() -> list:
-    """Сообщения для /oz: сколько отправлений, по статусам, и по два примера с закрытыми персональными данными."""
+STATUS_RU = {
+    "awaiting_registration": "ждёт регистрации", "acceptance_in_progress": "идёт приёмка",
+    "awaiting_approve": "ждёт подтверждения", "awaiting_packaging": "ждёт сборки",
+    "awaiting_deliver": "ждёт отгрузки", "delivering": "в пути", "driver_pickup": "у водителя",
+    "delivered": "доставлен", "cancelled": "отменён", "not_accepted": "не принят",
+    "sent_by_seller": "отправлен", "arbitration": "арбитраж", "client_arbitration": "спор с покупателем",
+}
+
+
+def _short(p: dict) -> str:
+    items = ", ".join(
+        f"{logic.article_name(it.get('offer_id') or '', it.get('name') or '')} ×{it.get('quantity', 1)}"
+        for it in (p.get("products") or [])) or "товары не указаны"
+    st = STATUS_RU.get(p.get("status"), p.get("status") or "?")
+    return (f"• № {p.get('posting_number')} · {channel_guess(p)} · {st}\n"
+            f"  {items}\n  {region_text(p)} · отгрузка {_date(p.get('shipment_date'))}")
+
+
+def discovery(raw: bool = False) -> list:
+    """Сообщение для /oz: коротко и читаемо. С аргументом raw — «сырые» данные (для разработчика)."""
     try:
         postings = fetch_unfulfilled(only_active=False)
-        postings.sort(key=lambda p: p.get("status") not in ACTIVE_STATUSES)
     except Exception as e:
         log.warning("Разведка Озона: %s", e)
         return [f"⚠️ {e}"]
@@ -186,10 +203,25 @@ def discovery() -> list:
     by_status: dict = {}
     for p in postings:
         by_status[p.get("status")] = by_status.get(p.get("status"), 0) + 1
-    out = ["Озон: отправлений за период — %d (ещё не отгружены: %d)\n%s" % (
-        len(postings), sum(1 for p in postings if p.get("status") in ACTIVE_STATUSES), "\n".join(f"• {s}: {n}" for s, n in sorted(by_status.items(), key=lambda x: str(x[0]))))]
-    text = json.dumps(mask(postings[:2]), ensure_ascii=False, indent=1)
-    out.append("Примеры (имена, телефоны и адреса скрыты):\n" + (text if len(text) < 3300 else text[:3300] + "\n… (обрезано)"))
+    active = [p for p in postings if p.get("status") in ACTIVE_STATUSES]
+    lines = [f"📦 Озон за последние 30 дней: {len(postings)} отправлений",
+             f"Ждут отгрузки: {len(active)}"]
+    lines += [f"{STATUS_RU.get(s, s)}: {n}" for s, n in sorted(by_status.items(), key=lambda x: str(x[0]))
+              if s not in ACTIVE_STATUSES]
+    shown = sorted(active, key=lambda p: p.get("in_process_at") or "", reverse=True)[:5] or \
+        sorted(postings, key=lambda p: p.get("in_process_at") or "", reverse=True)[:3]
+    lines += ["", "Ждущие отгрузки:" if active else "Последние заказы (ждущих отгрузки сейчас нет):"]
+    lines += [_short(p) for p in shown]
+    row = next((to_table_order(p) for p in shown if to_table_order(p)), None)
+    if row:
+        lines += ["", "Так заказ ПЭК запишется в таблицу:",
+                  f"{row.channel} · {row.kind} · отгрузка {row.ship_date} · доставка {row.delivery_date}\n"
+                  f"{row.size} {row.color} · {row.order_no} · {row.article} · трек {row.shipment_or_phone}"]
+    out = ["\n".join(lines)]
+    if raw:
+        text = json.dumps(mask(sorted(postings, key=lambda p: p.get("status") not in ACTIVE_STATUSES)[:2]),
+                          ensure_ascii=False, indent=1)
+        out.append("Сырые данные (имена, телефоны и адреса скрыты):\n" + (text if len(text) < 3300 else text[:3300] + "\n… (обрезано)"))
     return out
 
 
