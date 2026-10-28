@@ -43,31 +43,33 @@ def mask(obj, key: str = ""):
 # --------------------------------------------------------------- запросы
 def fetch_unfulfilled(limit: int = 100, max_pages: int = 10) -> list:
     """Отправления FBS/rFBS, которые ещё не доставлены: ждут сборки и ждут отгрузки.
-    Метод /v3/posting/fbs/list (старый /unfulfilled/list Озон отдаёт 404). Бросает исключение при ошибке."""
+    Метод /v4/posting/fbs/list с курсором (v3 Озон отключил, отдаёт 404). Бросает исключение при ошибке.
+    Поля запроса написаны по описаниям из сети, не проверены на вашем кабинете: при 400 Озон сам назовёт ошибку."""
     now = datetime.now(timezone.utc)
     fmt = "%Y-%m-%dT%H:%M:%SZ"
     out, seen = [], set()
     for status in ("awaiting_packaging", "awaiting_deliver"):
-        offset = 0
+        cursor = ""
         for _ in range(max_pages):
-            body = {"dir": "ASC", "limit": limit, "offset": offset,
+            body = {"sort_dir": "ASC", "limit": limit, "cursor": cursor,
                     "filter": {"since": (now - timedelta(days=30)).strftime(fmt),
                                "to": (now + timedelta(days=30)).strftime(fmt),
                                "status": status},
                     "with": {"analytics_data": True}}
-            r = _post("/v3/posting/fbs/list", body)
+            r = _post("/v4/posting/fbs/list", body)
             if r.status_code != 200:
                 raise RuntimeError(f"Озон ответил {r.status_code}: {r.text[:300]}")
-            res = r.json().get("result") or {}
+            data = r.json()
+            res = data.get("result") if isinstance(data.get("result"), dict) else data
             part = res.get("postings") or []
             for p in part:
                 num = str(p.get("posting_number"))
                 if num not in seen:
                     seen.add(num)
                     out.append(p)
-            if not res.get("has_next") and len(part) < limit:
+            cursor = res.get("cursor") or ""
+            if not res.get("has_next") or not cursor or not part:
                 break
-            offset += limit
     return out
 
 
