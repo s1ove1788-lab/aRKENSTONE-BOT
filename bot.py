@@ -79,21 +79,31 @@ def allowed(uid: int, role: str) -> bool:
     return ids is not None and uid in ids
 
 
+def known(uid) -> bool:
+    """Есть ли человек хотя бы в одном списке доступа (менеджеры, курьеры, производство)."""
+    return bool(uid) and (uid in config.MANAGER_IDS or uid in config.COURIER_IDS or uid in config.PROD_IDS)
+
+
+def no_access_text(uid) -> str:
+    return (f"⛔ Это закрытый бот компании. У вас нет доступа.\n"
+            f"Ваш ID: {uid} — если вам нужен доступ, передайте его администратору.")
+
+
 def deny(ctx: Ctx, key: str) -> None:
     ctx.show(f"Роль «{config.ROLE_LABELS.get(key, key)}» выдаёт администратор бота.\n"
              f"Ваш ID: {ctx.uid} — передайте его администратору.\n\nПока можно выбрать другую роль, "
-             "если она вам доступна:", role_rows(), "Нет доступа")
+             "если она вам доступна:", role_rows(ctx.uid), "Нет доступа")
 
 
-def role_rows() -> list:
-    return [[cb("👔 Менеджер", "role:manager")],
-            [cb("🚚 Курьер", "role:courier")],
-            [cb("🏭 Отдел производства", "role:prod")]]
+def role_rows(uid=None) -> list:
+    """Кнопки ролей; если известен человек — только те, что ему доступны."""
+    rows = [(("manager", "👔 Менеджер")), ("courier", "🚚 Курьер"), ("prod", "🏭 Отдел производства")]
+    return [[cb(label, f"role:{key}")] for key, label in rows if uid is None or allowed(uid, key)]
 
 
 def role_choice(ctx: Ctx, intro: str = "", notification=None) -> None:
     text = (intro + "\n\n" if intro else "") + "Кто вы? Выберите роль:"
-    ctx.show(text, role_rows(), notification)
+    ctx.show(text, role_rows(ctx.uid), notification)
 
 
 def home(ctx: Ctx, notification=None) -> None:
@@ -387,6 +397,8 @@ def handle_callback(u: dict) -> None:
     if not cid or not uid:
         return
     user = cbk.get("user") or {}
+    if not known(uid):
+        return mx.answer(cid, notification="Нет доступа")
     name = user.get("name") or user.get("first_name") or ""
     msg = u.get("message") or cbk.get("message") or {}
     mid = (msg.get("body") or {}).get("mid")
@@ -551,6 +563,9 @@ def handle_message(u: dict) -> None:
 
     if cmd == "/id":
         return mx.send(reply_to, f"Ваш ID: {sender_id}")
+
+    if not in_group and not known(sender_id):
+        return mx.send(reply_to, no_access_text(sender_id))  # чужим — только отказ и их ID
 
     ctx = None if in_group else Ctx(sender_id)
 
@@ -723,7 +738,9 @@ def handle_update(u: dict) -> None:
         handle_message(u)
     elif kind == "bot_started":
         uid = (u.get("user") or {}).get("user_id")
-        if uid:
+        if uid and not known(uid):
+            mx.send({"type": "user", "id": uid}, no_access_text(uid))
+        elif uid:
             ctx = Ctx(uid)
             if uid in users:
                 home(ctx)
