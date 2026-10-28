@@ -95,8 +95,7 @@ def format_order(o: dict) -> str:
     items = []
     for it in o.get("items") or []:
         art = it.get("offerId") or it.get("shopSku") or ""
-        code = logic.order_code({"article": art, "size": "", "color": ""})
-        name = logic.code_name(code) if code else (it.get("offerName") or art or "товар")
+        name = logic.article_name(art, it.get("offerName") or "")
         items.append(f"{name} ×{it.get('count', 1)}")
     shipments = d.get("shipments") or []
     ship = short_date(shipments[0].get("shipmentDate")) if shipments else "—"

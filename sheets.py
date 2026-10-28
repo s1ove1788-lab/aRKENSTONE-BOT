@@ -254,3 +254,13 @@ def set_shipment_cell(row: int, value: str) -> None:
     """Вписывает номер отгрузки в столбец «Отгрузка / телефон» уже существующей строки."""
     orders_ws().update(values=[[value]], range_name=f"J{row}", value_input_option="RAW")
     _invalidate()
+
+
+# ------------------------------------------------------------------ Озон
+def oz_seen() -> set:
+    return {v[0].strip() for v in _tab(config.OZON_TAB, MARKET_HEADERS).get_all_values()[1:] if v and v[0].strip()}
+
+
+def oz_add(rows: list) -> None:
+    if rows:
+        _tab(config.OZON_TAB, MARKET_HEADERS).append_rows(rows, value_input_option="RAW")

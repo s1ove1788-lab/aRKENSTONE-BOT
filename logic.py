@@ -258,3 +258,12 @@ def ship_text(today: date, plan: dict, shipped: dict, results=None) -> str:
               "160/30 ч — одна чёрная; 180/30 б 2 — две белых.",
               "Несколько позиций — каждая с новой строки."]
     return "\n".join(lines)
+
+
+def article_name(article: str, fallback: str = "") -> str:
+    """'01.35.140.200.04' -> '140/35 чёрная' (ширина/высота ножек и цвет из артикула)."""
+    a = parse_article(article)
+    if not a:
+        return fallback or article or "товар"
+    color = {"04": "чёрная", "06": "белая"}.get(a["color_code"], a["color_code"])
+    return f"{a['width']}/{a['legs']} {color}"

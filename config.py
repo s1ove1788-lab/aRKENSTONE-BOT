@@ -25,6 +25,9 @@ CREDS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 # Либо содержимое credentials.json целиком (для хостингов), либо то же в base64
 CREDS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
 
+OZ_CLIENT_ID = os.getenv("OZON_CLIENT_ID", "").strip()  # Озон: Client-Id и ключ API (только чтение)
+OZ_API_KEY = os.getenv("OZON_API_KEY", "").strip()
+OZ_WATCH = os.getenv("OZ_WATCH", "1").strip().lower() not in ("0", "false", "no", "нет")
 YM_TOKEN = os.getenv("YANDEX_MARKET_TOKEN", "").strip()  # Яндекс Маркет, токен только на чтение
 YM_WATCH = os.getenv("YM_WATCH", "1").strip().lower() not in ("0", "false", "no", "нет")  # следить за заказами
 YM_AUTOADD = os.getenv("YM_AUTOADD", "1").strip().lower() not in ("0", "false", "no", "нет")  # писать СГТ-заказы в таблицу
@@ -46,6 +49,7 @@ USERS_TAB = "Пользователи"
 GROUPS_TAB = "Подписчики"
 STOCK_TAB = "Остатки"
 SHIP_TAB = "Отгрузки"
+OZON_TAB = "Озон"  # какие отправления Озона уже видели
 MARKET_TAB = "Маркет"  # запоминаем, какие заказы Маркета уже видели
 
 # «Чистый чат»: бот правит одно сообщение-меню и пытается удалять сообщения пользователей.

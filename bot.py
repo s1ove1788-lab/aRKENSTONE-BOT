@@ -20,6 +20,7 @@ import max_client as mx
 import sheets
 import ym
 import ym_watch
+import oz
 from max_client import cb, link
 from pdf_parser import parse_pdf
 
@@ -376,6 +377,27 @@ def notify_all(new: list, who: str, skip_uid=None) -> None:
 ym_state = {"last": 0.0, "fails": 0}
 
 
+oz_state = {"last": 0.0, "fails": 0}
+
+
+def ozon_check():
+    """Один проход слежения за Озоном. None — если не получилось."""
+    try:
+        res = oz.poll(broadcast)
+        oz_state["fails"] = 0
+        return res
+    except Exception:
+        log.exception("Ошибка проверки Озона")
+        oz_state["fails"] += 1
+        if oz_state["fails"] == 3:
+            for uid, u in list(users.items()):
+                if u["role"] == "manager":
+                    mx.send({"type": "user", "id": uid},
+                            "⚠️ Не получается получить заказы с Озона (3 проверки подряд). "
+                            "Возможно, ключ отозван или у Озона сбой. Подробности в логах бота.")
+        return None
+
+
 def market_check():
     """Один проход слежения за Маркетом. None — если не получилось."""
     try:
@@ -520,6 +542,32 @@ def handle_message(u: dict) -> None:
             mx.send(reply_to, p)
         return
 
+    if cmd in ("/oz", "/oznow"):  # Озон: разведка / проверка сейчас (только менеджер)
+        if sender_id not in config.MANAGER_IDS:
+            return ctx.show("Команда только для менеджера.", [MENU_BTN])
+        if not (config.OZ_CLIENT_ID and config.OZ_API_KEY):
+            return ctx.show("Не заданы переменные OZON_CLIENT_ID и OZON_API_KEY в настройках бота.", [MENU_BTN])
+        if cmd == "/oz":
+            ctx.show("Запрашиваю данные Озона…", [MENU_BTN])
+            try:
+                parts = oz.discovery()
+            except Exception:
+                log.exception("Ошибка запроса к Озону")
+                parts = ["⚠️ Не получилось связаться с Озоном, подробности в логах."]
+            for p in parts:
+                mx.send(reply_to, p)
+            return
+        ctx.show("Проверяю Озон…", [MENU_BTN])
+        res = ozon_check()
+        if res is None:
+            return ctx.show("⚠️ Не получилось проверить Озон. Выполните /oz, чтобы увидеть ответ Озона.", [MENU_BTN])
+        text = f"Проверил Озон: необработанных отправлений — {res['total']}, новых — {res['new']}."
+        if res["baseline"]:
+            text += "\nЭто первый запуск: текущие отправления запомнил без уведомлений, о новых скажу сразу."
+        if res["sample"] and not res["new"]:
+            text += "\n\nТак будет выглядеть уведомление (последнее отправление):\n" + res["sample"]
+        return ctx.show(text, [MENU_BTN])
+
     if cmd == "/ymnow":  # проверить Маркет прямо сейчас (только менеджер)
         if sender_id not in config.MANAGER_IDS:
             return ctx.show("Команда только для менеджера.", [MENU_BTN])
@@ -625,12 +673,18 @@ def main() -> None:
     last_reload = time.time()
 
     marker = load_marker()
+    if config.OZ_CLIENT_ID and config.OZ_API_KEY and config.OZ_WATCH:
+        log.info("Слежение за Озоном включено: проверка раз в %d мин.", config.YM_POLL_MINUTES)
     if config.YM_TOKEN and config.YM_WATCH:
         log.info("Слежение за Яндекс Маркетом включено: проверка раз в %d мин.", config.YM_POLL_MINUTES)
     elif config.YM_TOKEN:
         log.info("Слежение за Яндекс Маркетом выключено (YM_WATCH=0)")
     import requests  # локально, чтобы не тащить наверх ради одного except
     while True:
+        if (config.OZ_CLIENT_ID and config.OZ_API_KEY and config.OZ_WATCH
+                and time.time() - oz_state["last"] >= config.YM_POLL_MINUTES * 60):
+            oz_state["last"] = time.time()
+            ozon_check()
         if config.YM_TOKEN and config.YM_WATCH and time.time() - ym_state["last"] >= config.YM_POLL_MINUTES * 60:
             ym_state["last"] = time.time()
             market_check()
