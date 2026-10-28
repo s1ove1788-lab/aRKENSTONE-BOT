@@ -41,35 +41,37 @@ def mask(obj, key: str = ""):
 
 
 # --------------------------------------------------------------- запросы
-def fetch_unfulfilled(limit: int = 100, max_pages: int = 10) -> list:
-    """Отправления FBS/rFBS, которые ещё не доставлены: ждут сборки и ждут отгрузки.
-    Метод /v4/posting/fbs/list с курсором (v3 Озон отключил, отдаёт 404). Бросает исключение при ошибке.
-    Поля запроса написаны по описаниям из сети, не проверены на вашем кабинете: при 400 Озон сам назовёт ошибку."""
+ACTIVE_STATUSES = {"awaiting_registration", "acceptance_in_progress", "awaiting_approve",
+                   "awaiting_packaging", "awaiting_deliver"}  # ещё не отгружены
+
+
+def fetch_unfulfilled(limit: int = 100, max_pages: int = 10, only_active: bool = True) -> list:
+    """Отправления FBS/rFBS за последние 30 дней и ближайшие 30. Метод /v4/posting/fbs/list с курсором
+    (v3 Озон отключил). Фильтр по статусу в запросе Озон игнорирует, поэтому активные (ещё не отгруженные)
+    отбираем сами. Бросает исключение при ошибке."""
     now = datetime.now(timezone.utc)
     fmt = "%Y-%m-%dT%H:%M:%SZ"
-    out, seen = [], set()
-    for status in ("awaiting_packaging", "awaiting_deliver"):
-        cursor = ""
-        for _ in range(max_pages):
-            body = {"sort_dir": "ASC", "limit": limit, "cursor": cursor,
-                    "filter": {"since": (now - timedelta(days=30)).strftime(fmt),
-                               "to": (now + timedelta(days=30)).strftime(fmt),
-                               "status": status},
-                    "with": {"analytics_data": True}}
-            r = _post("/v4/posting/fbs/list", body)
-            if r.status_code != 200:
-                raise RuntimeError(f"Озон ответил {r.status_code}: {r.text[:300]}")
-            data = r.json()
-            res = data.get("result") if isinstance(data.get("result"), dict) else data
-            part = res.get("postings") or []
-            for p in part:
-                num = str(p.get("posting_number"))
-                if num not in seen:
-                    seen.add(num)
-                    out.append(p)
-            cursor = res.get("cursor") or ""
-            if not res.get("has_next") or not cursor or not part:
-                break
+    out, seen, cursor = [], set(), ""
+    for _ in range(max_pages):
+        body = {"sort_dir": "ASC", "limit": limit, "cursor": cursor,
+                "filter": {"since": (now - timedelta(days=30)).strftime(fmt),
+                           "to": (now + timedelta(days=30)).strftime(fmt)},
+                "with": {"analytics_data": True}}
+        r = _post("/v4/posting/fbs/list", body)
+        if r.status_code != 200:
+            raise RuntimeError(f"Озон ответил {r.status_code}: {r.text[:300]}")
+        data = r.json()
+        res = data.get("result") if isinstance(data.get("result"), dict) else data
+        part = res.get("postings") or []
+        for p in part:
+            num = str(p.get("posting_number"))
+            if num in seen or (only_active and p.get("status") not in ACTIVE_STATUSES):
+                continue
+            seen.add(num)
+            out.append(p)
+        cursor = res.get("cursor") or ""
+        if not res.get("has_next") or not cursor or not part:
+            break
     return out
 
 
@@ -92,10 +94,11 @@ def region_text(p: dict) -> str:
 
 
 def channel_guess(p: dict) -> str:
-    """Предположение: доставка по Санкт-Петербургу — ваша («ОЗ»), остальные регионы — через ПЭК («ПЭК»)."""
+    """Перевозчик ПЭК (по данным Озона) → «ПЭК», иначе доставка по городу своя → «ОЗ»."""
+    dm = p.get("delivery_method") or {}
     a = p.get("analytics_data") or {}
-    place = f"{a.get('city') or ''} {a.get('region') or ''}".lower().replace("ё", "е")
-    return "ОЗ" if "санкт-петербург" in place else "ПЭК"
+    prov = f"{dm.get('tpl_provider') or ''} {a.get('tpl_provider') or ''} {dm.get('name') or ''}".lower()
+    return "ПЭК" if "пэк" in prov else "ОЗ"
 
 
 def format_posting(p: dict) -> str:
@@ -122,17 +125,18 @@ def build_message(found: list) -> str:
 def discovery() -> list:
     """Сообщения для /oz: сколько отправлений, по статусам, и по два примера с закрытыми персональными данными."""
     try:
-        postings = fetch_unfulfilled()
+        postings = fetch_unfulfilled(only_active=False)
+        postings.sort(key=lambda p: p.get("status") not in ACTIVE_STATUSES)
     except Exception as e:
         log.warning("Разведка Озона: %s", e)
         return [f"⚠️ {e}"]
     if not postings:
-        return ["Озон ответил без ошибок, но необработанных отправлений сейчас нет."]
+        return ["Озон ответил без ошибок, но отправлений за этот период нет."]
     by_status: dict = {}
     for p in postings:
         by_status[p.get("status")] = by_status.get(p.get("status"), 0) + 1
-    out = ["Озон: необработанных отправлений — %d\n%s" % (
-        len(postings), "\n".join(f"• {s}: {n}" for s, n in sorted(by_status.items(), key=lambda x: str(x[0]))))]
+    out = ["Озон: отправлений за период — %d (ещё не отгружены: %d)\n%s" % (
+        len(postings), sum(1 for p in postings if p.get("status") in ACTIVE_STATUSES), "\n".join(f"• {s}: {n}" for s, n in sorted(by_status.items(), key=lambda x: str(x[0]))))]
     text = json.dumps(mask(postings[:2]), ensure_ascii=False, indent=1)
     out.append("Примеры (имена, телефоны и адреса скрыты):\n" + (text if len(text) < 3300 else text[:3300] + "\n… (обрезано)"))
     return out
