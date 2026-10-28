@@ -42,24 +42,32 @@ def mask(obj, key: str = ""):
 
 # --------------------------------------------------------------- запросы
 def fetch_unfulfilled(limit: int = 100, max_pages: int = 10) -> list:
-    """Необработанные отправления FBS (ожидают сборки и отгрузки). Бросает исключение при ошибке."""
+    """Отправления FBS/rFBS, которые ещё не доставлены: ждут сборки и ждут отгрузки.
+    Метод /v3/posting/fbs/list (старый /unfulfilled/list Озон отдаёт 404). Бросает исключение при ошибке."""
     now = datetime.now(timezone.utc)
     fmt = "%Y-%m-%dT%H:%M:%SZ"
-    out, offset = [], 0
-    for _ in range(max_pages):
-        body = {"dir": "ASC", "limit": limit, "offset": offset,
-                "filter": {"cutoff_from": (now - timedelta(days=30)).strftime(fmt),
-                           "cutoff_to": (now + timedelta(days=60)).strftime(fmt)},
-                "with": {"analytics_data": True}}
-        r = _post("/v3/posting/fbs/unfulfilled/list", body)
-        if r.status_code != 200:
-            raise RuntimeError(f"Озон ответил {r.status_code}: {r.text[:300]}")
-        res = r.json().get("result") or {}
-        part = res.get("postings") or []
-        out += part
-        if len(part) < limit:
-            break
-        offset += limit
+    out, seen = [], set()
+    for status in ("awaiting_packaging", "awaiting_deliver"):
+        offset = 0
+        for _ in range(max_pages):
+            body = {"dir": "ASC", "limit": limit, "offset": offset,
+                    "filter": {"since": (now - timedelta(days=30)).strftime(fmt),
+                               "to": (now + timedelta(days=30)).strftime(fmt),
+                               "status": status},
+                    "with": {"analytics_data": True}}
+            r = _post("/v3/posting/fbs/list", body)
+            if r.status_code != 200:
+                raise RuntimeError(f"Озон ответил {r.status_code}: {r.text[:300]}")
+            res = r.json().get("result") or {}
+            part = res.get("postings") or []
+            for p in part:
+                num = str(p.get("posting_number"))
+                if num not in seen:
+                    seen.add(num)
+                    out.append(p)
+            if not res.get("has_next") and len(part) < limit:
+                break
+            offset += limit
     return out
 
 
@@ -81,13 +89,20 @@ def region_text(p: dict) -> str:
     return region or city or "—"
 
 
+def channel_guess(p: dict) -> str:
+    """Предположение: доставка по Санкт-Петербургу — ваша («ОЗ»), остальные регионы — через ПЭК («ПЭК»)."""
+    a = p.get("analytics_data") or {}
+    place = f"{a.get('city') or ''} {a.get('region') or ''}".lower().replace("ё", "е")
+    return "ОЗ" if "санкт-петербург" in place else "ПЭК"
+
+
 def format_posting(p: dict) -> str:
     items = []
     for it in p.get("products") or []:
         name = logic.article_name(it.get("offer_id") or "", it.get("name") or "")
         items.append(f"{name} ×{it.get('quantity', 1)}")
     method = ((p.get("delivery_method") or {}).get("name") or "").strip()
-    return (f"№ {p.get('posting_number')} · Озон\n"
+    return (f"№ {p.get('posting_number')} · {channel_guess(p)}\n"
             f"{', '.join(items) or 'товары не указаны'}\n"
             f"{region_text(p)}\n"
             f"Отгрузка до {_date(p.get('shipment_date'))}" + (f" · {method}" if method else ""))
