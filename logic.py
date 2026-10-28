@@ -208,9 +208,10 @@ def production_plan(orders: list, today: date) -> str:
         return f"📋 План производства (на {today:%d.%m})\n\nБудущих доставок нет."
     lines = [f"📋 План производства (на {today:%d.%m})", ""]
     for (_, label), cnt in sorted(buckets.items(), key=lambda kv: (kv[0][0], kv[0][1])):
-        parts = ", ".join(f"{name} ×{n}" for name, n in sorted(cnt.items()))
-        lines.append(f"{label} — {parts}")
-    lines += ["", f"Всего: {total} шт."]
+        lines.append(f"📅 {label} — {sum(cnt.values())} шт.")
+        lines += [f"• {name} ×{n}" for name, n in sorted(cnt.items())]
+        lines.append("")
+    lines.append(f"Всего: {total} шт.")
     return "\n".join(lines)
 
 
