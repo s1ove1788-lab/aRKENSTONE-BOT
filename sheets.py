@@ -37,17 +37,27 @@ def _now_str() -> str:
 
 
 # ---------------------------------------------------------------- доступ
-def get_book():
-    global _book
-    if _book is None:
+_gc = None
+
+
+def get_client():
+    """Один клиент Google на весь бот (нужен и для основной таблицы, и для таблицы стоимости доставок)."""
+    global _gc
+    if _gc is None:
         if config.CREDS_JSON:
             raw = config.CREDS_JSON
             if not raw.startswith("{"):
                 raw = base64.b64decode(raw).decode("utf-8")
-            gc = gspread.service_account_from_dict(json.loads(raw))
+            _gc = gspread.service_account_from_dict(json.loads(raw))
         else:
-            gc = gspread.service_account(filename=config.CREDS_FILE)
-        _book = gc.open_by_key(config.SHEET_ID)
+            _gc = gspread.service_account(filename=config.CREDS_FILE)
+    return _gc
+
+
+def get_book():
+    global _book
+    if _book is None:
+        _book = get_client().open_by_key(config.SHEET_ID)
     return _book
 
 

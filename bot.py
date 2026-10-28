@@ -17,6 +17,7 @@ from zoneinfo import ZoneInfo
 import config
 import logic
 import ai
+import costs
 import max_client as mx
 import sheets
 import ym
@@ -293,6 +294,10 @@ def courier(ctx: Ctx, payload: str) -> None:
             record_shipments(marked, (users.get(ctx.uid) or {}).get("name") or "курьер", today)
         except Exception:
             log.exception("Не смог записать отгрузку в таблицу отгрузок")
+        try:
+            costs.record(marked, today)
+        except Exception:
+            log.exception("Не смог записать стоимость доставки")
         return back(ctx, today, "✅ Записано: доставлено")
     return back(ctx, today, "Оставлено в списке")
 

@@ -30,6 +30,22 @@ CREDS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
 OZ_CLIENT_ID = os.getenv("OZON_CLIENT_ID", "").strip()  # Озон: Client-Id и ключ API (только чтение)
 OZ_API_KEY = os.getenv("OZON_API_KEY", "").strip()
 OZ_WATCH = os.getenv("OZ_WATCH", "1").strip().lower() not in ("0", "false", "no", "нет")
+COST_SHEET_ID = os.getenv("COST_SHEET_ID", "").strip().strip("\"'")  # отдельная закрытая таблица стоимости доставок
+if "/d/" in COST_SHEET_ID:
+    COST_SHEET_ID = COST_SHEET_ID.split("/d/")[1].split("/")[0]
+
+
+def _int_env(name: str, default: int) -> int:
+    try:
+        return int(float(os.getenv(name, "").replace(",", ".").strip() or default))
+    except ValueError:
+        return default
+
+
+COST_CITY = _int_env("COST_CITY", 2550)      # первая доставка за день по городу, ₽
+COST_CITY_EXTRA = _int_env("COST_CITY_EXTRA", 550)  # город: каждая следующая кровать на тот же адрес, ₽
+COST_RUSSIA = _int_env("COST_RUSSIA", 2800)  # первая доставка за день: ЯМ СГТ, ПЭК, ВБ КГТ, ₽
+COST_EXTRA = _int_env("COST_EXTRA", 600)     # каждая следующая кровать того же типа в тот же день, ₽
 AI_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()  # ИИ-помощник в боте (необязательно)
 AI_MODEL = os.getenv("AI_MODEL", "claude-sonnet-5-5").strip()
 AI_ROLES = {x.strip() for x in os.getenv("AI_ROLES", "manager").split(",") if x.strip()}  # у кого есть кнопка
