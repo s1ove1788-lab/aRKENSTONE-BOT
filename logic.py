@@ -254,7 +254,10 @@ def _parse_ship_line(line: str) -> dict:
     if not m:
         return {"line": line, "error": "не нашёл размер (например: 160/30 ч)"}
     width = int(m.group(1))
-    after = re.sub(r"^\s*[/\\x×*\-]?\s*30(?!\d)", "", s[m.end():], count=1)  # «/30» — высота
+    # число сразу после ширины — высота ножек (25, 30 или 35), а не количество: «140 35 ч» = 140/35 чёрная
+    lm = re.match(r"\s*[/\\xх×*\-]?\s*(25|30|35)(?!\d)", s[m.end():])
+    legs = lm.group(1) if lm else ""
+    after = s[m.end() + lm.end():] if lm else s[m.end():]
     rest = s[:m.start()] + " " + after
     color = None
     for w in re.findall(r"[а-я]+", rest):
@@ -275,7 +278,7 @@ def _parse_ship_line(line: str) -> dict:
     qty = int(nums[0]) if nums else 1
     if not 1 <= qty <= 999:
         return {"line": line, "error": "странное количество"}
-    return {"line": line, "code": f"{width}.{color}", "qty": qty}
+    return {"line": line, "code": f"{width}.{color}", "qty": qty, "legs": legs}
 
 
 def parse_shipments(text: str) -> list:
@@ -297,7 +300,7 @@ def ship_text(today: date, plan: dict, shipped: dict, results=None) -> str:
     if results:
         lines += ["", *results]
     lines += ["", "Пришлите сообщением, что отгрузили:",
-              "160/30 ч — одна чёрная; 180/30 б 2 — две белых.",
+              "160/30 ч — одна чёрная; 180/35 б 2 — две белых (ножки 25, 30 или 35).",
               "Несколько позиций — каждая с новой строки."]
     return "\n".join(lines)
 

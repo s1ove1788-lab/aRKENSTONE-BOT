@@ -365,7 +365,8 @@ def save_shipments_from_text(ctx: Ctx, name: str, text: str) -> None:
         if after is not None:
             sheets.add_stock(code, after, f"{name} (отгрузка)")
             stock[code] = (after, "")
-        lines.append(f"✅ {logic.code_name(code)} ×{qty} — {note}")
+        legs = f" (ножки {it['legs']})" if it.get("legs") else ""
+        lines.append(f"✅ {logic.code_name(code)}{legs} ×{qty} — {note}")
     ship_screen(ctx, lines or ["Не понял сообщение. Пример: 160/30 ч"])
 
 
