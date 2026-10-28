@@ -20,6 +20,8 @@ def _parse_ids(raw: str) -> set:
 TOKEN = (os.getenv("MAX_BOT_TOKEN") or os.getenv("BOT_TOKEN") or "").strip()
 API = os.getenv("MAX_API_BASE", "https://platform-api.max.ru").rstrip("/")
 MANAGER_IDS = _parse_ids(os.getenv("MANAGER_IDS", ""))
+COURIER_IDS = _parse_ids(os.getenv("COURIER_IDS", ""))  # кто может быть курьером (ID через запятую)
+PROD_IDS = _parse_ids(os.getenv("PROD_IDS", ""))        # кто может быть в отделе производства
 
 CREDS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 # Либо содержимое credentials.json целиком (для хостингов), либо то же в base64
@@ -28,6 +30,9 @@ CREDS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
 OZ_CLIENT_ID = os.getenv("OZON_CLIENT_ID", "").strip()  # Озон: Client-Id и ключ API (только чтение)
 OZ_API_KEY = os.getenv("OZON_API_KEY", "").strip()
 OZ_WATCH = os.getenv("OZ_WATCH", "1").strip().lower() not in ("0", "false", "no", "нет")
+AI_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()  # ИИ-помощник в боте (необязательно)
+AI_MODEL = os.getenv("AI_MODEL", "claude-sonnet-5-5").strip()
+AI_ROLES = {x.strip() for x in os.getenv("AI_ROLES", "manager").split(",") if x.strip()}  # у кого есть кнопка
 YM_TOKEN = os.getenv("YANDEX_MARKET_TOKEN", "").strip()  # Яндекс Маркет, токен только на чтение
 YM_WATCH = os.getenv("YM_WATCH", "1").strip().lower() not in ("0", "false", "no", "нет")  # следить за заказами
 YM_AUTOADD = os.getenv("YM_AUTOADD", "1").strip().lower() not in ("0", "false", "no", "нет")  # писать СГТ-заказы в таблицу

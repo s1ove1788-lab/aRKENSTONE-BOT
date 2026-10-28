@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 
 import config
 import logic
+import ai
 import max_client as mx
 import sheets
 import ym
@@ -72,6 +73,18 @@ CHANGE_ROLE = [cb("🔁 Сменить роль", "role:change")]
 MENU_BTN = [cb("🏠 Меню", "menu")]
 
 
+def allowed(uid: int, role: str) -> bool:
+    """Роль доступна только тем, чей ID записан в настройках (MANAGER_IDS / COURIER_IDS / PROD_IDS)."""
+    ids = {"manager": config.MANAGER_IDS, "courier": config.COURIER_IDS, "prod": config.PROD_IDS}.get(role)
+    return ids is not None and uid in ids
+
+
+def deny(ctx: Ctx, key: str) -> None:
+    ctx.show(f"Роль «{config.ROLE_LABELS.get(key, key)}» выдаёт администратор бота.\n"
+             f"Ваш ID: {ctx.uid} — передайте его администратору.\n\nПока можно выбрать другую роль, "
+             "если она вам доступна:", role_rows(), "Нет доступа")
+
+
 def role_rows() -> list:
     return [[cb("👔 Менеджер", "role:manager")],
             [cb("🚚 Курьер", "role:courier")],
@@ -85,6 +98,9 @@ def role_choice(ctx: Ctx, intro: str = "", notification=None) -> None:
 
 def home(ctx: Ctx, notification=None) -> None:
     user = users.get(ctx.uid)
+    if user and not allowed(ctx.uid, user["role"]):
+        users.pop(ctx.uid, None)  # доступ убрали из настроек — роль больше не действует
+        return deny(ctx, user["role"])
     if not user:
         return role_choice(ctx, notification=notification)
     role = user["role"]
@@ -105,7 +121,41 @@ def home(ctx: Ctx, notification=None) -> None:
         rows = [[cb("📋 План производства", "p:plan")], [cb("📤 Отгрузка", "p:ship")],
                 [cb("📦 Остатки", "p:stock")], CHANGE_ROLE]
         text = "🏭 Меню производства"
+    if config.AI_KEY and role in config.AI_ROLES:
+        rows.insert(len(rows) - 1, [cb("💬 ИИ-помощник", "ai:start")])  # перед «Сменить роль»
     ctx.show(text, rows, notification)
+
+
+# ----------------------------------------------------------------- ИИ-помощник
+AI_STOP = [[cb("⬅️ Закончить разговор", "ai:end")]]
+
+
+def ai_start(ctx: Ctx) -> None:
+    ai.reset(ctx.uid)
+    pending[ctx.uid] = ("ai", None)
+    ctx.show("💬 ИИ-помощник\n\nПросто напишите вопрос обычным текстом, например:\n"
+             "• что везём завтра по России?\n"
+             "• сколько заказов 160 чёрных в работе?\n"
+             "• каких остатков не хватает под заказы?\n\n"
+             "Я только читаю таблицу и ничего не меняю.", AI_STOP)
+
+
+def ai_end(ctx: Ctx) -> None:
+    ai.reset(ctx.uid)
+    pending.pop(ctx.uid, None)
+    home(ctx)
+
+
+def ai_answer(ctx: Ctx, question: str) -> None:
+    ctx.show("⏳ Думаю…", AI_STOP)
+    try:
+        answer = ai.ask(ctx.uid, question, sheets.read_orders(force=True), sheets.latest_stock(), now_date())
+    except RuntimeError as e:
+        return ctx.show(f"⚠️ {e}", AI_STOP)
+    except Exception:
+        log.exception("Ошибка ИИ-помощника")
+        return ctx.show("⚠️ Что-то пошло не так, попробуйте ещё раз.", AI_STOP)
+    ctx.show(answer, AI_STOP)
 
 
 def choose_role(ctx: Ctx, name: str, key: str) -> None:
@@ -113,10 +163,8 @@ def choose_role(ctx: Ctx, name: str, key: str) -> None:
         return role_choice(ctx)
     if key not in config.ROLE_LABELS:
         return
-    if key == "manager" and ctx.uid not in config.MANAGER_IDS:
-        return ctx.show(
-            f"Роль менеджера выдаёт администратор бота.\nВаш ID: {ctx.uid} — передайте его администратору.\n\n"
-            "Пока можно выбрать другую роль:", role_rows(), "Нет доступа")
+    if not allowed(ctx.uid, key):
+        return deny(ctx, key)
     users[ctx.uid] = {"name": name, "role": key}
     pending.pop(ctx.uid, None)
     try:
@@ -328,9 +376,15 @@ def on_payload(ctx: Ctx, name: str, payload: str) -> None:
     user = users.get(ctx.uid)
     if not user:
         return role_choice(ctx)
+    if not allowed(ctx.uid, user["role"]):
+        users.pop(ctx.uid, None)
+        return deny(ctx, user["role"])
     if payload == "menu":
         pending.pop(ctx.uid, None)
+        ai.reset(ctx.uid)
         return home(ctx)
+    if payload in ("ai:start", "ai:end") and config.AI_KEY and user["role"] in config.AI_ROLES:
+        return ai_start(ctx) if payload == "ai:start" else ai_end(ctx)
     if payload.startswith("c:") and user["role"] == "courier":
         return courier(ctx, payload)
     if payload.startswith("p:"):
@@ -398,7 +452,7 @@ def clear_all() -> tuple:
 def broadcast(text: str, skip_uid=None) -> None:
     """Рассылает текст всем, кто зарегистрирован (роли из NOTIFY_ROLES), и в подписанные группы."""
     for uid, u in list(users.items()):
-        if u["role"] not in config.NOTIFY_ROLES:
+        if u["role"] not in config.NOTIFY_ROLES or not allowed(uid, u["role"]):
             continue
         mx.send({"type": "user", "id": uid}, text)
         if config.CLEAN_CHAT and uid != skip_uid and uid not in pending:
@@ -656,6 +710,7 @@ def handle_message(u: dict) -> None:
         return role_choice(ctx)
     if cmd in ("/start", "/menu"):
         pending.pop(sender_id, None)
+        ai.reset(sender_id)
         if sender_id in users:
             return home(ctx)
         return role_choice(ctx, "Привет! Я бот заказов.")
@@ -663,6 +718,8 @@ def handle_message(u: dict) -> None:
     mode = pending.get(sender_id)
     if mode and raw and not cmd:
         try:
+            if mode[0] == "ai":
+                return ai_answer(ctx, raw)
             if mode[0] == "ship":
                 return save_shipments_from_text(ctx, name, raw)
             return save_stock_from_text(ctx, name, raw)
@@ -693,7 +750,7 @@ def handle_update(u: dict) -> None:
 # ------------------------------------------------------------------- запуск
 def reload_directory() -> None:
     users.clear()
-    users.update(sheets.load_users())
+    users.update({uid: u for uid, u in sheets.load_users().items() if allowed(uid, u["role"])})
     groups[:] = sheets.load_groups()
     log.info("Пользователей: %d, групп: %d", len(users), len(groups))
 
@@ -715,6 +772,9 @@ def save_marker(marker) -> None:
 
 def main() -> None:
     config.check()
+    for key, ids, var in (("курьер", config.COURIER_IDS, "COURIER_IDS"), ("производство", config.PROD_IDS, "PROD_IDS")):
+        if not ids:
+            log.warning("%s пуст: роль «%s» никому не доступна. Впишите ID сотрудников (число из команды /id).", var, key)
     if not config.MANAGER_IDS:
         log.warning("MANAGER_IDS пуст: никто не сможет стать менеджером и загружать PDF. "
                     "Напишите боту /id и впишите свой ID в настройки.")
