@@ -119,6 +119,63 @@ def read_orders(force: bool = False) -> list:
     return rows
 
 
+# ------------------------------------------------------------- цвета строк
+GREEN = {"red": 0.0, "green": 1.0, "blue": 0.0}      # доставлен
+YELLOW = {"red": 1.0, "green": 1.0, "blue": 0.0}     # ещё не доставлен
+RED = {"red": 1.0, "green": 0.3, "blue": 0.3}        # отмена или возврат
+WHITE = {"red": 1.0, "green": 1.0, "blue": 1.0}
+_colored: dict = {}  # номер строки -> (номер заказа, цвет), чтобы не перекрашивать лишний раз
+
+
+def color_for(status: str):
+    """Цвет строки по столбцу «Статус»: пусто — жёлтый, «Доставлен…» — зелёный, «Отмена/Возврат» — красный."""
+    st = (status or "").strip().lower().replace("ё", "е")
+    if not st:
+        return "yellow", YELLOW
+    if "отмен" in st or "возврат" in st:
+        return "red", RED
+    if st.startswith("доставлен"):
+        return "green", GREEN
+    return None
+
+
+def sync_colors() -> int:
+    """Закрашивает строки заказов по статусу (зелёный / жёлтый / красный). Возвращает, сколько строк перекрашено.
+    Работает и для ручных пометок менеджера («Отмена», «Возврат»): вызывается после изменений и раз в 5 минут."""
+    ws = orders_ws()
+    todo: list = []  # (строка, имя цвета, цвет)
+    seen_rows = set()
+    for r in read_orders(force=True):
+        seen_rows.add(r["row"])
+        c = color_for(r["status"])
+        name, rgb = c if c else ("none", WHITE)
+        if c is None and r["row"] not in _colored:
+            continue  # незнакомый статус и мы эту строку не красили — не трогаем
+        if _colored.get(r["row"]) != (r["order_no"], name):
+            todo.append((r["row"], r["order_no"], name, rgb))
+    if not todo:
+        return 0
+    requests = []
+    for row, _, _, rgb in todo:
+        requests.append({"repeatCell": {
+            "range": {"sheetId": ws.id, "startRowIndex": row - 1, "endRowIndex": row,
+                      "startColumnIndex": 0, "endColumnIndex": len(HEADERS)},
+            "cell": {"userEnteredFormat": {"backgroundColor": rgb}},
+            "fields": "userEnteredFormat.backgroundColor"}})
+    for i in range(0, len(requests), 200):
+        get_book().batch_update({"requests": requests[i:i + 200]})
+    for row, order_no, name, _ in todo:
+        _colored[row] = (order_no, name)
+    return len(todo)
+
+
+def safe_sync_colors() -> None:
+    try:
+        sync_colors()
+    except Exception:
+        log.exception("Не смог закрасить строки таблицы заказов")
+
+
 def _invalidate() -> None:
     _cache["rows"] = None
 
@@ -134,6 +191,7 @@ def add_orders(orders: list) -> list:
         # RAW — чтобы длинные номера и телефоны не превращались в числа
         orders_ws().append_rows(rows, value_input_option="RAW")
         _invalidate()
+        safe_sync_colors()
     return new
 
 
@@ -150,6 +208,7 @@ def mark_delivered(order_nos: list) -> list:
             value_input_option="RAW",
         )
         _invalidate()
+        safe_sync_colors()
     return marked  # только те, что отмечены сейчас (повторное нажатие ничего не вернёт)
 
 

@@ -856,6 +856,7 @@ def main() -> None:
 
         if time.time() - last_reload > RELOAD_EVERY:
             last_reload = time.time()
+            sheets.safe_sync_colors()  # подхватываем ручные пометки менеджера («Отмена», «Возврат»)
             try:
                 reload_directory()
             except Exception:
