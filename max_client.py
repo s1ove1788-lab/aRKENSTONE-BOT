@@ -197,7 +197,7 @@ def set_commands(commands=None) -> bool:
     global LAST_COMMANDS_RESULT
     body = {"commands": commands or BOT_COMMANDS}
     details = []
-    for path in ("/me",):
+    for path in ("/me/commands", "/me"):
         try:
             r = requests.patch(f"{config.API}{path}", headers=_headers(), json=body, timeout=30)
         except requests.RequestException:
