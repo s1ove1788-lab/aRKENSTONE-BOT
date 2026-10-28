@@ -197,7 +197,7 @@ def set_commands(commands=None) -> bool:
     global LAST_COMMANDS_RESULT
     body = {"commands": commands or BOT_COMMANDS}
     details = []
-    for path in ("/me/commands", "/me"):
+    for path in ("/me",):
         try:
             r = requests.patch(f"{config.API}{path}", headers=_headers(), json=body, timeout=30)
         except requests.RequestException:
@@ -206,7 +206,13 @@ def set_commands(commands=None) -> bool:
             return False
         if _ok(r):
             log.info("Команды бота зарегистрированы (%s)", path)
-            LAST_COMMANDS_RESULT = f"зарегистрированы ({path})"
+            saved = "?"
+            try:
+                g = requests.get(f"{config.API}/me", headers=_headers(), timeout=30).json()
+                saved = ", ".join("/" + str(c.get("name")) for c in (g.get("commands") or [])) or "пусто"
+            except Exception:
+                pass
+            LAST_COMMANDS_RESULT = f"отправлены через {path}; MAX хранит: {saved}"
             return True
         log.info("Команды не приняты через %s: %s %s", path, r.status_code, r.text[:200])
         details.append(f"{path}: {r.status_code} {r.text[:150]}")
