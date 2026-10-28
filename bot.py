@@ -10,7 +10,7 @@ import re
 import sys
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -133,18 +133,29 @@ def _items(today):
 
 def courier_home(ctx: Ctx, today, notification=None) -> None:
     items = _items(today)
+    orders = sheets.read_orders()
     ru = [it for it in items if not logic.is_city(it[0])]
     city = [it for it in items if logic.is_city(it[0])]
-    if not items:
-        return ctx.show(f"На сегодня ({today:%d.%m}) доставок нет 🎉",
-                        [[cb("🔄 Обновить", "c:home")], MENU_BTN], notification)
     rows = []
     if ru:
         rows.append([cb(f"По России: {len(ru)} шт.", "c:ru")])
     if city:
         rows.append([cb(f"Город: {len(city)} шт.", "c:city")])
+    for n, label in ((1, "Завтра"), (2, "Послезавтра")):
+        cnt = len(logic.day_items(orders, today + timedelta(days=n), today))
+        rows.append([cb(f"📅 {label}" + (f": {cnt} шт." if cnt else ""), f"c:d:{n}")])
     rows += [[cb("🔄 Обновить", "c:home")], MENU_BTN]
+    if not items:
+        return ctx.show(f"На сегодня ({today:%d.%m}) доставок нет 🎉", rows, notification)
     ctx.show(f"🚚 Доставки на {today:%d.%m}", rows, notification)
+
+
+def courier_day(ctx: Ctx, today, n: int) -> None:
+    day = today + timedelta(days=n)
+    label = "Завтра" if n == 1 else "Послезавтра"
+    text = logic.day_preview(logic.day_items(sheets.read_orders(), day, today), day, label)
+    other = (2, "Послезавтра") if n == 1 else (1, "Завтра")
+    ctx.show(text, [[cb(f"📅 {other[1]}", f"c:d:{other[0]}")], [cb("⬅️ Назад", "c:home")]])
 
 
 def courier_ru(ctx: Ctx, today, notification=None) -> None:
@@ -188,6 +199,8 @@ def courier(ctx: Ctx, payload: str) -> None:
     action = parts[1] if len(parts) > 1 else ""
     if action == "home":
         return courier_home(ctx, today)
+    if action == "d" and len(parts) >= 3 and parts[2] in ("1", "2"):
+        return courier_day(ctx, today, int(parts[2]))
     if action == "ru":
         return courier_ru(ctx, today)
     if action == "city":

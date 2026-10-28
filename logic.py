@@ -93,6 +93,48 @@ def courier_items(orders: list, today: date) -> list:
     return res
 
 
+def day_items(orders: list, day: date, today: date) -> list:
+    """[(заказ, False)] на конкретный будущий день (только просмотр для курьера). Без хвостов и «непонятных дат»."""
+    res = []
+    for o in orders:
+        if o["status"]:
+            continue
+        r = key_range(o, today)
+        if r and r[0] <= day <= r[1]:
+            res.append((o, False))
+    return res
+
+
+WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
+
+
+def day_preview(items: list, day: date, label: str) -> str:
+    """Текст «что будет завтра/послезавтра»: по России — отгрузками, город — адресами."""
+    head = f"📅 {label}, {day:%d.%m} ({WEEKDAYS[day.weekday()]})"
+    ru, city = russia_groups(items), city_items(items)
+    if not ru and not city:
+        return head + "\n\nДоставок пока нет."
+    lines, budget = [head], 38
+    if ru:
+        lines += ["", "🚚 По России:"]
+        for g in ru:
+            if budget <= 0:
+                break
+            title = g["channel"] + (f" №{g['shipment']}" if g["shipment"] else "")
+            cnt = Counter(item_line(o) for o in g["orders"])
+            lines.append(f"• {title} — {len(g['orders'])} шт.: " + ", ".join(f"{n} ×{c}" for n, c in sorted(cnt.items())))
+            budget -= 1
+    if city:
+        lines += ["", "🏙 Город:"]
+        for i, (o, _) in enumerate(city):
+            if budget <= 0:
+                lines.append(f"…и ещё {len(city) - i}")
+                break
+            lines.append(f"• {short(o['address'], 60)} — {item_line(o)}")
+            budget -= 1
+    return "\n".join(lines)
+
+
 def russia_groups(items: list) -> list:
     groups: dict = {}
     for o, late in items:
