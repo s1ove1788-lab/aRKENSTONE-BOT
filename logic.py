@@ -229,9 +229,9 @@ def order_code(o: dict):
     return f"{w.group()}.{c}" if w and c else None
 
 
-def code_name(code: str) -> str:
+def code_name(code: str, legs: str = "") -> str:
     width, color = code.split(".")
-    return f"{width}/30 " + {"04": "чёрная", "06": "белая"}.get(color, color)
+    return f"{width}/{legs or 30} " + {"04": "чёрная", "06": "белая"}.get(color, color)
 
 
 def ship_plan(orders: list, today: date) -> Counter:

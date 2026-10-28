@@ -93,6 +93,29 @@ def _tab(title: str, headers: list):
     return ws
 
 
+SETTINGS_HEADERS = ["Ключ", "Значение"]
+_settings: dict = {"t": 0.0, "data": {}}
+
+
+def get_setting(key: str, max_age: float = 60.0) -> str:
+    """Значение из листа «Настройки» (там бот хранит, например, код созданной таблицы стоимости доставок)."""
+    if time.time() - _settings["t"] > max_age:
+        rows = _tab(config.SETTINGS_TAB, SETTINGS_HEADERS).get_all_values()[1:]
+        _settings["data"] = {r[0].strip(): (r[1].strip() if len(r) > 1 else "") for r in rows if r and r[0].strip()}
+        _settings["t"] = time.time()
+    return _settings["data"].get(key, "")
+
+
+def set_setting(key: str, value: str) -> None:
+    ws = _tab(config.SETTINGS_TAB, SETTINGS_HEADERS)
+    cell = ws.find(key, in_column=1)
+    if cell:
+        ws.update(values=[[value]], range_name=f"B{cell.row}", value_input_option="RAW")
+    else:
+        ws.append_row([key, value], value_input_option="RAW")
+    _settings["data"][key] = value
+
+
 def sheet_url(kind: str) -> str:
     ws = orders_ws() if kind == "orders" else _tab(config.STOCK_TAB, STOCK_HEADERS)
     return f"https://docs.google.com/spreadsheets/d/{config.SHEET_ID}/edit#gid={ws.id}"

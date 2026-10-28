@@ -14,8 +14,38 @@ HEADERS = ["Дата доставки", "Тип", "Адрес", "Цена", "И�
 _state = {"ws": None, "sep": ","}
 
 
+def sheet_id() -> str:
+    """Код таблицы: из настройки COST_SHEET_ID, иначе тот, что бот сам создал (хранится на листе «Настройки»)."""
+    if config.COST_SHEET_ID:
+        return config.COST_SHEET_ID
+    try:
+        return sheets.get_setting("cost_sheet_id")
+    except Exception:
+        log.exception("Не смог прочитать настройки")
+        return ""
+
+
 def enabled() -> bool:
-    return bool(config.COST_SHEET_ID)
+    return bool(sheet_id())
+
+
+def sheet_url() -> str:
+    sid = sheet_id()
+    return f"https://docs.google.com/spreadsheets/d/{sid}/edit" if sid else ""
+
+
+def create(email: str) -> str:
+    """Создаёт новую закрытую таблицу «Стоимость доставок» и открывает её одному человеку (редактор).
+    Возвращает ссылку. Таблица принадлежит сервисному аккаунту бота, больше ни у кого доступа нет."""
+    book = sheets.get_client().create("Стоимость доставок")
+    book.share(email, perm_type="user", role="writer", notify=True)
+    try:
+        book.sheet1.update_title(TAB)
+    except Exception:
+        pass
+    sheets.set_setting("cost_sheet_id", book.id)
+    _state["ws"] = None
+    return f"https://docs.google.com/spreadsheets/d/{book.id}/edit"
 
 
 def delivery_type(o: dict) -> tuple:
@@ -35,7 +65,7 @@ def delivery_type(o: dict) -> tuple:
 def _ws():
     if _state["ws"] is None:
         import gspread
-        book = sheets.get_client().open_by_key(config.COST_SHEET_ID)
+        book = sheets.get_client().open_by_key(sheet_id())
         try:
             ws = book.worksheet(TAB)
         except gspread.WorksheetNotFound:
@@ -100,3 +130,55 @@ def record(marked: list, day) -> int:
     except ValueError:
         log.warning("Не понял, куда записались строки (%s), формулу итога не добавил", rng)
     return len(rows)
+
+
+def record_returns(items: list, day) -> int:
+    """items: [(описание кровати, количество)]. Каждая вернувшаяся кровать — строка «Возврат» по COST_RETURN."""
+    if not enabled() or not items:
+        return 0
+    ws = _ws()
+    date = day.strftime("%d.%m.%Y")
+    rows = []
+    for name, qty in items:
+        rows += [[date, "Возврат", "", config.COST_RETURN, "", f"возврат: {name}"] for _ in range(qty)]
+    resp = ws.append_rows(rows, value_input_option="RAW")
+    rng = ((resp or {}).get("updates") or {}).get("updatedRange", "")
+    try:
+        first = int(rng.split("!")[-1].split(":")[0].lstrip("ABCDEFGHIJ"))
+        _write_totals(ws, first, first + len(rows) - 1)
+    except ValueError:
+        pass
+    return len(rows)
+
+
+def _money(n: int) -> str:
+    return f"{n:,}".replace(",", " ") + " ₽"
+
+
+def summary(today) -> str:
+    """Текст для курьера: сколько заработано сегодня, вчера, за неделю и за месяц."""
+    from datetime import datetime, timedelta
+    ws = _ws()
+    per_day: dict = {}
+    today_types: dict = {}
+    for v in ws.get_all_values()[1:]:
+        if len(v) < 4:
+            continue
+        try:
+            d = datetime.strptime(v[0].strip(), "%d.%m.%Y").date()
+            price = int(float(v[3].replace(" ", "").replace(",", ".")))
+        except ValueError:
+            continue
+        per_day[d] = per_day.get(d, 0) + price
+        if d == today:
+            n, total = today_types.get(v[1], (0, 0))
+            today_types[v[1]] = (n + 1, total + price)
+    lines = ["💰 Расчёт доставок", "", f"Сегодня ({today:%d.%m}): {_money(per_day.get(today, 0))}"]
+    for kind, (n, total) in sorted(today_types.items()):
+        lines.append(f"• {kind}: {n} шт. — {_money(total)}")
+    yest = today - timedelta(days=1)
+    week = sum(v for d, v in per_day.items() if today - timedelta(days=6) <= d <= today)
+    month = sum(v for d, v in per_day.items() if (d.year, d.month) == (today.year, today.month))
+    lines += ["", f"Вчера: {_money(per_day.get(yest, 0))}", f"За 7 дней: {_money(week)}",
+              f"За {today:%m.%Y}: {_money(month)}"]
+    return "\n".join(lines)

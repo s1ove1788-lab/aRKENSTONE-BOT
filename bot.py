@@ -37,8 +37,11 @@ if ai is None:
         reset = staticmethod(lambda uid: None)
     config.AI_KEY = ""
 if costs is None:
-    class costs:  # заглушка: таблица стоимости доставок выключена
+    class costs:  # заглушка: таблица стоимости доставок выключена (нет файла costs.py)
         record = staticmethod(lambda marked, day: 0)
+        record_returns = staticmethod(lambda items, day: 0)
+        enabled = staticmethod(lambda: False)
+        sheet_url = staticmethod(lambda: "")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
 log = logging.getLogger("orders-bot")
@@ -140,7 +143,8 @@ def home(ctx: Ctx, notification=None) -> None:
         text = ("👔 Меню менеджера\n\nЧтобы добавить заказы, просто пришлите мне PDF-файл в этот чат.\n"
                 "Таблицы открываются в Google Таблицах — там их можно редактировать.")
     elif role == "courier":
-        rows = [[cb("🚚 Доставки", "c:home")], CHANGE_ROLE]
+        rows = [[cb("🚚 Доставки", "c:home")], [cb("💰 Расчёт доставок", "c:pay")],
+                [cb("↩️ Возврат", "c:ret")], CHANGE_ROLE]
         text = "🚚 Меню курьера"
     else:
         rows = [[cb("📋 План производства", "p:plan")],
@@ -223,6 +227,65 @@ def courier_home(ctx: Ctx, today, notification=None) -> None:
     ctx.show(f"🚚 Доставки на {today:%d.%m}", rows, notification)
 
 
+def courier_pay(ctx: Ctx, today) -> None:
+    pending.pop(ctx.uid, None)
+    rows = []
+    url = costs.sheet_url()
+    if url:
+        rows.append([link("📊 Открыть таблицу", url)])
+    rows.append([cb("⬅️ Назад", "c:home")])
+    if not costs.enabled():
+        return ctx.show("💰 Расчёт доставок пока не настроен. Попросите менеджера создать таблицу.", rows)
+    try:
+        text = costs.summary(today)
+    except Exception:
+        log.exception("Не смог собрать расчёт доставок")
+        text = "⚠️ Не получилось открыть расчёт, попробуйте ещё раз."
+    ctx.show(text, rows)
+
+
+RETURN_HELP = ("↩️ Возврат\n\nНапишите, какую кровать забрали, например:\n"
+               "• 160/30 ч — одна чёрная\n• 140/35 б 2 — две белых с ножками 35\n"
+               "Несколько позиций — каждая с новой строки.\n\n"
+               "Кровать вернётся на остаток склада, а в расчёте появится возврат "
+               f"({config.COST_RETURN} ₽ за штуку).")
+
+
+def courier_return_start(ctx: Ctx) -> None:
+    pending[ctx.uid] = ("return", None)
+    ctx.show(RETURN_HELP, [[cb("⬅️ Отмена", "c:home")]])
+
+
+def save_return(ctx: Ctx, name: str, text: str) -> None:
+    today = now_date()
+    items = logic.parse_shipments(text)
+    stock = sheets.latest_stock()
+    lines, for_costs = [], []
+    for it in items:
+        if "error" in it:
+            lines.append(f"⚠️ «{it['line']}»: {it['error']}")
+            continue
+        code, qty = it["code"], it["qty"]
+        before = stock[code][0] if code in stock else 0
+        after = before + qty
+        sheets.add_stock(code, after, f"{name} (возврат)")
+        stock[code] = (after, "")
+        title = logic.code_name(code, it.get("legs") or "")
+        lines.append(f"✅ {title} ×{qty} — на остатке {before} → {after}")
+        for_costs.append((title, qty))
+    if for_costs:
+        try:
+            n = costs.record_returns(for_costs, today)
+            if n:
+                lines.append(f"💰 В расчёт добавлено возвратов: {n} × {config.COST_RETURN} ₽")
+        except Exception:
+            log.exception("Не смог записать возврат в таблицу расчёта")
+            lines.append("⚠️ В таблицу расчёта возврат записать не удалось, сообщите менеджеру.")
+        pending.pop(ctx.uid, None)
+        return ctx.show("\n".join(lines), [[cb("↩️ Ещё возврат", "c:ret")], [cb("⬅️ В меню", "c:home")]])
+    ctx.show("\n".join(lines or ["Не понял сообщение."]) + "\n\nПример: 160/30 ч", [[cb("⬅️ Отмена", "c:home")]])
+
+
 def courier_day(ctx: Ctx, today, n: int) -> None:
     day = today + timedelta(days=n)
     label = "Завтра" if n == 1 else "Послезавтра"
@@ -270,8 +333,14 @@ def courier(ctx: Ctx, payload: str) -> None:
     today = now_date()
     parts = payload.split(":", 3)
     action = parts[1] if len(parts) > 1 else ""
+    if action != "ret":
+        pending.pop(ctx.uid, None)  # вышли из режима ввода возврата
     if action == "home":
         return courier_home(ctx, today)
+    if action == "pay":
+        return courier_pay(ctx, today)
+    if action == "ret":
+        return courier_return_start(ctx)
     if action == "d" and len(parts) >= 3 and parts[2] in ("1", "2"):
         return courier_day(ctx, today, int(parts[2]))
     if action == "ru":
@@ -646,6 +715,25 @@ def handle_message(u: dict) -> None:
     if config.CLEAN_CHAT and user_mid:
         ctx.fresh = not mx.delete(user_mid, reply_to)  # не удалилось -> меню пришлём заново внизу
 
+    if cmd == "/costsheet":  # создать закрытую таблицу «Стоимость доставок» и открыть её одному человеку
+        if sender_id not in config.MANAGER_IDS:
+            return
+        parts = raw.split()
+        if costs.enabled():
+            return ctx.show("Таблица стоимости доставок уже создана:\n" + costs.sheet_url(), [MENU_BTN])
+        if len(parts) < 2 or "@" not in parts[1]:
+            return ctx.show("Напишите команду с вашей почтой Google, например:\n/costsheet name@gmail.com\n"
+                            "Таблицу увидите только вы (и тот, чью почту укажете).", [MENU_BTN])
+        try:
+            url = costs.create(parts[1])
+        except Exception as e:
+            log.exception("Не смог создать таблицу стоимости доставок")
+            return ctx.show("⚠️ Не получилось создать таблицу: " + str(e)[:300] +
+                            "\n\nЧаще всего нужно включить «Google Drive API» в Google Cloud (тот же проект, где "
+                            "создан ключ бота). Напишите мне, подскажу по шагам.", [MENU_BTN])
+        return ctx.show(f"✅ Таблица создана и открыта для {parts[1]} (письмо с доступом придёт на почту):\n{url}",
+                        [MENU_BTN])
+
     if cmd == "/clear":  # чистка чатов бота у всех (только админ = менеджер из MANAGER_IDS)
         if sender_id not in config.MANAGER_IDS:
             return
@@ -740,6 +828,8 @@ def handle_message(u: dict) -> None:
         try:
             if mode[0] == "ai":
                 return ai_answer(ctx, raw)
+            if mode[0] == "return":
+                return save_return(ctx, name, raw)
             return save_stock_from_text(ctx, name, raw)
         except Exception:
             log.exception("Ошибка при записи отгрузки/остатка")
