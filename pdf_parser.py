@@ -35,7 +35,16 @@ COLOR_CODES = {
 }
 
 # Артикул: что-то вроде DY.30.160.04 или 01.30.140.06
-ARTICLE_RE = re.compile(r"\b[A-Za-zА-Яа-я0-9]{1,4}\.(\d{1,3})\.(\d{2,3})\.(\d{2})\b")
+# Артикул: DY.30.160.04 (ножки 30, ширина 160, цвет 04) или 01.35.140.200.04 (ножки 35, ширина 140, длина 200, цвет 04)
+ARTICLE_RE = re.compile(r"\b[A-Za-zА-Яа-я0-9]{1,4}\.(\d{1,3})\.(\d{2,3})(?:\.(\d{2,3}))?\.(\d{2})\b")
+
+
+def parse_article(text: str):
+    """-> {'article', 'legs', 'width', 'color_code'} или None."""
+    m = ARTICLE_RE.search(text or "")
+    if not m:
+        return None
+    return {"article": m.group(0), "legs": m.group(1), "width": m.group(2), "color_code": m.group(4)}
 # Номер заказа: цифры, возможно с дефисами (63457991875 или 40915084-0092-1)
 ORDER_RE = re.compile(r"\b\d[\d\-]{5,}\b")
 
@@ -83,7 +92,7 @@ def _parse_row(cells) -> Order | None:
     article = ""
     if article_m:
         article = article_m.group(0)
-        height, width, color_code = article_m.group(1), article_m.group(2), article_m.group(3)
+        height, width, color_code = article_m.group(1), article_m.group(2), article_m.group(4)
         size = f"{width}×{height}"
         color = COLOR_CODES.get(color_code, "")
     if not color:

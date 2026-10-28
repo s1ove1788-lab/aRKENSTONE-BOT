@@ -179,3 +179,29 @@ def download(url: str, dest: str) -> None:
             if size > MAX_PDF_BYTES:
                 raise ValueError("Файл слишком большой (больше 20 МБ).")
             f.write(part)
+
+
+# ------------------------------------------------------- меню команд бота
+BOT_COMMANDS = [
+    {"name": "menu", "description": "Открыть меню"},
+    {"name": "role", "description": "Сменить роль"},
+]
+
+
+def set_commands(commands=None) -> bool:
+    """Регистрирует команды бота: MAX показывает их кнопкой меню рядом со строкой ввода.
+    У MAX путь менялся (PATCH /me/commands, раньше PATCH /me), поэтому пробуем оба. Не критично, если не вышло."""
+    body = {"commands": commands or BOT_COMMANDS}
+    for path in ("/me/commands", "/me"):
+        try:
+            r = requests.patch(f"{config.API}{path}", headers=_headers(), json=body, timeout=30)
+        except requests.RequestException:
+            log.exception("Ошибка сети при регистрации команд")
+            return False
+        if _ok(r):
+            log.info("Команды бота зарегистрированы (%s)", path)
+            return True
+        log.info("Команды не приняты через %s: %s %s", path, r.status_code, r.text[:200])
+    log.warning("Не удалось зарегистрировать меню команд. Бот работает как обычно, просто кнопки меню "
+                "рядом со строкой ввода не будет (команды /menu и /role по-прежнему работают).")
+    return False

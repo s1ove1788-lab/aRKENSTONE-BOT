@@ -529,7 +529,7 @@ def handle_message(u: dict) -> None:
         res = market_check()
         if res is None:
             return ctx.show("⚠️ Не получилось проверить Маркет, подробности в логах.", [MENU_BTN])
-        text = f"Проверил Маркет: заказов в обработке — {res['total']}, новых — {res['new']}."
+        text = f"Проверил Маркет: заказов в обработке — {res['total']}, новых — {res['new']}, записано в таблицу — {res['added']}."
         if res["baseline"]:
             text += "\nЭто первый запуск: текущие заказы запомнил без уведомлений, о новых скажу сразу."
         if res["sample"] and not res["new"]:
@@ -615,6 +615,7 @@ def main() -> None:
         sys.exit("MAX не принял токен. Проверьте MAX_BOT_TOKEN.")
     me.raise_for_status()
     log.info("Бот запущен: %s", me.json().get("name") or me.json())
+    mx.set_commands()
 
     try:
         reload_directory()

@@ -27,6 +27,7 @@ CREDS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
 
 YM_TOKEN = os.getenv("YANDEX_MARKET_TOKEN", "").strip()  # Яндекс Маркет, токен только на чтение
 YM_WATCH = os.getenv("YM_WATCH", "1").strip().lower() not in ("0", "false", "no", "нет")  # следить за заказами
+YM_AUTOADD = os.getenv("YM_AUTOADD", "1").strip().lower() not in ("0", "false", "no", "нет")  # писать СГТ-заказы в таблицу
 try:
     YM_POLL_MINUTES = max(1, int(os.getenv("YM_POLL_MINUTES", "15")))  # как часто спрашивать Маркет
 except ValueError:

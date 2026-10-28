@@ -11,6 +11,7 @@ _NUM = re.compile(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?")
 _SINGLE = re.compile(r"(\d{1,2})\s*[.\s]\s*([а-яё]{3,})", re.I)
 
 import config
+from pdf_parser import parse_article
 
 CITY_CHANNELS = {"ЯМ ГОРОД", "WB ГОРОД", "ОЗ"}
 
@@ -177,9 +178,9 @@ _WIDTHS = sorted({int(c.split(".")[0]) for c in config.STOCK_CODES})
 
 def order_code(o: dict):
     """Код размера заказа: '160.04' (ширина.цвет) — из артикула, запасной вариант из размера и цвета."""
-    m = re.search(r"\.(\d{2,3})\.(\d{2})$", o["article"])
-    if m:
-        return f"{m.group(1)}.{m.group(2)}"
+    a = parse_article(o["article"])
+    if a:
+        return f"{a['width']}.{a['color_code']}"
     w = re.match(r"\d+", o["size"])
     c = {"чёрный": "04", "черный": "04", "белый": "06"}.get(o["color"].lower())
     return f"{w.group()}.{c}" if w and c else None

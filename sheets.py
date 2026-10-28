@@ -248,3 +248,9 @@ def market_seen() -> set:
 def market_add(rows: list) -> None:
     if rows:
         _tab(config.MARKET_TAB, MARKET_HEADERS).append_rows(rows, value_input_option="RAW")
+
+
+def set_shipment_cell(row: int, value: str) -> None:
+    """Вписывает номер отгрузки в столбец «Отгрузка / телефон» уже существующей строки."""
+    orders_ws().update(values=[[value]], range_name=f"J{row}", value_input_option="RAW")
+    _invalidate()
