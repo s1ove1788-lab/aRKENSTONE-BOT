@@ -22,6 +22,7 @@ STATUS_COL = 12  # «Статус» — любая непустая отметк
 USERS_HEADERS = ["ID", "Имя", "Роль"]
 GROUPS_HEADERS = ["Тип", "ID"]
 STOCK_HEADERS = ["Дата и время", "Размер", "Остаток, шт.", "Кто внёс"]
+MARKET_HEADERS = ["ID заказа", "Впервые замечен", "Кампания", "Как замечен"]
 SHIP_HEADERS = ["Дата и время", "Дата отгрузки", "Код", "Размер", "Цвет", "Кол-во",
                 "Остаток до", "Остаток после", "Кто внёс"]
 
@@ -235,3 +236,15 @@ def shipped_on(day) -> dict:
             except ValueError:
                 continue
     return res
+
+
+# ---------------------------------------------------------------- Маркет
+def market_seen() -> set:
+    """ID заказов Маркета, о которых бот уже знает."""
+    return {v[0].strip() for v in _tab(config.MARKET_TAB, MARKET_HEADERS).get_all_values()[1:]
+            if v and v[0].strip()}
+
+
+def market_add(rows: list) -> None:
+    if rows:
+        _tab(config.MARKET_TAB, MARKET_HEADERS).append_rows(rows, value_input_option="RAW")

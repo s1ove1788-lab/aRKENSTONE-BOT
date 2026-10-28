@@ -19,6 +19,7 @@ import logic
 import max_client as mx
 import sheets
 import ym
+import ym_watch
 from max_client import cb, link
 from pdf_parser import parse_pdf
 
@@ -351,10 +352,8 @@ def format_order(o) -> str:
             f"  отгрузка {o.ship_date}, доставка {o.delivery_date} · № {o.order_no}")
 
 
-def notify_all(new: list, who: str, skip_uid=None) -> None:
-    lines = [f"🆕 Новых заказов: {len(new)}" + (f" (загрузил(а): {who})" if who else "")]
-    lines += [format_order(o) for o in new]
-    text = "\n".join(lines)
+def broadcast(text: str, skip_uid=None) -> None:
+    """Рассылает текст всем, кто зарегистрирован (роли из NOTIFY_ROLES), и в подписанные группы."""
     for uid, u in list(users.items()):
         if u["role"] not in config.NOTIFY_ROLES:
             continue
@@ -365,6 +364,34 @@ def notify_all(new: list, who: str, skip_uid=None) -> None:
             home(ctx)
     for c in groups:
         mx.send({"type": "chat", "id": c}, text)
+
+
+def notify_all(new: list, who: str, skip_uid=None) -> None:
+    lines = [f"🆕 Новых заказов: {len(new)}" + (f" (загрузил(а): {who})" if who else "")]
+    lines += [format_order(o) for o in new]
+    broadcast("\n".join(lines), skip_uid)
+
+
+# ---------------------------------------------------------- Яндекс Маркет
+ym_state = {"last": 0.0, "fails": 0}
+
+
+def market_check():
+    """Один проход слежения за Маркетом. None — если не получилось."""
+    try:
+        res = ym_watch.poll(broadcast)
+        ym_state["fails"] = 0
+        return res
+    except Exception:
+        log.exception("Ошибка проверки Яндекс Маркета")
+        ym_state["fails"] += 1
+        if ym_state["fails"] == 3:  # три раза подряд — сообщаем менеджерам один раз
+            for uid, u in list(users.items()):
+                if u["role"] == "manager":
+                    mx.send({"type": "user", "id": uid},
+                            "⚠️ Не получается получить заказы с Яндекс Маркета (3 проверки подряд). "
+                            "Возможно, токен отозван или у Маркета сбой. Подробности в логах бота.")
+        return None
 
 
 def process_pdf(url: str, filename: str, say, who: str, uid=None) -> bool:
@@ -493,6 +520,22 @@ def handle_message(u: dict) -> None:
             mx.send(reply_to, p)
         return
 
+    if cmd == "/ymnow":  # проверить Маркет прямо сейчас (только менеджер)
+        if sender_id not in config.MANAGER_IDS:
+            return ctx.show("Команда только для менеджера.", [MENU_BTN])
+        if not config.YM_TOKEN:
+            return ctx.show("Не задана переменная YANDEX_MARKET_TOKEN в настройках бота.", [MENU_BTN])
+        ctx.show("Проверяю Яндекс Маркет…", [MENU_BTN])
+        res = market_check()
+        if res is None:
+            return ctx.show("⚠️ Не получилось проверить Маркет, подробности в логах.", [MENU_BTN])
+        text = f"Проверил Маркет: заказов в обработке — {res['total']}, новых — {res['new']}."
+        if res["baseline"]:
+            text += "\nЭто первый запуск: текущие заказы запомнил без уведомлений, о новых скажу сразу."
+        if res["sample"] and not res["new"]:
+            text += "\n\nТак будет выглядеть уведомление (последний заказ):\n" + res["sample"]
+        return ctx.show(text, [MENU_BTN])
+
     if cmd == "/stop":
         users.pop(sender_id, None)
         pending.pop(sender_id, None)
@@ -581,8 +624,15 @@ def main() -> None:
     last_reload = time.time()
 
     marker = load_marker()
+    if config.YM_TOKEN and config.YM_WATCH:
+        log.info("Слежение за Яндекс Маркетом включено: проверка раз в %d мин.", config.YM_POLL_MINUTES)
+    elif config.YM_TOKEN:
+        log.info("Слежение за Яндекс Маркетом выключено (YM_WATCH=0)")
     import requests  # локально, чтобы не тащить наверх ради одного except
     while True:
+        if config.YM_TOKEN and config.YM_WATCH and time.time() - ym_state["last"] >= config.YM_POLL_MINUTES * 60:
+            ym_state["last"] = time.time()
+            market_check()
         try:
             r = mx.get_updates(marker)
             if r.status_code in (401, 403):

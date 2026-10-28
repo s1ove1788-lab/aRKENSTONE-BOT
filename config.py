@@ -26,6 +26,11 @@ CREDS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 CREDS_JSON = os.getenv("GOOGLE_CREDENTIALS_JSON", "").strip()
 
 YM_TOKEN = os.getenv("YANDEX_MARKET_TOKEN", "").strip()  # Яндекс Маркет, токен только на чтение
+YM_WATCH = os.getenv("YM_WATCH", "1").strip().lower() not in ("0", "false", "no", "нет")  # следить за заказами
+try:
+    YM_POLL_MINUTES = max(1, int(os.getenv("YM_POLL_MINUTES", "15")))  # как часто спрашивать Маркет
+except ValueError:
+    YM_POLL_MINUTES = 15
 
 SHEET_ID = os.getenv("SHEET_ID", "").strip().strip("\"'")
 if "/d/" in SHEET_ID:  # вставили ссылку целиком — достаём из неё код
@@ -40,6 +45,7 @@ USERS_TAB = "Пользователи"
 GROUPS_TAB = "Подписчики"
 STOCK_TAB = "Остатки"
 SHIP_TAB = "Отгрузки"
+MARKET_TAB = "Маркет"  # запоминаем, какие заказы Маркета уже видели
 
 # «Чистый чат»: бот правит одно сообщение-меню и пытается удалять сообщения пользователей.
 # Отключить: переменная окружения CLEAN_CHAT=0
