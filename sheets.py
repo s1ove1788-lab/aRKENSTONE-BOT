@@ -24,7 +24,7 @@ GROUPS_HEADERS = ["Тип", "ID"]
 STOCK_HEADERS = ["Дата и время", "Размер", "Остаток, шт.", "Кто внёс"]
 MARKET_HEADERS = ["ID заказа", "Впервые замечен", "Кампания", "Как замечен"]
 SHIP_HEADERS = ["Дата и время", "Дата отгрузки", "Код", "Размер", "Цвет", "Кол-во",
-                "Остаток до", "Остаток после", "Кто внёс"]
+                "Остаток до", "Остаток после", "Кто внёс", "Номер заказа", "Ножки", "Канал"]
 
 CACHE_TTL = 5  # секунд: чтобы не дёргать Google при каждом нажатии кнопки
 _book = None
@@ -127,10 +127,11 @@ def add_orders(orders: list) -> list:
     return new
 
 
-def mark_delivered(order_nos: list) -> int:
+def mark_delivered(order_nos: list) -> list:
     """Пишет в столбец «Статус» отметку о доставке. Строки остаются в таблице, но пропадают из списков."""
     wanted = set(order_nos)
-    rows = [r["row"] for r in read_orders(force=True) if r["order_no"] in wanted and not r["status"]]
+    marked = [r for r in read_orders(force=True) if r["order_no"] in wanted and not r["status"]]
+    rows = [r["row"] for r in marked]
     if rows:
         stamp = "Доставлен " + datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m %H:%M")
         col = chr(64 + STATUS_COL)
@@ -139,7 +140,7 @@ def mark_delivered(order_nos: list) -> int:
             value_input_option="RAW",
         )
         _invalidate()
-    return len(rows)
+    return marked  # только те, что отмечены сейчас (повторное нажатие ничего не вернёт)
 
 
 # ---------------------------------------------------------- пользователи
@@ -215,13 +216,14 @@ def latest_stock() -> dict:
 
 
 # -------------------------------------------------------------- отгрузки
-def add_shipment(code: str, qty: int, who: str, before, after, day) -> None:
-    """Запись «производство отдало в доставку»; before/after — остаток до и после (None, если не списывали)."""
+def add_shipment(code: str, qty: int, who: str, before, after, day, order_no: str = "",
+                 legs: str = "", channel: str = "") -> None:
+    """Запись «кровать отгружена» (курьер отметил доставку); before/after — остаток до и после (None, если не списывали)."""
     width, color = code.split(".")
     _tab(config.SHIP_TAB, SHIP_HEADERS).append_row(
-        [_now_str(), day.strftime("%d.%m.%Y"), code, f"{width}/30",
+        [_now_str(), day.strftime("%d.%m.%Y"), code, f"{width}/{legs or 30}",
          {"04": "чёрная", "06": "белая"}.get(color, color), qty,
-         "" if before is None else before, "" if after is None else after, who],
+         "" if before is None else before, "" if after is None else after, who, order_no, legs, channel],
         value_input_option="RAW")
 
 

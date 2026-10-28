@@ -23,14 +23,14 @@ import ym
 import ym_watch
 import oz
 from max_client import cb, link
-from pdf_parser import parse_pdf
+from pdf_parser import parse_article, parse_pdf
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
 log = logging.getLogger("orders-bot")
 
 users: dict = {}    # id -> {"name": ..., "role": "manager" | "courier" | "prod"}
 groups: list = []   # id групповых чатов, куда слать уведомления
-pending: dict = {}  # id -> ("stock", код) | ("ship", None): чего бот ждёт от человека текстом
+pending: dict = {}  # id -> ("stock", код): чего бот ждёт от человека текстом
 screens: dict = {}  # id -> id сообщения-«экрана» с меню, которое бот правит на месте
 RELOAD_EVERY = 300  # раз в 5 минут перечитываем список пользователей из таблицы
 
@@ -118,7 +118,7 @@ def home(ctx: Ctx, notification=None) -> None:
         rows = [[cb("🚚 Доставки", "c:home")], CHANGE_ROLE]
         text = "🚚 Меню курьера"
     else:
-        rows = [[cb("📋 План производства", "p:plan")], [cb("📤 Отгрузка", "p:ship")],
+        rows = [[cb("📋 План производства", "p:plan")],
                 [cb("📦 Остатки", "p:stock")], CHANGE_ROLE]
         text = "🏭 Меню производства"
     if config.AI_KEY and role in config.AI_ROLES:
@@ -278,7 +278,11 @@ def courier(ctx: Ctx, payload: str) -> None:
         text = logic.russia_card(found) if kind == "g" else logic.city_card(found)
         return ctx.show(text, _decision_rows(kind, ident, "c:ru" if kind == "g" else "c:city"))
     if action == "done":
-        sheets.mark_delivered([o["order_no"] for o in orders])
+        marked = sheets.mark_delivered([o["order_no"] for o in orders])
+        try:
+            record_shipments(marked, (users.get(ctx.uid) or {}).get("name") or "курьер", today)
+        except Exception:
+            log.exception("Не смог записать отгрузку в таблицу отгрузок")
         return back(ctx, today, "✅ Записано: доставлено")
     return back(ctx, today, "Оставлено в списке")
 
@@ -287,15 +291,12 @@ def courier(ctx: Ctx, payload: str) -> None:
 def production(ctx: Ctx, payload: str) -> None:
     parts = payload.split(":", 2)
     action = parts[1] if len(parts) > 1 else ""
-    if action in ("plan", "stock", "cur", "ship"):
+    if action in ("plan", "stock", "cur"):
         pending.pop(ctx.uid, None)
 
     if action == "plan":
         text = logic.production_plan(sheets.read_orders(), now_date())
         return ctx.show(text, [[cb("📦 Остатки", "p:stock")], MENU_BTN])
-
-    if action == "ship":
-        return ship_screen(ctx)
 
     if action == "stock":
         codes = config.STOCK_CODES
@@ -334,40 +335,24 @@ def save_stock_from_text(ctx: Ctx, name: str, text: str) -> None:
              [[cb("✏️ Внести ещё", "p:stock")], [cb("📊 Текущие остатки", "p:cur")], MENU_BTN])
 
 
-def ship_screen(ctx: Ctx, results=None) -> None:
-    pending[ctx.uid] = ("ship", None)
-    today = now_date()
-    plan = logic.ship_plan(sheets.read_orders(), today)
-    shipped = sheets.shipped_on(today)
-    ctx.show(logic.ship_text(today, plan, shipped, results),
-             [[cb("📦 Остатки", "p:stock")], MENU_BTN])
-
-
-def save_shipments_from_text(ctx: Ctx, name: str, text: str) -> None:
-    """«160/30 ч» -> записываем отгрузку и списываем 1 шт. с остатка (если остаток есть)."""
-    items = logic.parse_shipments(text)
+def record_shipments(marked: list, who: str, today) -> None:
+    """Курьер отметил «доставлен» -> каждая кровать попадает в таблицу «Отгрузки», остаток списывается (если он внесён)."""
+    if not marked:
+        return
     stock = sheets.latest_stock()
-    today = now_date()
-    lines = []
-    for it in items:
-        if "error" in it:
-            lines.append(f"⚠️ «{it['line']}»: {it['error']}")
+    for o in marked:
+        code = logic.order_code(o)
+        if not code:
+            log.warning("Отгрузка: не определил размер заказа %s, в «Отгрузки» не записан", o.get("order_no"))
             continue
-        code, qty = it["code"], it["qty"]
         before = stock[code][0] if code in stock else None
-        if before is None:
-            after, note = None, "остатка в таблице нет, не списывал"
-        elif before >= qty:
-            after, note = before - qty, f"остаток {before} → {before - qty}"
-        else:
-            after, note = None, f"⚠️ на остатке всего {before} шт., не списывал — проверьте остаток"
-        sheets.add_shipment(code, qty, name, before, after, today)
+        after = before - 1 if before is not None and before >= 1 else None
+        a = parse_article(o.get("article") or "")
+        sheets.add_shipment(code, 1, f"{who} (курьер)", before, after, today,
+                            o.get("order_no", ""), (a or {}).get("legs", ""), o.get("channel", ""))
         if after is not None:
-            sheets.add_stock(code, after, f"{name} (отгрузка)")
+            sheets.add_stock(code, after, f"{who} (доставка)")
             stock[code] = (after, "")
-        legs = f" (ножки {it['legs']})" if it.get("legs") else ""
-        lines.append(f"✅ {logic.code_name(code)}{legs} ×{qty} — {note}")
-    ship_screen(ctx, lines or ["Не понял сообщение. Пример: 160/30 ч"])
 
 
 # ---------------------------------------------------------- нажатия кнопок
@@ -721,8 +706,6 @@ def handle_message(u: dict) -> None:
         try:
             if mode[0] == "ai":
                 return ai_answer(ctx, raw)
-            if mode[0] == "ship":
-                return save_shipments_from_text(ctx, name, raw)
             return save_stock_from_text(ctx, name, raw)
         except Exception:
             log.exception("Ошибка при записи отгрузки/остатка")
