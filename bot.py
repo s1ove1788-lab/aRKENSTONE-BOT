@@ -568,6 +568,11 @@ def handle_message(u: dict) -> None:
             text += "\n\nТак будет выглядеть уведомление (последнее отправление):\n" + res["sample"]
         return ctx.show(text, [MENU_BTN])
 
+    if cmd == "/status":  # диагностика без доступа к логам (только менеджер)
+        if sender_id not in config.MANAGER_IDS:
+            return
+        mx.send({"type": "user", "id": sender_id}, "Меню команд: " + mx.LAST_COMMANDS_RESULT)
+        return
     if cmd == "/ymnow":  # проверить Маркет прямо сейчас (только менеджер)
         if sender_id not in config.MANAGER_IDS:
             return ctx.show("Команда только для менеджера.", [MENU_BTN])
@@ -664,6 +669,12 @@ def main() -> None:
     me.raise_for_status()
     log.info("Бот запущен: %s", me.json().get("name") or me.json())
     mx.set_commands()
+    # Рабочие логи Bothost не всегда видны, поэтому итог запуска бот сам присылает менеджерам
+    for _uid in config.MANAGER_IDS:
+        try:
+            mx.send({"type": "user", "id": _uid}, "🤖 Бот перезапущен.\nМеню команд: " + mx.LAST_COMMANDS_RESULT)
+        except Exception:
+            log.exception("Не смог отправить менеджеру отчёт о запуске")
 
     try:
         reload_directory()

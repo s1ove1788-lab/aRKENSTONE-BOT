@@ -188,20 +188,29 @@ BOT_COMMANDS = [
 ]
 
 
+LAST_COMMANDS_RESULT = "команды ещё не регистрировались"
+
+
 def set_commands(commands=None) -> bool:
     """Регистрирует команды бота: MAX показывает их кнопкой меню рядом со строкой ввода.
     У MAX путь менялся (PATCH /me/commands, раньше PATCH /me), поэтому пробуем оба. Не критично, если не вышло."""
+    global LAST_COMMANDS_RESULT
     body = {"commands": commands or BOT_COMMANDS}
+    details = []
     for path in ("/me/commands", "/me"):
         try:
             r = requests.patch(f"{config.API}{path}", headers=_headers(), json=body, timeout=30)
         except requests.RequestException:
             log.exception("Ошибка сети при регистрации команд")
+            LAST_COMMANDS_RESULT = "ошибка сети"
             return False
         if _ok(r):
             log.info("Команды бота зарегистрированы (%s)", path)
+            LAST_COMMANDS_RESULT = f"зарегистрированы ({path})"
             return True
         log.info("Команды не приняты через %s: %s %s", path, r.status_code, r.text[:200])
+        details.append(f"{path}: {r.status_code} {r.text[:150]}")
+    LAST_COMMANDS_RESULT = "НЕ приняты: " + " | ".join(details)
     log.warning("Не удалось зарегистрировать меню команд. Бот работает как обычно, просто кнопки меню "
                 "рядом со строкой ввода не будет (команды /menu и /role по-прежнему работают).")
     return False
