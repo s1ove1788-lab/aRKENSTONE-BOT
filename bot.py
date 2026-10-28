@@ -16,8 +16,14 @@ from zoneinfo import ZoneInfo
 
 import config
 import logic
-import ai
-import costs
+try:  # необязательные модули: если файла нет в репозитории, бот просто работает без этой функции
+    import ai
+except ImportError:
+    ai = None
+try:
+    import costs
+except ImportError:
+    costs = None
 import max_client as mx
 import sheets
 import ym
@@ -25,6 +31,14 @@ import ym_watch
 import oz
 from max_client import cb, link
 from pdf_parser import parse_article, parse_pdf
+
+if ai is None:
+    class ai:  # заглушка: ИИ-помощник выключен
+        reset = staticmethod(lambda uid: None)
+    config.AI_KEY = ""
+if costs is None:
+    class costs:  # заглушка: таблица стоимости доставок выключена
+        record = staticmethod(lambda marked, day: 0)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stdout)
 log = logging.getLogger("orders-bot")
