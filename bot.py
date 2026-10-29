@@ -962,6 +962,22 @@ def handle_message(u: dict) -> None:
         except Exception as e:
             log.exception("Ошибка разбора заказа Маркета")
             return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
+    if cmd == "/sverka":  # сверить все площадки с таблицей прямо сейчас (только менеджер)
+        if sender_id not in config.MANAGER_IDS:
+            return ctx.show("Команда только для менеджера.", [MENU_BTN])
+        ctx.show("Сверяю заказы площадок с таблицей…", [MENU_BTN])
+        lines = []
+        if config.YM_TOKEN:
+            r = market_check()
+            lines.append("Яндекс Маркет: " + ("не получилось проверить, смотрите логи" if r is None else
+                         f"в обработке {r['total']}, не хватало в таблице — {r['new']}, добавлено — {r['added']}"))
+        if config.OZ_CLIENT_ID and config.OZ_API_KEY:
+            r = ozon_check()
+            lines.append("Озон: " + ("не получилось проверить, смотрите логи" if r is None else
+                         f"в обработке {r['total']}, не хватало в таблице — {r['new']}"))
+        lines.append("Вайлдберриз: пока не подключён.")
+        lines.append("\nО найденных заказах бот присылает отдельные уведомления.")
+        return ctx.show("\n".join(lines), [MENU_BTN])
     if cmd == "/ymnow":  # проверить Маркет прямо сейчас (только менеджер)
         if sender_id not in config.MANAGER_IDS:
             return ctx.show("Команда только для менеджера.", [MENU_BTN])
