@@ -88,6 +88,43 @@ def fetch_unfulfilled(limit: int = 100, max_pages: int = 10, only_active: bool =
     return out
 
 
+def fetch_posting(posting_number: str):
+    """Подробности одного отправления (/v3/posting/fbs/get) — в списке телефон покупателя может быть пустым,
+    а здесь он иногда есть. None при любой ошибке (это только дополнительная попытка)."""
+    try:
+        r = _post("/v3/posting/fbs/get", {"posting_number": posting_number,
+                                          "with": {"analytics_data": True, "financial_data": False}})
+        if r.status_code != 200:
+            log.info("Озон: /v3/posting/fbs/get вернул %s: %s", r.status_code, r.text[:200])
+            return None
+        return r.json().get("result") or None
+    except requests.RequestException:
+        log.exception("Озон: не получилось запросить подробности отправления")
+        return None
+
+
+def _find_phone(p: dict) -> str:
+    c = p.get("customer") or {}
+    a = p.get("addressee") or {}
+    for v in (c.get("phone"), (c.get("address") or {}).get("phone"), a.get("phone")):
+        if v:
+            return str(v).strip()
+    return ""
+
+
+def enrich(p: dict) -> dict:
+    """Для городского заказа без телефона в списке пробуем взять его из подробностей отправления."""
+    if channel_guess(p) == "ПЭК" or _find_phone(p):
+        return p
+    full = fetch_posting(str(p.get("posting_number")))
+    if full:
+        phone = _find_phone(full)
+        if phone:
+            p = dict(p)
+            p["customer"] = dict(p.get("customer") or {}, phone=phone)
+    return p
+
+
 # ------------------------------------------------------------ оформление
 def _date(s: str) -> str:
     """'2026-10-25T21:00:00Z' -> '26.окт' (по московскому времени, как в таблице)."""
@@ -155,7 +192,7 @@ def _customer(p: dict) -> tuple:
     tail = (addr.get("address_tail") or "").strip()
     head = city or region
     address = ", ".join(x for x in (head, tail) if x)
-    phone = str(c.get("phone") or addr.get("phone") or "").strip()
+    phone = _find_phone(p)
     return address, phone
 
 
@@ -224,7 +261,7 @@ def backfill() -> tuple:
     active = fetch_unfulfilled()
     rows, manual = [], 0
     for p in active:
-        got = to_table_orders(p)
+        got = to_table_orders(enrich(p))
         if got:
             rows += got
         else:
@@ -300,6 +337,13 @@ def discovery(raw: bool = False) -> list:
         who = json.dumps({"customer": mask(first.get("customer"), "customer"),
                           "addressee": mask(first.get("addressee"), "addressee")}, ensure_ascii=False, indent=1)
         out.append("Покупатель в первом заказе (значения скрыты, видны только поля):\n" + who)
+        full = fetch_posting(str(first.get("posting_number"))) if channel_guess(first) != "ПЭК" else None
+        if full:
+            out.append("Подробности (/v3/posting/fbs/get), покупатель:\n" + json.dumps(
+                {"customer": mask(full.get("customer"), "customer"),
+                 "addressee": mask(full.get("addressee"), "addressee")}, ensure_ascii=False, indent=1))
+        elif channel_guess(first) != "ПЭК":
+            out.append("Подробности отправления (/v3/posting/fbs/get) получить не удалось — смотрите лог бота.")
         out.append("Сырые данные (имена, телефоны и адреса скрыты):\n" + (text if len(text) < 3300 else text[:3300] + "\n… (обрезано)"))
     return out
 
@@ -322,7 +366,7 @@ def poll(notify) -> dict:
         if config.YM_AUTOADD:
             to_add, by_posting = [], {}
             for p in fresh:
-                got = to_table_orders(p)
+                got = to_table_orders(enrich(p))
                 pn = str(p["posting_number"])
                 if got:
                     to_add += got
@@ -338,9 +382,10 @@ def poll(notify) -> dict:
                     if first.order_no not in added_nos:
                         tags[pn] = "уже был в таблице"
                     elif first.channel == "ОЗ":
-                        ok = first.shipment_or_phone and "," in (first.address or "")
+                        miss = [x for x, ok in (("телефон", bool(first.shipment_or_phone)),
+                                                ("адрес", "," in (first.address or ""))) if not ok]
                         tags[pn] = "✅ добавлен в таблицу" + (f" ({len(got)} шт.)" if len(got) > 1 else "") + (
-                            "" if ok else "\n⚠️ адрес или телефон получены не полностью — проверьте строку в таблице")
+                            f"\n⚠️ Озон не отдал: {', '.join(miss)} — впишите в таблицу вручную" if miss else "")
                     else:
                         tags[pn] = "✅ добавлен в таблицу, адрес впишите вручную (Озон его не отдаёт)"
             except Exception:
