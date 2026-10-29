@@ -818,6 +818,20 @@ def handle_message(u: dict) -> None:
                             (f":\n{me}" if me else "."), [MENU_BTN])
         return ctx.show(f"✅ Таблица подключена, лист «Доставки» создан:\n{url}", [MENU_BTN])
 
+    if cmd == "/costback":  # досчитать стоимость по уже доставленным заказам из таблицы (только админ)
+        if sender_id not in config.MANAGER_IDS:
+            return
+        if not costs.enabled():
+            return ctx.show("Сначала подключите таблицу стоимости: /costsheet ссылка", [MENU_BTN])
+        ctx.show("Считаю доставленные заказы…", [MENU_BTN])
+        try:
+            added, skipped, days = costs.backfill(now_date())
+        except Exception as e:
+            log.exception("Не смог досчитать стоимость")
+            return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
+        return ctx.show(f"✅ Добавлено в расчёт: {added} доставок за {days} дн.\n"
+                        f"Уже были в расчёте (пропущены): {skipped}.\n\n" + costs.sheet_url(), [MENU_BTN])
+
     if cmd == "/clear":  # чистка чатов бота у всех (только админ = менеджер из MANAGER_IDS)
         if sender_id not in config.MANAGER_IDS:
             return

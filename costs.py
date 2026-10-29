@@ -211,3 +211,35 @@ def summary(today) -> str:
     lines += ["", f"Вчера: {_money(per_day.get(yest, 0))}", f"За 7 дней: {_money(week)}",
               f"За {today:%m.%Y}: {_money(month)}"]
     return "\n".join(lines)
+
+
+def backfill(today) -> tuple:
+    """Досчитывает стоимость по уже доставленным заказам из таблицы заказов (статус «Доставлен ДД.ММ ЧЧ:ММ»).
+    Заказы, которые уже есть в таблице стоимости, пропускает. Возвращает (добавлено, пропущено, дней)."""
+    import re
+    from datetime import date
+    ws = _ws()
+    have = {v[5].strip() for v in ws.get_all_values()[1:] if len(v) > 5 and v[5].strip()}
+    by_day: dict = {}
+    skipped = 0
+    for o in sheets.read_orders(force=True):
+        m = re.match(r"доставлен\s+(\d{1,2})\.(\d{1,2})(?:\s+(\d{1,2}):(\d{2}))?", (o["status"] or "").lower())
+        if not m:
+            continue
+        if o["order_no"] in have:
+            skipped += 1
+            continue
+        d, mo = int(m.group(1)), int(m.group(2))
+        try:
+            day = date(today.year, mo, d)
+        except ValueError:
+            continue
+        if day > today:  # декабрьская доставка, а сейчас январь
+            day = date(today.year - 1, mo, d)
+        t = (int(m.group(3) or 0), int(m.group(4) or 0))
+        by_day.setdefault(day, []).append((t, o))
+    added = 0
+    for day in sorted(by_day):
+        marked = [o for _, o in sorted(by_day[day], key=lambda x: (x[0], x[1]["row"]))]
+        added += record(marked, day)
+    return added, skipped, len(by_day)
