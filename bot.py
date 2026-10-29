@@ -783,7 +783,7 @@ def handle_message(u: dict) -> None:
         if cmd == "/oz":
             ctx.show("Запрашиваю данные Озона…", [MENU_BTN])
             try:
-                parts = oz.discovery(raw="raw" in raw.lower().split()[1:2])
+                parts = oz.discovery((raw.lower().split() + [""])[1])
             except Exception:
                 log.exception("Ошибка запроса к Озону")
                 parts = ["⚠️ Не получилось связаться с Озоном, подробности в логах."]

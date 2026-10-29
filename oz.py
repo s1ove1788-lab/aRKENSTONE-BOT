@@ -303,8 +303,20 @@ def _short(p: dict) -> str:
             f"  {items}\n  {region_text(p)} · отгрузка {_date(p.get('shipment_date'))}")
 
 
-def discovery(raw: bool = False) -> list:
-    """Сообщение для /oz: коротко и читаемо. С аргументом raw — «сырые» данные (для разработчика)."""
+def _fields_report(title: str, p: dict) -> str:
+    """Строка вида «В списке заказов: имя ✓ · адрес ✓ · телефон ✗» (сами данные не показываются)."""
+    c = p.get("customer") or {}
+    addr = c.get("address") or {}
+    name = bool(c.get("name") or (p.get("addressee") or {}).get("name"))
+    address = bool(addr.get("address_tail") or addr.get("city"))
+    phone = bool(_find_phone(p))
+    mark = lambda ok: "✓" if ok else "✗"
+    return f"{title}: имя {mark(name)} · адрес {mark(address)} · телефон {mark(phone)}"
+
+
+def discovery(mode: str = "") -> list:
+    """Сообщение для /oz: коротко и читаемо. «/oz raw» — ещё и компактная проверка, какие данные отдаёт Озон;
+    «/oz json» — полные «сырые» данные (для разработчика)."""
     try:
         postings = fetch_unfulfilled(only_active=False)
     except Exception as e:
@@ -324,27 +336,26 @@ def discovery(raw: bool = False) -> list:
         sorted(postings, key=lambda p: p.get("in_process_at") or "", reverse=True)[:3]
     lines += ["", "Ждущие отгрузки:" if active else "Последние заказы (ждущих отгрузки сейчас нет):"]
     lines += [_short(p) for p in shown]
-    row = next((r[0] for r in (to_table_orders(p) for p in shown) if r), None)
+    row = next((r[0] for r in (to_table_orders(enrich(p)) for p in shown[:1]) if r), None)
     if row:
         lines += ["", "Так заказ запишется в таблицу:",
                   f"{row.channel} · {row.kind} · отгрузка {row.ship_date} · доставка {row.delivery_date}\n"
-                  f"{row.size} {row.color} · {row.order_no} · {row.article} · трек {row.shipment_or_phone}"]
+                  f"{row.size} {row.color} · {row.order_no} · {row.article}" +
+                  (f" · трек {row.shipment_or_phone}" if row.kind == "пэк"
+                   else f" · адрес {'✓' if row.address else '✗'} · телефон {'✓' if row.shipment_or_phone else '✗'}")]
     out = ["\n".join(lines)]
-    if raw:
+    if mode in ("raw", "json"):
+        first = sorted(postings, key=lambda p: p.get("status") not in ACTIVE_STATUSES)[0]
+        full = fetch_posting(str(first.get("posting_number"))) if channel_guess(first) != "ПЭК" else None
+        out[0] += "\n\n🔎 Что отдаёт Озон по покупателю (первый заказ):\n" + _fields_report("В списке заказов", first)
+        if full:
+            out[0] += "\n" + _fields_report("В подробностях заказа", full)
+        elif channel_guess(first) != "ПЭК":
+            out[0] += "\nПодробности заказа получить не удалось (смотрите лог бота)."
+    if mode == "json":
         text = json.dumps(mask(sorted(postings, key=lambda p: p.get("status") not in ACTIVE_STATUSES)[:2]),
                           ensure_ascii=False, indent=1)
-        first = sorted(postings, key=lambda p: p.get("status") not in ACTIVE_STATUSES)[0]
-        who = json.dumps({"customer": mask(first.get("customer"), "customer"),
-                          "addressee": mask(first.get("addressee"), "addressee")}, ensure_ascii=False, indent=1)
-        out.append("Покупатель в первом заказе (значения скрыты, видны только поля):\n" + who)
-        full = fetch_posting(str(first.get("posting_number"))) if channel_guess(first) != "ПЭК" else None
-        if full:
-            out.append("Подробности (/v3/posting/fbs/get), покупатель:\n" + json.dumps(
-                {"customer": mask(full.get("customer"), "customer"),
-                 "addressee": mask(full.get("addressee"), "addressee")}, ensure_ascii=False, indent=1))
-        elif channel_guess(first) != "ПЭК":
-            out.append("Подробности отправления (/v3/posting/fbs/get) получить не удалось — смотрите лог бота.")
-        out.append("Сырые данные (имена, телефоны и адреса скрыты):\n" + (text if len(text) < 3300 else text[:3300] + "\n… (обрезано)"))
+        out.append("Сырые данные (значения покупателя скрыты):\n" + (text if len(text) < 3300 else text[:3300] + "\n… (обрезано)"))
     return out
 
 
