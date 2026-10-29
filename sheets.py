@@ -353,6 +353,43 @@ def latest_stock() -> dict:
     return res
 
 
+# --------------------------------------------------------------- возвраты
+RETURNS_HEADERS = ["Дата", "Тип возврата", "Размер", "Статус"]
+RET_TAKEN = "Забрал курьер"
+RET_DONE = "Принят на склад"
+
+
+def _returns_ws():
+    return _tab(config.RETURNS_TAB, RETURNS_HEADERS)
+
+
+def add_returns(items: list, day) -> None:
+    """items: [(тип возврата, размер текстом)]. Каждая кровать — строка со статусом «Забрал курьер»."""
+    if items:
+        d = day.strftime("%d.%m.%Y")
+        _returns_ws().append_rows([[d, kind, size, RET_TAKEN] for kind, size in items], value_input_option="RAW")
+
+
+def pending_returns() -> list:
+    """Возвраты, которые курьер забрал, но склад ещё не принял: [{'row', 'date', 'type', 'size'}]."""
+    res = []
+    for i, v in enumerate(_returns_ws().get_all_values()[1:], start=2):
+        v = list(v) + [""] * (4 - len(v))
+        if v[2].strip() and v[3].strip() in ("", RET_TAKEN):
+            res.append({"row": i, "date": v[0].strip(), "type": v[1].strip(), "size": v[2].strip()})
+    return res
+
+
+def mark_returns_received(rows: list) -> list:
+    """Ставит «Принят на склад» тем из указанных строк, которые всё ещё ждут приёмки. Возвращает принятые."""
+    wanted = set(rows)
+    ok = [r for r in pending_returns() if r["row"] in wanted]
+    if ok:
+        _returns_ws().batch_update([{"range": f"D{r['row']}", "values": [[RET_DONE]]} for r in ok],
+                                   value_input_option="RAW")
+    return ok
+
+
 # -------------------------------------------------------------- отгрузки
 def add_shipment(code: str, qty: int, who: str, before, after, day, order_no: str = "",
                  legs: str = "", channel: str = "") -> None:

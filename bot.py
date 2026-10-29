@@ -170,7 +170,7 @@ def home(ctx: Ctx, notification=None) -> None:
         text = "🚚 Меню курьера"
     else:
         rows = [[cb("📋 План производства", "p:plan")], [cb("✅ Кровати отгружены", "p:shipped")],
-                [cb("📦 Остатки", "p:stock")], CHANGE_ROLE]
+                [cb("↩️ Возвраты", "p:ret")], [cb("📦 Остатки", "p:stock")], CHANGE_ROLE]
         text = "🏭 Меню производства"
     if config.AI_KEY and role in config.AI_ROLES:
         rows.insert(len(rows) - 1, [cb("💬 ИИ-помощник", "ai:start")])  # перед «Сменить роль»
@@ -279,46 +279,62 @@ def courier_pay(ctx: Ctx, today) -> None:
     ctx.show(text, rows)
 
 
-RETURN_HELP = ("↩️ Возврат\n\nНапишите, какую кровать забрали, например:\n"
-               "• 160/30 ч — одна чёрная\n• 140/35 б 2 — две белых с ножками 35\n"
-               "Несколько позиций — каждая с новой строки.\n\n"
-               "Кровать вернётся на остаток склада, а в расчёте появится возврат "
-               f"({config.COST_RETURN} ₽ за штуку).")
+RETURN_TYPES = {"ya": "Яндекс", "oz": "Озон", "wb": "Вайлдберриз"}
 
 
 def courier_return_start(ctx: Ctx) -> None:
-    pending[ctx.uid] = ("return", None)
-    ctx.show(RETURN_HELP, [[cb("⬅️ Отмена", "c:home")]])
+    pending.pop(ctx.uid, None)
+    rows = [[cb(label, f"c:rt:{key}")] for key, label in RETURN_TYPES.items()]
+    rows.append([cb("⬅️ Отмена", "c:home")])
+    ctx.show("↩️ Возврат\n\nС какой площадки возврат?", rows)
 
 
-def save_return(ctx: Ctx, name: str, text: str) -> None:
+def courier_return_type(ctx: Ctx, key: str) -> None:
+    label = RETURN_TYPES.get(key)
+    if not label:
+        return courier_return_start(ctx)
+    pending[ctx.uid] = ("return", label)
+    ctx.show(f"↩️ Возврат · {label}\n\nНапишите, какую кровать забрали, например:\n"
+             "• 160/30 ч — одна чёрная\n• 140/35 б 2 — две белых с ножками 35\n"
+             "Несколько позиций — каждая с новой строки.\n\n"
+             "Кровать попадёт в остатки, когда производство примет её на склад.",
+             [[cb("⬅️ Назад", "c:ret")]])
+
+
+def save_return(ctx: Ctx, name: str, text: str, kind: str = "") -> None:
     today = now_date()
     items = logic.parse_shipments(text)
-    stock = sheets.latest_stock()
-    lines, for_costs = [], []
+    lines, rows, for_costs = [], [], []
     for it in items:
         if "error" in it:
             lines.append(f"⚠️ «{it['line']}»: {it['error']}")
             continue
-        code, qty = it["code"], it["qty"]
-        before = stock[code][0] if code in stock else 0
-        after = before + qty
-        sheets.add_stock(code, after, f"{name} (возврат)")
-        stock[code] = (after, "")
-        title = logic.code_name(code, it.get("legs") or "")
-        lines.append(f"✅ {title} ×{qty} — на остатке {before} → {after}")
-        for_costs.append((title, qty))
-    if for_costs:
-        try:
-            n = costs.record_returns(for_costs, today)
-            if n:
-                lines.append(f"💰 В расчёт добавлено возвратов: {n} × {config.COST_RETURN} ₽")
-        except Exception:
-            log.exception("Не смог записать возврат в таблицу расчёта")
-            lines.append("⚠️ В таблицу расчёта возврат записать не удалось, сообщите менеджеру.")
-        pending.pop(ctx.uid, None)
-        return ctx.show("\n".join(lines), [[cb("↩️ Ещё возврат", "c:ret")], [cb("⬅️ В меню", "c:home")]])
-    ctx.show("\n".join(lines or ["Не понял сообщение."]) + "\n\nПример: 160/30 ч", [[cb("⬅️ Отмена", "c:home")]])
+        title = logic.code_name(it["code"], it.get("legs") or "")
+        lines.append(f"✅ {title} ×{it['qty']} — {kind}")
+        rows += [(kind, title)] * it["qty"]
+        for_costs.append((title, it["qty"]))
+    if not rows:
+        return ctx.show("\n".join(lines or ["Не понял сообщение."]) + "\n\nПример: 160/30 ч",
+                        [[cb("⬅️ Назад", "c:ret")]])
+    try:
+        sheets.add_returns(rows, today)
+    except Exception:
+        log.exception("Не смог записать возврат в таблицу возвратов")
+        return ctx.show("⚠️ Не получилось записать возврат в таблицу, попробуйте ещё раз.", [[cb("⬅️ Назад", "c:ret")]])
+    try:
+        n = costs.record_returns(for_costs, today)
+        if n:
+            lines.append(f"💰 В расчёт добавлено возвратов: {n} × {config.COST_RETURN} ₽")
+    except Exception:
+        log.exception("Не смог записать возврат в таблицу расчёта")
+        lines.append("⚠️ В таблицу расчёта возврат записать не удалось, сообщите менеджеру.")
+    pending.pop(ctx.uid, None)
+    ctx.show("\n".join(lines) + "\nПроизводство отметит, когда примет на склад.",
+             [[cb("↩️ Ещё возврат", "c:ret")], [cb("⬅️ В меню", "c:home")]])
+    for uid, u in list(users.items()):  # производству — уведомление, что есть что принять
+        if u["role"] == "prod" and allowed(uid, "prod"):
+            mx.send({"type": "user", "id": uid}, f"↩️ Курьер забрал возврат ({kind}): "
+                    + ", ".join(f"{t} ×{n}" for t, n in for_costs), [[cb("↩️ Принять на склад", "p:ret")]])
 
 
 def courier_day(ctx: Ctx, today, n: int) -> None:
@@ -376,6 +392,8 @@ def courier(ctx: Ctx, payload: str) -> None:
         return courier_pay(ctx, today)
     if action == "ret":
         return courier_return_start(ctx)
+    if action == "rt" and len(parts) >= 3:
+        return courier_return_type(ctx, parts[2])
     if action == "d" and len(parts) >= 3 and parts[2] in ("1", "2"):
         return courier_day(ctx, today, int(parts[2]))
     if action == "ru":
@@ -421,6 +439,39 @@ def courier(ctx: Ctx, payload: str) -> None:
 
 
 # ------------------------------------------------------------ производство
+def production_returns(ctx: Ctx, action: str, arg: str = "") -> None:
+    """Возвраты: список того, что курьер забрал; «Принять на склад» меняет статус и добавляет кровать в остатки."""
+    note = ""
+    if action in ("rcv", "rcvall"):
+        pend = sheets.pending_returns()
+        want = [r["row"] for r in pend] if action == "rcvall" else ([int(arg)] if arg.isdigit() else [])
+        accepted = sheets.mark_returns_received(want)
+        if accepted:
+            stock = sheets.latest_stock()
+            for r in accepted:
+                got = logic.parse_shipments(r["size"])
+                if got and "code" in got[0]:
+                    code = got[0]["code"]
+                    new = (stock[code][0] if code in stock else 0) + 1
+                    sheets.add_stock(code, new, "возврат")
+                    stock[code] = (new, "")
+            note = f"✅ Принято на склад: {len(accepted)} шт."
+        else:
+            note = "Уже принято"
+    pend = sheets.pending_returns()
+    if not pend:
+        return ctx.show((note + "\n\n" if note else "") + "↩️ Возвратов к приёмке нет.", [MENU_BTN])
+    lines = [note, ""] if note else []
+    lines += [f"↩️ Ждут приёмки на склад: {len(pend)}", ""]
+    lines += [f"• {r['size']} — {r['type']} ({r['date']})" for r in pend[:15]]
+    if len(pend) > 15:
+        lines.append(f"…и ещё {len(pend) - 15}")
+    rows = [[cb(f"✅ {r['size']} · {r['type']}", f"p:rcv:{r['row']}")] for r in pend[:10]]
+    rows.append([cb(f"✅ Принять все ({len(pend)})", "p:rcvall")])
+    rows.append(MENU_BTN)
+    ctx.show("\n".join(lines), rows)
+
+
 def production_shipped(ctx: Ctx) -> None:
     """«Кровати отгружены»: фиксируем, сколько отгружено сегодня, и обнуляем счётчик отгрузок на сегодня."""
     today = now_date()
@@ -441,8 +492,11 @@ def production_shipped(ctx: Ctx) -> None:
 def production(ctx: Ctx, payload: str) -> None:
     parts = payload.split(":", 2)
     action = parts[1] if len(parts) > 1 else ""
-    if action in ("plan", "stock", "cur", "shipped"):
+    if action in ("plan", "stock", "cur", "shipped", "ret", "rcv", "rcvall"):
         pending.pop(ctx.uid, None)
+
+    if action in ("ret", "rcv", "rcvall"):
+        return production_returns(ctx, action, parts[2] if len(parts) > 2 else "")
 
     if action == "shipped":
         return production_shipped(ctx)
@@ -900,7 +954,7 @@ def handle_message(u: dict) -> None:
             if mode[0] == "ai":
                 return ai_answer(ctx, raw)
             if mode[0] == "return":
-                return save_return(ctx, name, raw)
+                return save_return(ctx, name, raw, mode[1] or "")
             return save_stock_from_text(ctx, name, raw)
         except Exception:
             log.exception("Ошибка при записи отгрузки/остатка")
