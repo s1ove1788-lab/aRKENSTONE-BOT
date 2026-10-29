@@ -48,6 +48,31 @@ def create(email: str) -> str:
     return f"https://docs.google.com/spreadsheets/d/{book.id}/edit"
 
 
+def bot_email() -> str:
+    """Почта сервисного аккаунта бота — её нужно добавить редактором в таблицу."""
+    try:
+        return sheets.get_client().http_client.auth.service_account_email
+    except Exception:
+        try:
+            return sheets.get_client().auth.service_account_email
+        except Exception:
+            return ""
+
+
+def connect(link: str) -> str:
+    """Подключает уже существующую таблицу (ссылка или код). Её создаёт человек сам и даёт боту доступ редактора."""
+    import re
+    m = re.search(r"/d/([A-Za-z0-9_-]+)", link) or re.fullmatch(r"\s*([A-Za-z0-9_-]{20,})\s*", link)
+    if not m:
+        raise ValueError("не нашёл код таблицы в ссылке")
+    sid = m.group(1)
+    book = sheets.get_client().open_by_key(sid)  # упадёт, если у бота нет доступа
+    sheets.set_setting("cost_sheet_id", sid)
+    _state["ws"] = None
+    _ws()  # создаст лист «Доставки» с шапкой
+    return f"https://docs.google.com/spreadsheets/d/{book.id}/edit"
+
+
 def delivery_type(o: dict) -> tuple:
     """(тип для таблицы, базовая цена)."""
     ch = (o.get("channel") or "").upper().replace("ЯС", "ЯМ")

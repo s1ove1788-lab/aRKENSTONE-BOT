@@ -801,18 +801,22 @@ def handle_message(u: dict) -> None:
         parts = raw.split()
         if costs.enabled():
             return ctx.show("Таблица стоимости доставок уже создана:\n" + costs.sheet_url(), [MENU_BTN])
-        if len(parts) < 2 or "@" not in parts[1]:
-            return ctx.show("Напишите команду с вашей почтой Google, например:\n/costsheet name@gmail.com\n"
-                            "Таблицу увидите только вы (и тот, чью почту укажете).", [MENU_BTN])
+        if len(parts) < 2:
+            me = costs.bot_email() or "(почта бота — поле client_email в ключе Google)"
+            return ctx.show("Как подключить таблицу стоимости доставок:\n"
+                            "1) Создайте у себя в Google Таблицах пустую таблицу (любое название).\n"
+                            f"2) Нажмите «Настройки доступа» и добавьте как редактора почту бота:\n{me}\n"
+                            "3) Скопируйте ссылку на таблицу и пришлите мне:\n/costsheet ссылка",
+                            [MENU_BTN])
         try:
-            url = costs.create(parts[1])
+            url = costs.connect(parts[1])
         except Exception as e:
-            log.exception("Не смог создать таблицу стоимости доставок")
-            return ctx.show("⚠️ Не получилось создать таблицу: " + str(e)[:300] +
-                            "\n\nЧаще всего нужно включить «Google Drive API» в Google Cloud (тот же проект, где "
-                            "создан ключ бота). Напишите мне, подскажу по шагам.", [MENU_BTN])
-        return ctx.show(f"✅ Таблица создана и открыта для {parts[1]} (письмо с доступом придёт на почту):\n{url}",
-                        [MENU_BTN])
+            log.exception("Не смог подключить таблицу стоимости доставок")
+            me = costs.bot_email()
+            return ctx.show("⚠️ Не получилось подключить таблицу: " + str(e)[:200] +
+                            "\n\nПроверьте, что ссылка правильная и таблица открыта для редактирования почте бота" +
+                            (f":\n{me}" if me else "."), [MENU_BTN])
+        return ctx.show(f"✅ Таблица подключена, лист «Доставки» создан:\n{url}", [MENU_BTN])
 
     if cmd == "/clear":  # чистка чатов бота у всех (только админ = менеджер из MANAGER_IDS)
         if sender_id not in config.MANAGER_IDS:
