@@ -119,8 +119,19 @@ def role_rows(uid=None) -> list:
     return [[cb(label, f"role:{key}")] for key, label in rows if uid is None or allowed(uid, key)]
 
 
+def banner_text(uid) -> str:
+    """«📦 Отгрузок на сегодня: N шт.» + пустая строка; пусто, если человеку не положено или таблица недоступна."""
+    if not known(uid):
+        return ""
+    try:
+        return logic.today_banner(sheets.read_orders(), now_date()) + "\n\n"
+    except Exception:
+        log.exception("Не смог посчитать отгрузки на сегодня")
+        return ""
+
+
 def role_choice(ctx: Ctx, intro: str = "", notification=None) -> None:
-    text = (intro + "\n\n" if intro else "") + "Кто вы? Выберите роль:"
+    text = banner_text(ctx.uid) + (intro + "\n\n" if intro else "") + "Кто вы? Выберите роль:"
     ctx.show(text, role_rows(ctx.uid), notification)
 
 
@@ -152,11 +163,7 @@ def home(ctx: Ctx, notification=None) -> None:
         text = "🏭 Меню производства"
     if config.AI_KEY and role in config.AI_ROLES:
         rows.insert(len(rows) - 1, [cb("💬 ИИ-помощник", "ai:start")])  # перед «Сменить роль»
-    try:
-        text = logic.today_banner(sheets.read_orders(), now_date()) + "\n\n" + text
-    except Exception:
-        log.exception("Не смог посчитать отгрузки на сегодня")
-    ctx.show(text, rows, notification)
+    ctx.show(banner_text(ctx.uid) + text, rows, notification)
 
 
 def daily_refresh() -> None:
