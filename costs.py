@@ -10,7 +10,7 @@ import sheets
 
 log = logging.getLogger("orders-bot")
 TAB = "Доставки"
-HEADERS = ["Дата доставки", "Тип", "Адрес", "Цена", "Итог дня", "Номер заказа"]
+HEADERS = ["Дата доставки", "Тип", "Адрес", "Цена", "Итог дня", "Номер заказа", "Размер", "Дата отгрузки"]
 _state = {"ws": None, "sep": ","}
 
 
@@ -70,10 +70,13 @@ def _ws():
             ws = book.worksheet(TAB)
         except gspread.WorksheetNotFound:
             ws = book.add_worksheet(title=TAB, rows=500, cols=len(HEADERS))
-        if not ws.row_values(1):
+        first = ws.row_values(1)
+        if first and len(first) < len(HEADERS) and first[:6] == HEADERS[:6]:
+            ws.update(range_name="A1:H1", values=[HEADERS], value_input_option="RAW")  # старая таблица: добавляем колонки
+        if not first:
             ws.append_row(HEADERS, value_input_option="RAW")
             try:
-                ws.format("A1:F1", {"textFormat": {"bold": True}})
+                ws.format("A1:H1", {"textFormat": {"bold": True}})
                 ws.freeze(rows=1)
             except Exception:
                 pass
@@ -121,7 +124,8 @@ def record(marked: list, day) -> int:
         extra = config.COST_CITY_EXTRA if kind == "Город" else config.COST_EXTRA
         price = base if counts.get(k, 0) == 0 else extra
         counts[k] = counts.get(k, 0) + 1
-        rows.append([date, kind, o.get("address") or "", price, "", o.get("order_no", "")])
+        rows.append([date, kind, o.get("address") or "", price, "", o.get("order_no", ""),
+                     " ".join(x for x in (o.get("size", ""), o.get("color", "")) if x), o.get("ship", "")])
     resp = ws.append_rows(rows, value_input_option="RAW")
     rng = ((resp or {}).get("updates") or {}).get("updatedRange", "")  # «Доставки!A5:F7»
     try:
@@ -140,7 +144,7 @@ def record_returns(items: list, day) -> int:
     date = day.strftime("%d.%m.%Y")
     rows = []
     for name, qty in items:
-        rows += [[date, "Возврат", "", config.COST_RETURN, "", f"возврат: {name}"] for _ in range(qty)]
+        rows += [[date, "Возврат", "", config.COST_RETURN, "", f"возврат: {name}", name, ""] for _ in range(qty)]
     resp = ws.append_rows(rows, value_input_option="RAW")
     rng = ((resp or {}).get("updates") or {}).get("updatedRange", "")
     try:
