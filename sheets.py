@@ -451,6 +451,15 @@ def set_shipment_cell(row: int, value: str) -> None:
     _invalidate()
 
 
+def set_order_dates(updates: list) -> None:
+    """updates: [(номер строки, номер столбца, текст)] — меняет даты в таблице заказов (перенос доставки)."""
+    if updates:
+        orders_ws().batch_update([{"range": f"{chr(64 + c)}{r}", "values": [[t]]} for r, c, t in updates],
+                                 value_input_option="RAW")
+        _invalidate()
+        safe_sync_colors()
+
+
 # ------------------------------------------------------------------ Озон
 def oz_seen() -> set:
     return _handled(config.OZON_TAB)

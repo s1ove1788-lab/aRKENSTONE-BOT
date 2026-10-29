@@ -384,6 +384,7 @@ def courier_city(ctx: Ctx, today, notification=None) -> None:
 def _decision_rows(kind: str, ident: str, back: str) -> list:
     return [[cb("✅ Доставлен сегодня", f"c:done:{kind}:{ident}")],
             [cb("❌ Не доставлен", f"c:fail:{kind}:{ident}")],
+            [cb("📅 Перенос", f"c:mv:{kind}:{ident}")],
             [cb("⬅️ К списку", back)]]
 
 
@@ -410,7 +411,7 @@ def courier(ctx: Ctx, payload: str) -> None:
 
     if action in ("g", "o") and len(parts) >= 3:
         kind, ident = action, payload.split(":", 2)[2]
-    elif action in ("done", "fail") and len(parts) == 4:
+    elif action in ("done", "fail", "mv") and len(parts) == 4:
         kind, ident = parts[2], parts[3]
     else:
         return home(ctx)
@@ -431,6 +432,10 @@ def courier(ctx: Ctx, payload: str) -> None:
     if action in ("g", "o"):
         text = logic.russia_card(found) if kind == "g" else logic.city_card(found)
         return ctx.show(text, _decision_rows(kind, ident, "c:ru" if kind == "g" else "c:city"))
+    if action == "mv":
+        pending[ctx.uid] = ("move", kind, ident)
+        return ctx.show("📅 Перенос доставки\n\nНапишите дату, на которую переносим, например:\n1.11\n\n"
+                        "Заказ сразу перейдёт на этот день.", [[cb("⬅️ Отмена", f"c:{kind}:{ident}")]])
     if action == "done":
         marked = sheets.mark_delivered([o["order_no"] for o in orders])
         try:
@@ -443,6 +448,48 @@ def courier(ctx: Ctx, payload: str) -> None:
             log.exception("Не смог записать стоимость доставки")
         return back(ctx, today, "✅ Записано: доставлено")
     return back(ctx, today, "Оставлено в списке")
+
+
+def save_move(ctx: Ctx, name: str, text: str, kind: str, ident: str) -> None:
+    """Курьер вписал дату переноса: меняем дату в таблице заказов и сообщаем менеджерам."""
+    today = now_date()
+    items = _items(today)
+    if kind == "g":
+        found = next((g for g in logic.russia_groups(items) if g["key"] == ident), None)
+        orders = found["orders"] if found else []
+        back = courier_ru
+    else:
+        o = next((o for o, _ in items if o["order_no"] == ident and logic.is_city(o)), None)
+        orders = [o] if o else []
+        back = courier_city
+    if not orders:
+        pending.pop(ctx.uid, None)
+        return back(ctx, today, "Уже обработано")
+    r = logic.parse_range(text, today)
+    cancel = [[cb("⬅️ Отмена", f"c:{kind}:{ident}")]]
+    if not r:
+        return ctx.show("Не понял дату. Напишите, например: 1.11 или 3 ноября", cancel)
+    day = r[0]
+    if day <= today:
+        return ctx.show(f"Дата {day:%d.%m} уже прошла или сегодняшняя. Напишите будущую дату, например: "
+                        f"{(today + timedelta(days=1)):%d.%m}", cancel)
+    new = f"{day.day:02d}.{ym_watch.MONTHS[day.month - 1]}"
+    updates = []
+    for o in orders:
+        key = logic.key_text(o)
+        cols = {c for c, v in ((4, o["ship"]), (5, o["delivery"])) if v and v == key}
+        for c in cols or {5 if logic.is_city(o) else 4}:
+            updates.append((o["row"], c, new))
+    sheets.set_order_dates(updates)
+    pending.pop(ctx.uid, None)
+    place = (orders[0].get("address") or "").strip()
+    note = f"📅 Курьер {name} перенёс доставку на {new}: " + ", ".join(f"№ {o['order_no']}" for o in orders[:5])
+    if place:
+        note += f"\n{logic.short(place, 70)}"
+    for uid, u in list(users.items()):
+        if u["role"] == "manager" and uid != ctx.uid and allowed(uid, "manager"):
+            mx.send({"type": "user", "id": uid}, note)
+    return back(ctx, today, f"📅 Перенесено на {new}")
 
 
 # ------------------------------------------------------------ производство
@@ -955,6 +1002,8 @@ def handle_message(u: dict) -> None:
                 return ai_answer(ctx, raw)
             if mode[0] == "return":
                 return save_return(ctx, name, raw, mode[1] or "")
+            if mode[0] == "move":
+                return save_move(ctx, name, raw, mode[1], mode[2])
             return save_stock_from_text(ctx, name, raw)
         except Exception:
             log.exception("Ошибка при записи отгрузки/остатка")
