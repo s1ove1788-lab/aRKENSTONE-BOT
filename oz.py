@@ -136,11 +136,48 @@ def _delivery_text(p: dict) -> str:
     return f"{d1.day} {MONTHS_GEN[d1.month - 1]} – {d2.day} {MONTHS_GEN[d2.month - 1]}"
 
 
+def _customer(p: dict) -> tuple:
+    """(адрес, телефон) покупателя из отправления; пустые строки, если Озон их не отдал.
+    В уведомления эти данные не попадают — только в таблицу."""
+    c = p.get("customer") or {}
+    addr = c.get("address") or {}
+    city = (addr.get("city") or "").strip()
+    region = (addr.get("region") or "").strip()
+    tail = (addr.get("address_tail") or "").strip()
+    head = city or region
+    address = ", ".join(x for x in (head, tail) if x)
+    phone = str(c.get("phone") or addr.get("phone") or "").strip()
+    return address, phone
+
+
+def _range_text(d1, d2) -> str:
+    """Как у менеджера: «30.окт», «28-30 окт», «30.окт–02.ноя»."""
+    def one(d):
+        return f"{d.day:02d}.{MONTHS[d.month - 1]}"
+    if not d1:
+        return "—"
+    if not d2 or d1 == d2:
+        return one(d1)
+    if d1.month == d2.month:
+        return f"{d1.day}-{d2.day} {MONTHS[d1.month - 1]}"
+    return f"{one(d1)}–{one(d2)}"
+
+
+def _city_dates(p: dict) -> tuple:
+    """Для городского заказа: (дата отгрузки «от дня заказа до дня доставки», дата доставки)."""
+    a = p.get("analytics_data") or {}
+    d1, d2 = _local(a.get("delivery_date_begin")), _local(a.get("delivery_date_end"))
+    ship = _local(p.get("shipment_date"))
+    start = _local(p.get("in_process_at")) or ship
+    end = d2 or d1 or ship
+    return _range_text(start, end), _range_text(d1 or ship, d2 if d1 else None)
+
+
 def to_table_order(p: dict):
-    """Отправление Озона -> строка таблицы (формат менеджера: «ОЗ ПЭК», тип «пэк», номер отгрузки = трек ПЭК).
-    None — если автоматически добавлять нельзя (городской заказ, несколько позиций, незнакомый артикул)."""
-    if channel_guess(p) != "ПЭК":
-        return None
+    """Отправление Озона -> строка таблицы.
+    ПЭК: канал «ОЗ ПЭК», тип «пэк», номер отгрузки = трек ПЭК, адрес менеджер вписывает сам.
+    Город (своя доставка): канал «ОЗ», тип «город», адрес и телефон покупателя берём у Озона.
+    None — если автоматически добавлять нельзя (несколько позиций, незнакомый артикул)."""
     items = p.get("products") or []
     if len(items) != 1 or int(items[0].get("quantity") or 1) != 1:
         return None
@@ -148,14 +185,34 @@ def to_table_order(p: dict):
     a = parse_article(art)
     if not a:
         return None
-    ship = _local(p.get("shipment_date"))
-    return Order(
-        kind="пэк", channel="ОЗ ПЭК",
-        ship_date=f"{ship.day:02d}.{MONTHS[ship.month - 1]}" if ship else "—",
-        delivery_date=_delivery_text(p),
-        size=f"{a['width']}×{a['legs']}", color=COLOR_CODES.get(a["color_code"], ""),
-        order_no=str(p.get("posting_number")), article=art,
-        shipment_or_phone=str(p.get("tracking_number") or ""), address="")
+    common = dict(size=f"{a['width']}×{a['legs']}", color=COLOR_CODES.get(a["color_code"], ""),
+                  order_no=str(p.get("posting_number")), article=art)
+    if channel_guess(p) == "ПЭК":
+        ship = _local(p.get("shipment_date"))
+        return Order(
+            kind="пэк", channel="ОЗ ПЭК",
+            ship_date=f"{ship.day:02d}.{MONTHS[ship.month - 1]}" if ship else "—",
+            delivery_date=_delivery_text(p),
+            shipment_or_phone=str(p.get("tracking_number") or ""), address="", **common)
+    address, phone = _customer(p)
+    ship_text, delivery = _city_dates(p)
+    return Order(kind="город", channel="ОЗ", ship_date=ship_text, delivery_date=delivery,
+                 shipment_or_phone=phone, address=address or region_text(p), **common)
+
+
+def backfill() -> tuple:
+    """Дописывает в таблицу активные заказы Озона, которых там ещё нет (например, пришли до включения автозаписи).
+    Возвращает (найдено активных, добавлено, не удалось добавить автоматически)."""
+    active = fetch_unfulfilled()
+    rows, manual = [], 0
+    for p in active:
+        row = to_table_order(p)
+        if row:
+            rows.append(row)
+        else:
+            manual += 1
+    added = sheets.add_orders(rows) if rows else []
+    return len(active), len(added), manual
 
 
 def build_message(found: list, tags: dict = None) -> str:
@@ -248,14 +305,20 @@ def poll(notify) -> dict:
                 if row:
                     to_add.append(row)
                 else:
-                    tags[pn] = "➕ в таблицу не добавлен (городской заказ, несколько позиций или незнакомый артикул), внесите вручную"
+                    tags[pn] = "➕ в таблицу не добавлен (несколько позиций или незнакомый артикул), внесите вручную"
             try:
                 new_rows = sheets.add_orders(to_add) if to_add else []
                 added = len(new_rows)
                 added_nos = {x.order_no for x in new_rows}
                 for r in to_add:
-                    tags[r.order_no] = ("✅ добавлен в таблицу, адрес впишите вручную (Озон его не отдаёт)"
-                                        if r.order_no in added_nos else "уже был в таблице")
+                    if r.order_no not in added_nos:
+                        tags[r.order_no] = "уже был в таблице"
+                    elif r.channel == "ОЗ":
+                        ok = r.shipment_or_phone and "," in (r.address or "")
+                        tags[r.order_no] = "✅ добавлен в таблицу" + (
+                            "" if ok else "\n⚠️ адрес или телефон получены не полностью — проверьте строку в таблице")
+                    else:
+                        tags[r.order_no] = "✅ добавлен в таблицу, адрес впишите вручную (Озон его не отдаёт)"
             except Exception:
                 log.exception("Не удалось записать заказы Озона в таблицу")
                 for r in to_add:

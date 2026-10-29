@@ -247,7 +247,8 @@ def courier_pay(ctx: Ctx, today) -> None:
 RETURN_HELP = ("↩️ Возврат\n\nНапишите, какую кровать забрали, например:\n"
                "• 160/30 ч — одна чёрная\n• 140/35 б 2 — две белых с ножками 35\n"
                "Несколько позиций — каждая с новой строки.\n\n"
-               "Кровать вернётся на остаток склада.")
+               "Кровать вернётся на остаток склада, а в расчёте появится возврат "
+               f"({config.COST_RETURN} ₽ за штуку).")
 
 
 def courier_return_start(ctx: Ctx) -> None:
@@ -757,6 +758,22 @@ def handle_message(u: dict) -> None:
         for p in parts:
             mx.send(reply_to, p)
         return
+
+    if cmd == "/ozadd":  # дописать в таблицу активные заказы Озона, которых там нет (только менеджер)
+        if sender_id not in config.MANAGER_IDS:
+            return
+        if not (config.OZ_CLIENT_ID and config.OZ_API_KEY):
+            return ctx.show("Не заданы переменные OZON_CLIENT_ID и OZON_API_KEY в настройках бота.", [MENU_BTN])
+        ctx.show("Сверяю заказы Озона с таблицей…", [MENU_BTN])
+        try:
+            found, added, manual = oz.backfill()
+        except Exception:
+            log.exception("Ошибка /ozadd")
+            return ctx.show("⚠️ Не получилось: подробности в логах бота.", [MENU_BTN])
+        text = f"Озон: активных заказов — {found}, добавил в таблицу — {added}."
+        if manual:
+            text += f"\nНе добавлено автоматически (несколько позиций или незнакомый артикул): {manual}."
+        return ctx.show(text, [MENU_BTN])
 
     if cmd in ("/oz", "/oznow"):  # Озон: разведка / проверка сейчас (только менеджер)
         if sender_id not in config.MANAGER_IDS:
