@@ -126,7 +126,12 @@ def read_orders(force: bool = False) -> list:
     now = time.time()
     if not force and _cache["rows"] is not None and now - _cache["t"] < CACHE_TTL:
         return _cache["rows"]
-    values = orders_ws().get_all_values()
+    try:
+        values = orders_ws().get_all_values()
+    except gspread.exceptions.APIError:
+        # лист переименовали или переставили, пока бот работал — забываем запомненные листы и находим заново
+        _tabs.clear()
+        values = orders_ws().get_all_values()
     rows = []
     for i, v in enumerate(values[1:], start=2):
         v = list(v) + [""] * (len(HEADERS) - len(v))
