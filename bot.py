@@ -152,7 +152,24 @@ def home(ctx: Ctx, notification=None) -> None:
         text = "🏭 Меню производства"
     if config.AI_KEY and role in config.AI_ROLES:
         rows.insert(len(rows) - 1, [cb("💬 ИИ-помощник", "ai:start")])  # перед «Сменить роль»
+    try:
+        text = logic.today_banner(sheets.read_orders(), now_date()) + "\n\n" + text
+    except Exception:
+        log.exception("Не смог посчитать отгрузки на сегодня")
     ctx.show(text, rows, notification)
+
+
+def daily_refresh() -> None:
+    """Утром присылает всем свежее меню (с новым числом отгрузок на сегодня); старое меню убирается."""
+    for uid, u in list(users.items()):
+        if not allowed(uid, u["role"]) or uid in pending:
+            continue
+        try:
+            ctx = Ctx(uid)
+            ctx.fresh = True
+            home(ctx)
+        except Exception:
+            log.exception("Не смог обновить утреннее меню")
 
 
 # ----------------------------------------------------------------- ИИ-помощник
@@ -923,6 +940,8 @@ def main() -> None:
         log.exception("Не смог загрузить пользователей из таблицы. Проверьте SHEET_ID, "
                       "ключ Google и доступ сервисного аккаунта к таблице")
     last_reload = time.time()
+    _now = datetime.now(ZoneInfo(config.TIMEZONE))
+    daily = {"date": str(_now.date()) if _now.hour >= config.DAILY_HOUR else ""}  # сегодняшнее утро уже прошло — не дублируем
 
     marker = load_marker()
     if config.OZ_CLIENT_ID and config.OZ_API_KEY and config.OZ_WATCH:
@@ -933,6 +952,10 @@ def main() -> None:
         log.info("Слежение за Яндекс Маркетом выключено (YM_WATCH=0)")
     import requests  # локально, чтобы не тащить наверх ради одного except
     while True:
+        _now = datetime.now(ZoneInfo(config.TIMEZONE))
+        if config.DAILY_MENU and _now.hour >= config.DAILY_HOUR and daily["date"] != str(_now.date()):
+            daily["date"] = str(_now.date())
+            daily_refresh()
         if (config.OZ_CLIENT_ID and config.OZ_API_KEY and config.OZ_WATCH
                 and time.time() - oz_state["last"] >= config.YM_POLL_MINUTES * 60):
             oz_state["last"] = time.time()

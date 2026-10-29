@@ -249,6 +249,12 @@ def ship_plan(orders: list, today: date) -> Counter:
     return plan
 
 
+def today_banner(orders: list, today: date) -> str:
+    """Строка над меню: сколько кроватей по таблице нужно отгрузить сегодня (всего за день)."""
+    n = sum(ship_plan(orders, today).values())
+    return f"📦 Отгрузок на сегодня: {n} шт." if n else "📦 Отгрузок на сегодня нет"
+
+
 def _parse_ship_line(line: str) -> dict:
     s = line.lower().replace("ё", "е")
     m = next((m for m in re.finditer(r"(?<!\d)(\d{3})(?!\d)", s) if int(m.group(1)) in _WIDTHS), None)

@@ -44,6 +44,8 @@ def _int_env(name: str, default: int) -> int:
 
 COST_CITY = _int_env("COST_CITY", 2550)      # первая доставка за день по городу, ₽
 COST_CITY_EXTRA = _int_env("COST_CITY_EXTRA", 550)  # город: каждая следующая кровать на тот же адрес, ₽
+DAILY_HOUR = _int_env("DAILY_HOUR", 8)  # во сколько каждое утро обновлять меню с числом отгрузок на сегодня
+DAILY_MENU = os.getenv("DAILY_MENU", "1").strip().lower() not in ("0", "false", "no", "нет")
 COST_RETURN = _int_env("COST_RETURN", 1500)  # возврат (за одну кровать), ₽
 COST_RUSSIA = _int_env("COST_RUSSIA", 2800)  # первая доставка за день: ЯМ СГТ, ПЭК, ВБ КГТ, ₽
 COST_EXTRA = _int_env("COST_EXTRA", 600)     # каждая следующая кровать того же типа в тот же день, ₽
