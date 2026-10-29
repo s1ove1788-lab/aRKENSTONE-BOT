@@ -421,10 +421,23 @@ def shipped_on(day) -> dict:
 
 
 # ---------------------------------------------------------------- Маркет
+_OLD_NOTES = ("было до запуска", "первый запуск")
+
+
+def _handled(tab: str) -> set:
+    """ID, о которых бот уже сообщал. Записи «было до запуска» не считаются: такие заказы снова сверяются с таблицей."""
+    return {v[0].strip() for v in _tab(tab, MARKET_HEADERS).get_all_values()[1:]
+            if v and v[0].strip() and (len(v) < 4 or v[3].strip() not in _OLD_NOTES)}
+
+
+def table_order_ids() -> set:
+    """Номера заказов, которые уже есть в таблице (у Озона «123-1#2» считается как «123-1»)."""
+    return {r["order_no"].split("#")[0] for r in read_orders(force=True)}
+
+
 def market_seen() -> set:
     """ID заказов Маркета, о которых бот уже знает."""
-    return {v[0].strip() for v in _tab(config.MARKET_TAB, MARKET_HEADERS).get_all_values()[1:]
-            if v and v[0].strip()}
+    return _handled(config.MARKET_TAB)
 
 
 def market_add(rows: list) -> None:
@@ -440,7 +453,7 @@ def set_shipment_cell(row: int, value: str) -> None:
 
 # ------------------------------------------------------------------ Озон
 def oz_seen() -> set:
-    return {v[0].strip() for v in _tab(config.OZON_TAB, MARKET_HEADERS).get_all_values()[1:] if v and v[0].strip()}
+    return _handled(config.OZON_TAB)
 
 
 def oz_add(rows: list) -> None:

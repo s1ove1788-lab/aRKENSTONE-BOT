@@ -296,15 +296,8 @@ def poll(notify) -> dict:
     if current:
         sample = format_order(max((o for _, o in current.values()), key=_created))
 
-    if BASELINE not in seen:
-        # первый запуск: запоминаем всё, что уже есть, и никого не беспокоим
-        rows = [[oid, now, str(cid), "было до запуска"] for oid, (cid, _) in current.items()]
-        rows.append([BASELINE, now, "", "первый запуск"])
-        sheets.market_add(rows)
-        log.info("Яндекс Маркет: первый запуск, запомнил %d заказов без уведомлений", len(current))
-        return {"total": len(current), "new": 0, "added": 0, "baseline": True, "sample": sample}
-
-    fresh = sorted(((oid, cid, o) for oid, (cid, o) in current.items() if oid not in seen),
+    in_table = sheets.table_order_ids()  # сверка: что есть в Маркете, но ещё не внесено в таблицу
+    fresh = sorted(((oid, cid, o) for oid, (cid, o) in current.items() if oid not in seen and oid not in in_table),
                    key=lambda x: _created(x[2]))
     added = 0
     if fresh:
@@ -337,7 +330,9 @@ def poll(notify) -> dict:
                 log.exception("Не удалось записать заказы Маркета в таблицу")
                 for r in to_add:
                     tags[r.order_no] = "⚠️ в таблицу записать не удалось, внесите вручную"
-        notify(build_message([o for _, _, o in fresh], tags, smap))
+        recon = any(_created(o) < datetime.now() - timedelta(hours=3) for _, _, o in fresh)
+        head = ("🔄 Сверка с таблицей: нашёл в Маркете заказы, которых в таблице не было.\n\n" if recon else "")
+        notify(head + build_message([o for _, _, o in fresh], tags, smap))
         log.info("Яндекс Маркет: новых заказов %d, добавлено в таблицу %d", len(fresh), added)
 
     if config.YM_AUTOADD:

@@ -365,12 +365,8 @@ def poll(notify) -> dict:
     seen = sheets.oz_seen()
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
     sample = format_posting(max(current.values(), key=lambda p: p.get("in_process_at") or "")) if current else ""
-    if BASELINE not in seen:
-        rows = [[pn, now, "", "было до запуска"] for pn in current] + [[BASELINE, now, "", "первый запуск"]]
-        sheets.oz_add(rows)
-        log.info("Озон: первый запуск, запомнил %d отправлений без уведомлений", len(current))
-        return {"total": len(current), "new": 0, "baseline": True, "sample": sample}
-    fresh = sorted((p for pn, p in current.items() if pn not in seen), key=lambda p: p.get("in_process_at") or "")
+    in_table = sheets.table_order_ids()  # сверка: что есть в Озоне, но ещё не внесено в таблицу
+    fresh = sorted((p for pn, p in current.items() if pn not in seen and pn not in in_table), key=lambda p: p.get("in_process_at") or "")
     if fresh:
         sheets.oz_add([[p["posting_number"], now, "", "новый"] for p in fresh])  # сначала запоминаем
         tags, added = {}, 0
@@ -403,6 +399,13 @@ def poll(notify) -> dict:
                 log.exception("Не удалось записать заказы Озона в таблицу")
                 for pn in by_posting:
                     tags[pn] = "⚠️ в таблицу записать не удалось, внесите вручную"
-        notify(build_message(fresh, tags))
+        def _old(p):
+            try:
+                t = datetime.fromisoformat((p.get("in_process_at") or "").replace("Z", "+00:00"))
+                return (datetime.now(t.tzinfo) - t).total_seconds() > 3 * 3600
+            except ValueError:
+                return False
+        head = "🔄 Сверка с таблицей: нашёл в Озоне заказы, которых в таблице не было.\n\n" if any(_old(p) for p in fresh) else ""
+        notify(head + build_message(fresh, tags))
         log.info("Озон: новых отправлений %d, добавлено в таблицу %d", len(fresh), added)
     return {"total": len(current), "new": len(fresh), "baseline": False, "sample": sample}
