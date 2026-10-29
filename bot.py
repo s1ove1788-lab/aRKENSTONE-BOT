@@ -119,12 +119,23 @@ def role_rows(uid=None) -> list:
     return [[cb(label, f"role:{key}")] for key, label in rows if uid is None or allowed(uid, key)]
 
 
+def shipped_done(today) -> int:
+    """Сколько кроватей производство уже отметило отгруженными сегодня (хранится на листе «Настройки»)."""
+    try:
+        if sheets.get_setting("shipped_date") == str(today):
+            return int(float(sheets.get_setting("shipped_n") or 0))
+    except Exception:
+        log.exception("Не смог прочитать отметку об отгрузке")
+    return 0
+
+
 def banner_text(uid) -> str:
     """«📦 Отгрузок на сегодня: N шт.» + пустая строка; пусто, если человеку не положено или таблица недоступна."""
     if not known(uid):
         return ""
     try:
-        return logic.today_banner(sheets.read_orders(), now_date()) + "\n\n"
+        today = now_date()
+        return logic.today_banner(sheets.read_orders(), today, shipped_done(today)) + "\n\n"
     except Exception:
         log.exception("Не смог посчитать отгрузки на сегодня")
         return ""
@@ -158,7 +169,7 @@ def home(ctx: Ctx, notification=None) -> None:
                 [cb("↩️ Возврат", "c:ret")], CHANGE_ROLE]
         text = "🚚 Меню курьера"
     else:
-        rows = [[cb("📋 План производства", "p:plan")],
+        rows = [[cb("📋 План производства", "p:plan")], [cb("✅ Кровати отгружены", "p:shipped")],
                 [cb("📦 Остатки", "p:stock")], CHANGE_ROLE]
         text = "🏭 Меню производства"
     if config.AI_KEY and role in config.AI_ROLES:
@@ -410,11 +421,31 @@ def courier(ctx: Ctx, payload: str) -> None:
 
 
 # ------------------------------------------------------------ производство
+def production_shipped(ctx: Ctx) -> None:
+    """«Кровати отгружены»: фиксируем, сколько отгружено сегодня, и обнуляем счётчик отгрузок на сегодня."""
+    today = now_date()
+    total = logic.today_total(sheets.read_orders(force=True), today)
+    done = shipped_done(today)
+    if total - done <= 0:
+        return ctx.show(f"Сегодня уже отмечено: отгружено {done} шт. Новых отгрузок на сегодня нет.", [MENU_BTN])
+    sheets.set_setting("shipped_date", str(today))
+    sheets.set_setting("shipped_n", str(total))
+    text = f"✅ Кроватей сегодня отгружено {total} шт.\nОтгрузки на сегодня обнулены."
+    ctx.show(text, [MENU_BTN])
+    who = (users.get(ctx.uid) or {}).get("name") or ""
+    for uid, u in list(users.items()):
+        if u["role"] == "manager" and uid != ctx.uid and allowed(uid, "manager"):
+            mx.send({"type": "user", "id": uid}, f"✅ Кроватей сегодня отгружено {total} шт." + (f" (отметил(а): {who})" if who else ""))
+
+
 def production(ctx: Ctx, payload: str) -> None:
     parts = payload.split(":", 2)
     action = parts[1] if len(parts) > 1 else ""
-    if action in ("plan", "stock", "cur"):
+    if action in ("plan", "stock", "cur", "shipped"):
         pending.pop(ctx.uid, None)
+
+    if action == "shipped":
+        return production_shipped(ctx)
 
     if action == "plan":
         text = logic.production_plan(sheets.read_orders(), now_date())

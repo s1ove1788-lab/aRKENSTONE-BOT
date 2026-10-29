@@ -249,10 +249,15 @@ def ship_plan(orders: list, today: date) -> Counter:
     return plan
 
 
-def today_banner(orders: list, today: date) -> str:
-    """Строка над меню: сколько кроватей по таблице нужно отгрузить сегодня (всего за день)."""
-    n = sum(ship_plan(orders, today).values())
-    return f"📦 Отгрузок на сегодня: {n} шт." if n else "📦 Отгрузок на сегодня нет"
+def today_total(orders: list, today: date) -> int:
+    """Сколько кроватей по таблице нужно отгрузить сегодня (всего за день)."""
+    return sum(ship_plan(orders, today).values())
+
+
+def today_banner(orders: list, today: date, done: int = 0) -> str:
+    """Строка над меню. done — сколько уже отмечено производством как отгруженное (из них вычитаем)."""
+    n = max(0, today_total(orders, today) - done)
+    return f"❗❗❗ Отгрузок на сегодня: {n} шт." if n else "✅ Отгрузок на сегодня нет"
 
 
 def _parse_ship_line(line: str) -> dict:
