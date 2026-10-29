@@ -32,9 +32,18 @@ def _post(path: str, body: dict):
                          json=body, timeout=40)
 
 
+def _hide_values(obj):
+    """Оставляет только структуру (названия полей), а все значения заменяет на ***."""
+    if isinstance(obj, dict):
+        return {k: _hide_values(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_hide_values(v) for v in obj]
+    return None if obj in (None, "") else "***"
+
+
 def mask(obj, key: str = ""):
     if key.lower() in PII_WHOLE and obj not in (None, "", {}, []):
-        return "***"
+        return _hide_values(obj)  # покупатель: видны названия полей, значений нет
     if isinstance(obj, dict):
         return {k: mask(v, k) for k, v in obj.items()}
     if isinstance(obj, list):
@@ -173,31 +182,40 @@ def _city_dates(p: dict) -> tuple:
     return _range_text(start, end), _range_text(d1 or ship, d2 if d1 else None)
 
 
-def to_table_order(p: dict):
-    """Отправление Озона -> строка таблицы.
+def to_table_orders(p: dict) -> list:
+    """Отправление Озона -> строки таблицы (по одной на каждую кровать; номер заказа второй и следующих — «№…#2», «#3»).
     ПЭК: канал «ОЗ ПЭК», тип «пэк», номер отгрузки = трек ПЭК, адрес менеджер вписывает сам.
     Город (своя доставка): канал «ОЗ», тип «город», адрес и телефон покупателя берём у Озона.
-    None — если автоматически добавлять нельзя (несколько позиций, незнакомый артикул)."""
-    items = p.get("products") or []
-    if len(items) != 1 or int(items[0].get("quantity") or 1) != 1:
-        return None
-    art = items[0].get("offer_id") or ""
-    a = parse_article(art)
-    if not a:
-        return None
-    common = dict(size=f"{a['width']}×{a['legs']}", color=COLOR_CODES.get(a["color_code"], ""),
-                  order_no=str(p.get("posting_number")), article=art)
-    if channel_guess(p) == "ПЭК":
+    Пустой список — если автоматически добавлять нельзя (незнакомый артикул)."""
+    beds = []  # (артикул, разобранный артикул)
+    for it in p.get("products") or []:
+        art = it.get("offer_id") or ""
+        a = parse_article(art)
+        if not a:
+            return []
+        beds += [(art, a)] * max(1, int(it.get("quantity") or 1))
+    if not beds or len(beds) > 20:
+        return []
+    pn = str(p.get("posting_number"))
+    pek = channel_guess(p) == "ПЭК"
+    if pek:
         ship = _local(p.get("shipment_date"))
-        return Order(
-            kind="пэк", channel="ОЗ ПЭК",
-            ship_date=f"{ship.day:02d}.{MONTHS[ship.month - 1]}" if ship else "—",
-            delivery_date=_delivery_text(p),
-            shipment_or_phone=str(p.get("tracking_number") or ""), address="", **common)
-    address, phone = _customer(p)
-    ship_text, delivery = _city_dates(p)
-    return Order(kind="город", channel="ОЗ", ship_date=ship_text, delivery_date=delivery,
-                 shipment_or_phone=phone, address=address or region_text(p), **common)
+        ship_text = f"{ship.day:02d}.{MONTHS[ship.month - 1]}" if ship else "—"
+        delivery = _delivery_text(p)
+        phone, address = str(p.get("tracking_number") or ""), ""
+    else:
+        address, phone = _customer(p)
+        address = address or region_text(p)
+        ship_text, delivery = _city_dates(p)
+    rows = []
+    for i, (art, a) in enumerate(beds):
+        rows.append(Order(
+            kind="пэк" if pek else "город", channel="ОЗ ПЭК" if pek else "ОЗ",
+            ship_date=ship_text, delivery_date=delivery,
+            size=f"{a['width']}×{a['legs']}", color=COLOR_CODES.get(a["color_code"], ""),
+            order_no=pn if i == 0 else f"{pn}#{i + 1}", article=art,
+            shipment_or_phone=phone, address=address))
+    return rows
 
 
 def backfill() -> tuple:
@@ -206,9 +224,9 @@ def backfill() -> tuple:
     active = fetch_unfulfilled()
     rows, manual = [], 0
     for p in active:
-        row = to_table_order(p)
-        if row:
-            rows.append(row)
+        got = to_table_orders(p)
+        if got:
+            rows += got
         else:
             manual += 1
     added = sheets.add_orders(rows) if rows else []
@@ -269,15 +287,19 @@ def discovery(raw: bool = False) -> list:
         sorted(postings, key=lambda p: p.get("in_process_at") or "", reverse=True)[:3]
     lines += ["", "Ждущие отгрузки:" if active else "Последние заказы (ждущих отгрузки сейчас нет):"]
     lines += [_short(p) for p in shown]
-    row = next((to_table_order(p) for p in shown if to_table_order(p)), None)
+    row = next((r[0] for r in (to_table_orders(p) for p in shown) if r), None)
     if row:
-        lines += ["", "Так заказ ПЭК запишется в таблицу:",
+        lines += ["", "Так заказ запишется в таблицу:",
                   f"{row.channel} · {row.kind} · отгрузка {row.ship_date} · доставка {row.delivery_date}\n"
                   f"{row.size} {row.color} · {row.order_no} · {row.article} · трек {row.shipment_or_phone}"]
     out = ["\n".join(lines)]
     if raw:
         text = json.dumps(mask(sorted(postings, key=lambda p: p.get("status") not in ACTIVE_STATUSES)[:2]),
                           ensure_ascii=False, indent=1)
+        first = sorted(postings, key=lambda p: p.get("status") not in ACTIVE_STATUSES)[0]
+        who = json.dumps({"customer": mask(first.get("customer"), "customer"),
+                          "addressee": mask(first.get("addressee"), "addressee")}, ensure_ascii=False, indent=1)
+        out.append("Покупатель в первом заказе (значения скрыты, видны только поля):\n" + who)
         out.append("Сырые данные (имена, телефоны и адреса скрыты):\n" + (text if len(text) < 3300 else text[:3300] + "\n… (обрезано)"))
     return out
 
@@ -298,31 +320,33 @@ def poll(notify) -> dict:
         sheets.oz_add([[p["posting_number"], now, "", "новый"] for p in fresh])  # сначала запоминаем
         tags, added = {}, 0
         if config.YM_AUTOADD:
-            to_add = []
+            to_add, by_posting = [], {}
             for p in fresh:
-                row = to_table_order(p)
+                got = to_table_orders(p)
                 pn = str(p["posting_number"])
-                if row:
-                    to_add.append(row)
+                if got:
+                    to_add += got
+                    by_posting[pn] = got
                 else:
-                    tags[pn] = "➕ в таблицу не добавлен (несколько позиций или незнакомый артикул), внесите вручную"
+                    tags[pn] = "➕ в таблицу не добавлен (незнакомый артикул или слишком много позиций), внесите вручную"
             try:
                 new_rows = sheets.add_orders(to_add) if to_add else []
                 added = len(new_rows)
                 added_nos = {x.order_no for x in new_rows}
-                for r in to_add:
-                    if r.order_no not in added_nos:
-                        tags[r.order_no] = "уже был в таблице"
-                    elif r.channel == "ОЗ":
-                        ok = r.shipment_or_phone and "," in (r.address or "")
-                        tags[r.order_no] = "✅ добавлен в таблицу" + (
+                for pn, got in by_posting.items():
+                    first = got[0]
+                    if first.order_no not in added_nos:
+                        tags[pn] = "уже был в таблице"
+                    elif first.channel == "ОЗ":
+                        ok = first.shipment_or_phone and "," in (first.address or "")
+                        tags[pn] = "✅ добавлен в таблицу" + (f" ({len(got)} шт.)" if len(got) > 1 else "") + (
                             "" if ok else "\n⚠️ адрес или телефон получены не полностью — проверьте строку в таблице")
                     else:
-                        tags[r.order_no] = "✅ добавлен в таблицу, адрес впишите вручную (Озон его не отдаёт)"
+                        tags[pn] = "✅ добавлен в таблицу, адрес впишите вручную (Озон его не отдаёт)"
             except Exception:
                 log.exception("Не удалось записать заказы Озона в таблицу")
-                for r in to_add:
-                    tags[r.order_no] = "⚠️ в таблицу записать не удалось, внесите вручную"
+                for pn in by_posting:
+                    tags[pn] = "⚠️ в таблицу записать не удалось, внесите вручную"
         notify(build_message(fresh, tags))
         log.info("Озон: новых отправлений %d, добавлено в таблицу %d", len(fresh), added)
     return {"total": len(current), "new": len(fresh), "baseline": False, "sample": sample}
