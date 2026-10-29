@@ -348,3 +348,48 @@ def poll(notify) -> dict:
         except Exception:
             log.exception("Не удалось дописать номера отгрузок")
     return {"total": len(current), "new": len(fresh), "added": added, "baseline": False, "sample": sample}
+
+
+def diagnose(order_id: str) -> str:
+    """Почему заказ не попал в таблицу: что о нём знает Маркет, видел ли его бот и можно ли добавить автоматически.
+    Персональные данные не выводятся."""
+    order_id = order_id.strip()
+    lines = [f"🔎 Заказ № {order_id}"]
+    found = None
+    for c in campaigns():
+        r = _get(f"/v2/campaigns/{c['id']}/orders/{order_id}")
+        if r.status_code == 200:
+            found = (c["id"], (r.json().get("order") or {}))
+            break
+        lines.append(f"Кампания {c['id']}: ответ {r.status_code}")
+    if not found:
+        lines.append("Маркет не отдал этот заказ ни по одной кампании (проверьте номер и права токена).")
+        return "\n".join(lines)
+    cid, o = found
+    d = o.get("delivery") or {}
+    lines.append(f"Статус в Маркете: {o.get('status')} / {o.get('substatus') or '—'}")
+    lines.append(f"Создан: {o.get('creationDate') or '—'}")
+    lines.append(f"Схема доставки: {d.get('deliveryPartnerType') or '—'}")
+    items = o.get("items") or []
+    lines.append("Товары: " + (", ".join(f"{it.get('offerId') or it.get('shopSku') or '?'} ×{it.get('count', 1)}" for it in items) or "нет"))
+    if o.get("status") != "PROCESSING":
+        lines.append("➡️ Бот следит только за статусом PROCESSING («в обработке»). В другом статусе он заказ не увидит.")
+    seen = sheets.market_seen()
+    if order_id in seen:
+        why = ""
+        for v in sheets._tab(config.MARKET_TAB, sheets.MARKET_HEADERS).get_all_values()[1:]:
+            if v and v[0].strip() == order_id:
+                why = f" (запись: {' | '.join(x for x in v[1:] if x)})"
+        lines.append("Бот этот заказ уже видел" + why)
+    else:
+        lines.append("Бот этот заказ ещё не видел (на следующей проверке он должен появиться).")
+    row = to_table_order(o, "", "")
+    if row is None:
+        lines.append("➡️ Автоматически добавить нельзя: несколько позиций или незнакомый артикул — только вручную.")
+    else:
+        lines.append(f"Автодобавление возможно: {row.channel} · {row.size} · {row.color}")
+    if not config.YM_AUTOADD:
+        lines.append("➡️ Автодобавление выключено (YM_AUTOADD).")
+    in_table = any(r["order_no"] == order_id for r in sheets.read_orders(force=True))
+    lines.append("В таблице заказов: " + ("есть" if in_table else "нет"))
+    return "\n".join(lines)

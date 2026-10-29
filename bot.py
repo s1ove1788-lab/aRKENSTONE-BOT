@@ -890,6 +890,17 @@ def handle_message(u: dict) -> None:
             return
         mx.send({"type": "user", "id": sender_id}, "Меню команд: " + mx.LAST_COMMANDS_RESULT)
         return
+    if cmd == "/ymorder":  # разобрать, почему конкретный заказ Маркета не попал в таблицу (только менеджер)
+        if sender_id not in config.MANAGER_IDS:
+            return ctx.show("Команда только для менеджера.", [MENU_BTN])
+        parts = raw.split()
+        if len(parts) < 2 or not parts[1].isdigit():
+            return ctx.show("Напишите номер заказа, например:\n/ymorder 63755321411", [MENU_BTN])
+        try:
+            return ctx.show(ym_watch.diagnose(parts[1]), [MENU_BTN])
+        except Exception as e:
+            log.exception("Ошибка разбора заказа Маркета")
+            return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
     if cmd == "/ymnow":  # проверить Маркет прямо сейчас (только менеджер)
         if sender_id not in config.MANAGER_IDS:
             return ctx.show("Команда только для менеджера.", [MENU_BTN])
