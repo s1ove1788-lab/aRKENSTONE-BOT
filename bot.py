@@ -662,6 +662,12 @@ def clear_all() -> tuple:
     return removed, failed
 
 
+def broadcast_managers(text: str) -> None:
+    for uid, u in list(users.items()):
+        if u["role"] == "manager" and allowed(uid, "manager"):
+            mx.send({"type": "user", "id": uid}, text)
+
+
 def broadcast(text: str, skip_uid=None) -> None:
     """Рассылает текст всем, кто зарегистрирован (роли из NOTIFY_ROLES), и в подписанные группы."""
     for uid, u in list(users.items()):
@@ -864,6 +870,19 @@ def handle_message(u: dict) -> None:
                             "\n\nПроверьте, что ссылка правильная и таблица открыта для редактирования почте бота" +
                             (f":\n{me}" if me else "."), [MENU_BTN])
         return ctx.show(f"✅ Таблица подключена, лист «Доставки» создан:\n{url}", [MENU_BTN])
+
+    if cmd == "/costweek":  # раскрасить таблицу стоимости и подбить недели четверг–среда (только админ)
+        if sender_id not in config.MANAGER_IDS:
+            return
+        if not costs.enabled():
+            return ctx.show("Сначала подключите таблицу стоимости: /costsheet ссылка", [MENU_BTN])
+        try:
+            n = costs.repaint()
+            text = costs.weekly_text(costs.weekly(now_date()))
+        except Exception as e:
+            log.exception("Не смог подбить недели")
+            return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
+        return ctx.show(f"🎨 Раскрашено строк: {n}\n\n{text}\n\n" + costs.sheet_url(), [MENU_BTN])
 
     if cmd == "/costback":  # досчитать стоимость по уже доставленным заказам из таблицы (только админ)
         if sender_id not in config.MANAGER_IDS:
@@ -1113,6 +1132,15 @@ def main() -> None:
         if config.DAILY_MENU and _now.hour >= config.DAILY_HOUR and daily["date"] != str(_now.date()):
             daily["date"] = str(_now.date())
             daily_refresh()
+        if _now.weekday() == 2 and _now.hour >= config.COST_WEEK_HOUR and costs.enabled():
+            try:  # каждую среду вечером подбиваем неделю четверг–среда
+                if sheets.get_setting("cost_week_done") != str(_now.date()):
+                    sheets.set_setting("cost_week_done", str(_now.date()))
+                    res = costs.weekly(_now.date())
+                    if res:
+                        broadcast_managers("📅 Среда, неделя закрыта.\n" + costs.weekly_text(res[-1:]))
+            except Exception:
+                log.exception("Не смог подбить неделю")
         if (config.OZ_CLIENT_ID and config.OZ_API_KEY and config.OZ_WATCH
                 and time.time() - oz_state["last"] >= config.YM_POLL_MINUTES * 60):
             oz_state["last"] = time.time()

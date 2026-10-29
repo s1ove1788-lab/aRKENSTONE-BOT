@@ -10,7 +10,7 @@ import sheets
 
 log = logging.getLogger("orders-bot")
 TAB = "Доставки"
-HEADERS = ["Дата доставки", "Тип", "Адрес", "Цена", "Итог дня", "Номер заказа", "Размер", "Дата отгрузки"]
+HEADERS = ["Дата доставки", "Тип", "Адрес", "Цена", "Итог дня", "Номер заказа", "Размер", "Дата отгрузки", "Расчёт", "Период"]
 _state = {"ws": None, "sep": ","}
 
 
@@ -96,12 +96,12 @@ def _ws():
         except gspread.WorksheetNotFound:
             ws = book.add_worksheet(title=TAB, rows=500, cols=len(HEADERS))
         first = ws.row_values(1)
-        if first and len(first) < len(HEADERS) and first[:6] == HEADERS[:6]:
-            ws.update(range_name="A1:H1", values=[HEADERS], value_input_option="RAW")  # старая таблица: добавляем колонки
+        if first and first != HEADERS and first[:6] == HEADERS[:6]:
+            ws.update(range_name="A1:J1", values=[HEADERS], value_input_option="RAW")  # старая таблица: добавляем колонки
         if not first:
             ws.append_row(HEADERS, value_input_option="RAW")
             try:
-                ws.format("A1:H1", {"textFormat": {"bold": True}})
+                ws.format("A1:J1", {"textFormat": {"bold": True}})
                 ws.freeze(rows=1)
             except Exception:
                 pass
@@ -156,6 +156,7 @@ def record(marked: list, day) -> int:
     try:
         first = int(rng.split("!")[-1].split(":")[0].lstrip("ABCDEFGHIJ"))
         _write_totals(ws, first, first + len(rows) - 1)
+        paint(ws, {first + i: r[1] for i, r in enumerate(rows)})
     except ValueError:
         log.warning("Не понял, куда записались строки (%s), формулу итога не добавил", rng)
     return len(rows)
@@ -175,6 +176,7 @@ def record_returns(items: list, day) -> int:
     try:
         first = int(rng.split("!")[-1].split(":")[0].lstrip("ABCDEFGHIJ"))
         _write_totals(ws, first, first + len(rows) - 1)
+        paint(ws, {first + i: "Возврат" for i in range(len(rows))})
     except ValueError:
         pass
     return len(rows)
@@ -243,3 +245,78 @@ def backfill(today) -> tuple:
         marked = [o for _, o in sorted(by_day[day], key=lambda x: (x[0], x[1]["row"]))]
         added += record(marked, day)
     return added, skipped, len(by_day)
+
+
+# ------------------------------------------------------- цвета и недельный расчёт
+TYPE_COLORS = {  # цвет строки по типу доставки
+    "ПЭК": {"red": 0.80, "green": 0.89, "blue": 0.96},      # голубой
+    "Город": {"red": 0.85, "green": 0.93, "blue": 0.82},    # зелёный
+    "ЯМ СГТ": {"red": 0.98, "green": 0.80, "blue": 0.60},   # оранжевый
+    "ВБ КГТ": {"red": 0.85, "green": 0.82, "blue": 0.93},   # сиреневый
+    "Возврат": {"red": 0.96, "green": 0.78, "blue": 0.78},  # розово-красный
+}
+WHITE = {"red": 1.0, "green": 1.0, "blue": 1.0}
+
+
+def paint(ws, kinds: dict) -> None:
+    """kinds: {номер строки: тип}. Закрашивает столбцы A–H по типу доставки."""
+    reqs = [{"repeatCell": {
+        "range": {"sheetId": ws.id, "startRowIndex": row - 1, "endRowIndex": row,
+                  "startColumnIndex": 0, "endColumnIndex": 8},
+        "cell": {"userEnteredFormat": {"backgroundColor": TYPE_COLORS.get(kind, WHITE)}},
+        "fields": "userEnteredFormat.backgroundColor"}} for row, kind in kinds.items()]
+    for i in range(0, len(reqs), 200):
+        ws.spreadsheet.batch_update({"requests": reqs[i:i + 200]})
+
+
+def repaint() -> int:
+    """Закрашивает все строки таблицы по типу (ПЭК — голубой, Город — зелёный, ЯМ СГТ — оранжевый и т.д.)."""
+    ws = _ws()
+    kinds = {i: v[1].strip() for i, v in enumerate(ws.get_all_values()[1:], start=2) if len(v) > 1 and v[1].strip()}
+    paint(ws, kinds)
+    return len(kinds)
+
+
+def _week_start(d):
+    from datetime import timedelta
+    return d - timedelta(days=(d.weekday() - 3) % 7)  # неделя считается с четверга по среду включительно
+
+
+def weekly(today) -> list:
+    """Подбивает недели четверг–среда, которые уже закончились (включая сегодняшнюю среду). Сумма пишется
+    в столбец «Расчёт» на последней строке недели, период — в «Период». Возвращает [(начало, конец, сумма, доставок)]."""
+    from datetime import datetime, timedelta
+    ws = _ws()
+    weeks: dict = {}
+    for i, v in enumerate(ws.get_all_values()[1:], start=2):
+        try:
+            d = datetime.strptime(v[0].strip(), "%d.%m.%Y").date()
+            price = int(float(v[3].replace(" ", "").replace(",", ".")))
+        except (ValueError, IndexError):
+            continue
+        w = weeks.setdefault(_week_start(d), {"rows": [], "sum": 0})
+        w["rows"].append(i)
+        w["sum"] += price
+    res, data = [], []
+    for start in sorted(weeks):
+        end = start + timedelta(days=6)
+        if end > today:
+            continue  # неделя ещё идёт
+        w = weeks[start]
+        for r in w["rows"]:
+            data.append({"range": f"I{r}:J{r}", "values": [["", ""]]})
+        last = max(w["rows"])
+        data.append({"range": f"I{last}:J{last}", "values": [[w["sum"], f"{start:%d.%m}–{end:%d.%m}"]]})
+        res.append((start, end, w["sum"], len(w["rows"])))
+    for i in range(0, len(data), 300):
+        ws.batch_update(data[i:i + 300], value_input_option="RAW")
+    return res
+
+
+def weekly_text(res: list) -> str:
+    if not res:
+        return "Закончившихся недель с доставками пока нет."
+    lines = ["💰 Расчёт по неделям (четверг–среда):"]
+    for start, end, total, n in res[-6:]:
+        lines.append(f"• {start:%d.%m}–{end:%d.%m}: {_money(total)} ({n} дост.)")
+    return "\n".join(lines)
