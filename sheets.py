@@ -117,7 +117,7 @@ def set_setting(key: str, value: str) -> None:
 
 
 def sheet_url(kind: str) -> str:
-    ws = orders_ws() if kind == "orders" else _tab(config.STOCK_TAB, STOCK_HEADERS)
+    ws = orders_ws() if kind == "orders" else _stock_ws()
     return f"https://docs.google.com/spreadsheets/d/{config.SHEET_ID}/edit#gid={ws.id}"
 
 
@@ -290,18 +290,64 @@ def remove_group(chat_id: int) -> None:
 
 
 # --------------------------------------------------------------- остатки
-def add_stock(code: str, qty: int, who: str) -> None:
-    _tab(config.STOCK_TAB, STOCK_HEADERS).append_row(
-        [_now_str(), code, qty, who], value_input_option="RAW")
+_COLOR_BY_HEADER = (("черн", "04"), ("бел", "06"))
+
+
+def _stock_ws():
+    ws = _tabs.get("stock")
+    if ws is None:
+        book = get_book()
+        try:
+            ws = book.worksheet(config.STOCK_TAB)
+        except gspread.WorksheetNotFound:
+            # листа нет — создаём таблицу остатков в том виде, как её ведёт менеджер: размеры в строках, цвета в столбцах
+            ws = book.add_worksheet(title=config.STOCK_TAB, rows=20, cols=3)
+            ws.update(values=[["Кровати", "Черный (шт.)", "Белый (Шт.)"]] +
+                      [[w, 0, 0] for w in sorted({int(c.split(".")[0]) for c in config.STOCK_CODES})],
+                      range_name="A1", value_input_option="USER_ENTERED")
+        _tabs["stock"] = ws
+    return ws
+
+
+def _stock_layout(values: list) -> tuple:
+    """(столбец по коду цвета {'04': 1, '06': 2}, строка по ширине {'120': 2, ...}) — номера с единицы."""
+    cols = {"04": 2, "06": 3}  # по умолчанию B — чёрная, C — белая
+    for i, h in enumerate(values[0] if values else [], start=1):
+        for key, color in _COLOR_BY_HEADER:
+            if key in h.lower():
+                cols[color] = i
+    rows = {}
+    for r, v in enumerate(values[1:], start=2):
+        if v and v[0].strip().isdigit():
+            rows[v[0].strip()] = r
+    return cols, rows
+
+
+def add_stock(code: str, qty: int, who: str = "") -> None:
+    """Меняет число в таблице остатков прямо в ячейке (новые строки не добавляются)."""
+    width, color = code.split(".")
+    ws = _stock_ws()
+    values = ws.get_all_values()
+    cols, rows = _stock_layout(values)
+    row = rows.get(width)
+    if row is None:  # такого размера в таблице ещё нет — добавляем строку
+        row = len(values) + 1
+        ws.update(values=[[int(width)]], range_name=f"A{row}", value_input_option="USER_ENTERED")
+    ws.update_cell(row, cols.get(color, 2 if color == "04" else 3), int(qty))
 
 
 def latest_stock() -> dict:
-    """{'120.04': (5, '25.10.2026 14:30')} — последнее внесённое значение по каждому размеру."""
+    """{'120.04': (5, '')} — текущие числа из таблицы остатков. Пустая ячейка = нет данных."""
+    values = _stock_ws().get_all_values()
+    cols, rows = _stock_layout(values)
     res = {}
-    for v in _tab(config.STOCK_TAB, STOCK_HEADERS).get_all_values()[1:]:
-        if len(v) >= 3 and v[1].strip():
+    for width, r in rows.items():
+        for color, c in cols.items():
+            cell = values[r - 1][c - 1].strip() if len(values[r - 1]) >= c else ""
+            if cell == "":
+                continue
             try:
-                res[v[1].strip()] = (int(float(v[2])), v[0])
+                res[f"{width}.{color}"] = (int(float(cell.replace(",", ".").replace(" ", ""))), "")
             except ValueError:
                 continue
     return res

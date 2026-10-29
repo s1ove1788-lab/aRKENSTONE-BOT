@@ -468,7 +468,7 @@ def production(ctx: Ctx, payload: str) -> None:
         for code in config.STOCK_CODES:
             if code in stock:
                 qty, when = stock[code]
-                lines.append(f"{code} — {qty} шт. ({when.split(' ')[0]})")
+                lines.append(f"{code} — {qty} шт." + (f" ({when.split(' ')[0]})" if when else ""))
             else:
                 lines.append(f"{code} — нет данных")
         return ctx.show("\n".join(lines), [[cb("✏️ Внести остаток", "p:stock")], MENU_BTN])
