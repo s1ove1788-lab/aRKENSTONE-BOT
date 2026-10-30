@@ -22,6 +22,7 @@ API = os.getenv("MAX_API_BASE", "https://platform-api.max.ru").rstrip("/")
 MANAGER_IDS = _parse_ids(os.getenv("MANAGER_IDS", ""))
 COURIER_IDS = _parse_ids(os.getenv("COURIER_IDS", ""))  # кто может быть курьером (ID через запятую)
 PROD_IDS = _parse_ids(os.getenv("PROD_IDS", ""))        # кто может быть в отделе производства
+KEEPER_IDS = _parse_ids(os.getenv("KEEPER_IDS", ""))    # кто может быть кладовщиком (склад: сырьё и ТМЦ)
 
 CREDS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 # Либо содержимое credentials.json целиком (для хостингов), либо то же в base64
@@ -87,7 +88,7 @@ MARKET_TAB = "Маркет"  # запоминаем, какие заказы М�
 CLEAN_CHAT = os.getenv("CLEAN_CHAT", "1").strip().lower() not in ("0", "false", "no", "нет")
 
 # Роли: ключ -> как называется в таблице и на кнопках
-ROLE_LABELS = {"manager": "Менеджер", "courier": "Курьер", "prod": "Производство"}
+ROLE_LABELS = {"manager": "Менеджер", "courier": "Курьер", "prod": "Производство", "keeper": "Кладовщик"}
 
 # Кому приходят уведомления о новых заказах (уберите "courier", если курьерам не нужно)
 NOTIFY_ROLES = {"manager", "courier", "prod"}

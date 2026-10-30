@@ -93,13 +93,15 @@ MENU_BTN = [cb("🏠 Меню", "menu")]
 
 def allowed(uid: int, role: str) -> bool:
     """Роль доступна только тем, чей ID записан в настройках (MANAGER_IDS / COURIER_IDS / PROD_IDS)."""
-    ids = {"manager": config.MANAGER_IDS, "courier": config.COURIER_IDS, "prod": config.PROD_IDS}.get(role)
+    ids = {"manager": config.MANAGER_IDS, "courier": config.COURIER_IDS, "prod": config.PROD_IDS,
+           "keeper": config.KEEPER_IDS}.get(role)
     return ids is not None and uid in ids
 
 
 def known(uid) -> bool:
     """Есть ли человек хотя бы в одном списке доступа (менеджеры, курьеры, производство)."""
-    return bool(uid) and (uid in config.MANAGER_IDS or uid in config.COURIER_IDS or uid in config.PROD_IDS)
+    return bool(uid) and (uid in config.MANAGER_IDS or uid in config.COURIER_IDS or uid in config.PROD_IDS
+                          or uid in config.KEEPER_IDS)
 
 
 def no_access_text(uid) -> str:
@@ -115,7 +117,8 @@ def deny(ctx: Ctx, key: str) -> None:
 
 def role_rows(uid=None) -> list:
     """Кнопки ролей; если известен человек — только те, что ему доступны."""
-    rows = [(("manager", "👔 Менеджер")), ("courier", "🚚 Курьер"), ("prod", "🏭 Отдел производства")]
+    rows = [(("manager", "👔 Менеджер")), ("courier", "🚚 Курьер"), ("prod", "🏭 Отдел производства"),
+            ("keeper", "📦 Кладовщик")]
     return [[cb(label, f"role:{key}")] for key, label in rows if uid is None or allowed(uid, key)]
 
 
@@ -161,7 +164,6 @@ def home(ctx: Ctx, notification=None) -> None:
         except Exception:
             log.exception("Не смог получить ссылку на таблицу заказов")
         rows.append([cb("📦 Таблица остатков", "p:cur")])
-        rows.append([cb(config.INV_TITLES["raw"], "p:inv:raw"), cb(config.INV_TITLES["tmc"], "p:inv:tmc")])
         rows.append(CHANGE_ROLE)
         text = ("👔 Меню менеджера\n\nЧтобы добавить заказы, просто пришлите мне PDF-файл в этот чат.\n"
                 "Таблицы открываются в Google Таблицах — там их можно редактировать.")
@@ -169,11 +171,14 @@ def home(ctx: Ctx, notification=None) -> None:
         rows = [[cb("🚚 Доставки", "c:home")], [cb("💰 Расчёт доставок", "c:pay")],
                 [cb("↩️ Возврат", "c:ret")], CHANGE_ROLE]
         text = "🚚 Меню курьера"
+    elif role == "keeper":
+        rows = [[cb(config.INV_TITLES["raw"], "p:inv:raw"), cb(config.INV_TITLES["tmc"], "p:inv:tmc")], CHANGE_ROLE]
+        ctx.show("📦 Меню кладовщика\n\nСклад: сырьё и товарно-материальные ценности.", rows, notification)
+        return
     else:
         rows = [[cb("📋 План производства", "p:plan")], [cb("🔩 Сваренные каркасы", "p:fr")],
                 [cb("✅ Кровати отгружены", "p:shipped")],
-                [cb("📦 Остатки", "p:stock")],
-                [cb(config.INV_TITLES["raw"], "p:inv:raw"), cb(config.INV_TITLES["tmc"], "p:inv:tmc")], CHANGE_ROLE]
+                [cb("📦 Остатки", "p:stock")], CHANGE_ROLE]
         text = "🏭 Меню производства"
     if config.AI_KEY and role in config.AI_ROLES:
         rows.insert(len(rows) - 1, [cb("💬 ИИ-помощник", "ai:start")])  # перед «Сменить роль»
@@ -713,7 +718,9 @@ def on_payload(ctx: Ctx, name: str, payload: str) -> None:
     if payload.startswith("p:"):
         # производство — всё; менеджер — только остатки (просмотр и внесение)
         section = payload.split(":")[1]
-        if user["role"] == "prod" or (user["role"] == "manager" and section in ("stock", "s", "cur", "inv", "ia", "ie", "in")):
+        if (user["role"] == "prod" and section not in ("inv", "ia", "ie", "in")) \
+                or (user["role"] == "manager" and section in ("stock", "s", "cur")) \
+                or (user["role"] == "keeper" and section in ("inv", "ia", "ie", "in")):
             return production(ctx, payload)
     home(ctx, notification="Эта кнопка вам недоступна")
 
@@ -1218,7 +1225,8 @@ def save_marker(marker) -> None:
 
 def main() -> None:
     config.check()
-    for key, ids, var in (("курьер", config.COURIER_IDS, "COURIER_IDS"), ("производство", config.PROD_IDS, "PROD_IDS")):
+    for key, ids, var in (("курьер", config.COURIER_IDS, "COURIER_IDS"), ("производство", config.PROD_IDS, "PROD_IDS"),
+                          ("кладовщик", config.KEEPER_IDS, "KEEPER_IDS")):
         if not ids:
             log.warning("%s пуст: роль «%s» никому не доступна. Впишите ID сотрудников (число из команды /id).", var, key)
     if not config.MANAGER_IDS:
