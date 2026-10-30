@@ -14,11 +14,40 @@ from pdf_parser import Order
 log = logging.getLogger("orders-bot")
 
 HEADERS = [
-    "Добавлен", "Канал", "Тип", "Дата отгрузки", "Дата доставки", "Размер",
+    "Добавлен", "Канал", "Тип", "Дата отгрузки", "Дата доставки", "Размер", "Количество",
     "Цвет", "Номер заказа", "Артикул", "Отгрузка / телефон", "Адрес", "Статус",
 ]
-ORDER_COL = 8    # «Номер заказа» — по нему ищем дубли и нужные строки
-STATUS_COL = 12  # «Статус» — любая непустая отметка убирает заказ из списков
+# Поле заказа -> название столбца в шапке. Столбцы ищутся ПО НАЗВАНИЮ, поэтому добавлять/двигать их в таблице можно.
+FIELDS = [("added", "Добавлен"), ("channel", "Канал"), ("kind", "Тип"), ("ship", "Дата отгрузки"),
+          ("delivery", "Дата доставки"), ("size", "Размер"), ("qty", "Количество"), ("color", "Цвет"),
+          ("order_no", "Номер заказа"), ("article", "Артикул"), ("phone", "Отгрузка / телефон"),
+          ("address", "Адрес"), ("status", "Статус")]
+_layout_cache: dict = {}
+
+
+def _set_layout(header_row: list) -> dict:
+    """{поле: номер столбца с 0}. Не нашли название — берём место из стандартной шапки (для «Количества» — нет столбца)."""
+    names = [(h or "").strip().lower() for h in header_row]
+    default = [k for k, _ in FIELDS if k != "qty" or "количество" in names]
+    lay = {}
+    for key, title in FIELDS:
+        if title.lower() in names:
+            lay[key] = names.index(title.lower())
+        elif key in default:  # название в шапке не нашли — берём стандартное место
+            lay[key] = default.index(key)
+    _layout_cache.clear()
+    _layout_cache.update(lay)
+    return lay
+
+
+def layout() -> dict:
+    if not _layout_cache:
+        _set_layout(orders_ws().row_values(1))
+    return _layout_cache
+
+
+def _col_letter(i: int) -> str:
+    return chr(65 + i)
 USERS_HEADERS = ["ID", "Имя", "Роль"]
 GROUPS_HEADERS = ["Тип", "ID"]
 STOCK_HEADERS = ["Дата и время", "Размер", "Остаток, шт.", "Кто внёс"]
@@ -132,16 +161,27 @@ def read_orders(force: bool = False) -> list:
         # лист переименовали или переставили, пока бот работал — забываем запомненные листы и находим заново
         _tabs.clear()
         values = orders_ws().get_all_values()
+    lay = _set_layout(values[0] if values else [])
+    width = max(lay.values(), default=0) + 1
+
+    def cell(v, key):
+        i = lay.get(key)
+        return v[i].strip() if i is not None and i < len(v) else ""
+
     rows = []
     for i, v in enumerate(values[1:], start=2):
-        v = list(v) + [""] * (len(HEADERS) - len(v))
-        if not v[ORDER_COL - 1].strip():
+        v = list(v) + [""] * (width - len(v))
+        if not cell(v, "order_no"):
             continue
+        try:
+            qty = max(1, int(float(cell(v, "qty").replace(",", ".")))) if cell(v, "qty") else 1
+        except ValueError:
+            qty = 1
         rows.append({
-            "row": i, "added": v[0], "channel": v[1].strip(), "kind": v[2].strip(),
-            "ship": v[3].strip(), "delivery": v[4].strip(), "size": v[5].strip(),
-            "color": v[6].strip(), "order_no": v[7].strip(), "article": v[8].strip(),
-            "phone": v[9].strip(), "address": v[10].strip(), "status": v[11].strip(),
+            "row": i, "added": cell(v, "added"), "channel": cell(v, "channel"), "kind": cell(v, "kind"),
+            "ship": cell(v, "ship"), "delivery": cell(v, "delivery"), "size": cell(v, "size"), "qty": qty,
+            "color": cell(v, "color"), "order_no": cell(v, "order_no"), "article": cell(v, "article"),
+            "phone": cell(v, "phone"), "address": cell(v, "address"), "status": cell(v, "status"),
         })
     _cache.update(t=now, rows=rows)
     return rows
@@ -187,7 +227,7 @@ def sync_colors() -> int:
     for row, _, _, rgb in todo:
         requests.append({"repeatCell": {
             "range": {"sheetId": ws.id, "startRowIndex": row - 1, "endRowIndex": row,
-                      "startColumnIndex": 0, "endColumnIndex": len(HEADERS)},
+                      "startColumnIndex": 0, "endColumnIndex": max(layout().values(), default=len(HEADERS) - 1) + 1},
             "cell": {"userEnteredFormat": {"backgroundColor": rgb}},
             "fields": "userEnteredFormat.backgroundColor"}})
     for i in range(0, len(requests), 200):
@@ -214,8 +254,19 @@ def add_orders(orders: list) -> list:
     new = [o for o in orders if o.order_no not in existing]
     if new:
         now = _now_str()
-        rows = [[now, o.channel, o.kind, o.ship_date, o.delivery_date, o.size, o.color,
-                 o.order_no, o.article, o.shipment_or_phone, o.address, ""] for o in new]
+        lay = layout()
+        width = max(lay.values(), default=0) + 1
+        rows = []
+        for o in new:
+            vals = {"added": now, "channel": o.channel, "kind": o.kind, "ship": o.ship_date,
+                    "delivery": o.delivery_date, "size": o.size, "qty": getattr(o, "qty", 1) or 1,
+                    "color": o.color, "order_no": o.order_no, "article": o.article,
+                    "phone": o.shipment_or_phone, "address": o.address, "status": ""}
+            row = [""] * width
+            for key, val in vals.items():
+                if key in lay:
+                    row[lay[key]] = val
+            rows.append(row)
         # RAW — чтобы длинные номера и телефоны не превращались в числа
         orders_ws().append_rows(rows, value_input_option="RAW")
         _invalidate()
@@ -230,7 +281,7 @@ def mark_delivered(order_nos: list) -> list:
     rows = [r["row"] for r in marked]
     if rows:
         stamp = "Доставлен " + datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m %H:%M")
-        col = chr(64 + STATUS_COL)
+        col = _col_letter(layout()["status"])
         orders_ws().batch_update(
             [{"range": f"{col}{r}", "values": [[stamp]]} for r in rows],
             value_input_option="RAW",
@@ -447,14 +498,15 @@ def market_add(rows: list) -> None:
 
 def set_shipment_cell(row: int, value: str) -> None:
     """Вписывает номер отгрузки в столбец «Отгрузка / телефон» уже существующей строки."""
-    orders_ws().update(values=[[value]], range_name=f"J{row}", value_input_option="RAW")
+    orders_ws().update(values=[[value]], range_name=f"{_col_letter(layout()['phone'])}{row}", value_input_option="RAW")
     _invalidate()
 
 
 def set_order_dates(updates: list) -> None:
-    """updates: [(номер строки, номер столбца, текст)] — меняет даты в таблице заказов (перенос доставки)."""
+    """updates: [(номер строки, поле 'ship' или 'delivery', текст)] — меняет даты в таблице заказов (перенос доставки)."""
     if updates:
-        orders_ws().batch_update([{"range": f"{chr(64 + c)}{r}", "values": [[t]]} for r, c, t in updates],
+        lay = layout()
+        orders_ws().batch_update([{"range": f"{_col_letter(lay[f])}{r}", "values": [[t]]} for r, f, t in updates],
                                  value_input_option="RAW")
         _invalidate()
         safe_sync_colors()

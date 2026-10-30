@@ -105,6 +105,22 @@ def day_items(orders: list, day: date, today: date) -> list:
     return res
 
 
+def qty(o: dict) -> int:
+    """Сколько кроватей в заказе (столбец «Количество»; пусто = 1)."""
+    try:
+        return max(1, int(o.get("qty") or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def count_items(orders: list) -> Counter:
+    """{'160/30 чёрная': число кроватей} с учётом количества в заказах."""
+    c: Counter = Counter()
+    for o in orders:
+        c[item_line(o)] += qty(o)
+    return c
+
+
 WEEKDAYS = ["пн", "вт", "ср", "чт", "пт", "сб", "вс"]
 
 
@@ -121,8 +137,8 @@ def day_preview(items: list, day: date, label: str) -> str:
             if budget <= 0:
                 break
             title = g["channel"] + (f" №{g['shipment']}" if g["shipment"] else "")
-            cnt = Counter(item_line(o) for o in g["orders"])
-            lines.append(f"• {title} — {len(g['orders'])} шт.: " + ", ".join(f"{n} ×{c}" for n, c in sorted(cnt.items())))
+            cnt = count_items(g["orders"])
+            lines.append(f"• {title} — {sum(qty(o) for o in g['orders'])} шт.: " + ", ".join(f"{n} ×{c}" for n, c in sorted(cnt.items())))
             budget -= 1
     if city:
         lines += ["", "🏙 Город:"]
@@ -130,7 +146,7 @@ def day_preview(items: list, day: date, label: str) -> str:
             if budget <= 0:
                 lines.append(f"…и ещё {len(city) - i}")
                 break
-            lines.append(f"• {short(o['address'], 60)} — {item_line(o)}")
+            lines.append(f"• {short(o['address'], 60)} — {item_line(o)}" + (f" ×{qty(o)}" if qty(o) > 1 else ""))
             budget -= 1
     return "\n".join(lines)
 
@@ -178,7 +194,7 @@ def short(text: str, n: int = 55) -> str:
 
 def city_card(o: dict) -> str:
     return (f"📍 {o['address']}\n\n"
-            f"{item_line(o)} тел.: {fmt_phone(o['phone'])}\n\n"
+            f"{item_line(o)}" + (f" ×{qty(o)}" if qty(o) > 1 else "") + f" тел.: {fmt_phone(o['phone'])}\n\n"
             f"{o['channel']} · № {o['order_no']}")
 
 
@@ -186,8 +202,8 @@ def russia_card(g: dict) -> str:
     head = f"{g['channel']}"
     if g["shipment"]:
         head += f" · отгрузка № {g['shipment']}"
-    head += f" · {len(g['orders'])} шт."
-    lines = [f"• {name} — {cnt} шт." for name, cnt in sorted(Counter(item_line(o) for o in g["orders"]).items())]
+    head += f" · {sum(qty(o) for o in g['orders'])} шт."
+    lines = [f"• {name} — {cnt} шт." for name, cnt in sorted(count_items(g["orders"]).items())]
     return head + "\n\n" + "\n".join(lines)
 
 
@@ -202,8 +218,8 @@ def production_plan(orders: list, today: date) -> str:
             continue  # прошло и не доставлено — это забота курьеров, в план не включаем
         sort_key = r[0] if r else date.max
         label = key_text(o) or "дата не указана"
-        buckets.setdefault((sort_key, label), Counter())[item_line(o)] += 1
-        total += 1
+        buckets.setdefault((sort_key, label), Counter())[item_line(o)] += qty(o)
+        total += qty(o)
     if not buckets:
         return f"📋 План производства (на {today:%d.%m})\n\nБудущих доставок нет."
     lines = [f"📋 План производства (на {today:%d.%m})", ""]
@@ -245,7 +261,7 @@ def ship_plan(orders: list, today: date) -> Counter:
         if r and r[0] <= today <= r[1]:
             code = order_code(o)
             if code:
-                plan[code] += 1
+                plan[code] += qty(o)
     return plan
 
 

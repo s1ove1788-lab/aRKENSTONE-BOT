@@ -230,8 +230,8 @@ def to_table_orders(p: dict) -> list:
         a = parse_article(art)
         if not a:
             return []
-        beds += [(art, a)] * max(1, int(it.get("quantity") or 1))
-    if not beds or len(beds) > 20:
+        beds.append((art, a, max(1, int(it.get("quantity") or 1))))
+    if not beds or sum(b[2] for b in beds) > 20:
         return []
     pn = str(p.get("posting_number"))
     pek = channel_guess(p) == "ПЭК"
@@ -245,13 +245,13 @@ def to_table_orders(p: dict) -> list:
         address = address or region_text(p)
         ship_text, delivery = _city_dates(p)
     rows = []
-    for i, (art, a) in enumerate(beds):
+    for i, (art, a, count) in enumerate(beds):
         rows.append(Order(
             kind="пэк" if pek else "город", channel="ОЗ ПЭК" if pek else "ОЗ",
             ship_date=ship_text, delivery_date=delivery,
             size=f"{a['width']}×{a['legs']}", color=COLOR_CODES.get(a["color_code"], ""),
             order_no=pn if i == 0 else f"{pn}#{i + 1}", article=art,
-            shipment_or_phone=phone, address=address))
+            shipment_or_phone=phone, address=address, qty=count))
     return rows
 
 
@@ -391,7 +391,7 @@ def poll(notify) -> dict:
                     elif first.channel == "ОЗ":
                         miss = [x for x, ok in (("телефон", bool(first.shipment_or_phone)),
                                                 ("адрес", "," in (first.address or ""))) if not ok]
-                        tags[pn] = "✅ добавлен в таблицу" + (f" ({len(got)} шт.)" if len(got) > 1 else "") + (
+                        tags[pn] = "✅ добавлен в таблицу" + (f" ({sum(x.qty for x in got)} шт.)" if sum(x.qty for x in got) > 1 else "") + (
                             f"\n⚠️ Озон не отдал: {', '.join(miss)} — впишите в таблицу вручную" if miss else "")
                     else:
                         tags[pn] = "✅ добавлен в таблицу, адрес впишите вручную (Озон его не отдаёт)"

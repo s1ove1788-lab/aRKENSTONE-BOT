@@ -130,6 +130,7 @@ def record(marked: list, day) -> int:
         return 0
     ws = _ws()
     date = day.strftime("%d.%m.%Y")
+    marked = [o for o in marked for _ in range(max(1, int(o.get("qty") or 1)))]  # заказ на 2 кровати = 2 строки расчёта
     counts: dict = {}  # (тип, «ключ») -> сколько кроватей уже записано; для города ключ — адрес, для остальных — пусто
 
     def key(kind: str, address: str, order_no: str) -> tuple:

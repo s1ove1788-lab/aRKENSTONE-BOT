@@ -359,7 +359,7 @@ def courier_ru(ctx: Ctx, today, notification=None) -> None:
     rows = []
     for g in groups_[:28]:
         no = f" №{g['shipment']}" if g["shipment"] else ""
-        rows.append([cb(f"{'⏰ ' if g['late'] else ''}{g['channel']}{no} · {len(g['orders'])} шт.",
+        rows.append([cb(f"{'⏰ ' if g['late'] else ''}{g['channel']}{no} · {sum(logic.qty(o) for o in g['orders'])} шт.",
                         f"c:g:{g['key']}")])
     rows.append([cb("⬅️ Назад", "c:home")])
     text = "🚚 По России — выберите отгрузку:"
@@ -477,8 +477,8 @@ def save_move(ctx: Ctx, name: str, text: str, kind: str, ident: str) -> None:
     updates = []
     for o in orders:
         key = logic.key_text(o)
-        cols = {c for c, v in ((4, o["ship"]), (5, o["delivery"])) if v and v == key}
-        for c in cols or {5 if logic.is_city(o) else 4}:
+        cols = {c for c, v in (("ship", o["ship"]), ("delivery", o["delivery"])) if v and v == key}
+        for c in cols or {"delivery" if logic.is_city(o) else "ship"}:
             updates.append((o["row"], c, new))
     sheets.set_order_dates(updates)
     pending.pop(ctx.uid, None)
@@ -570,10 +570,11 @@ def record_shipments(marked: list, who: str, today) -> None:
         if not code:
             log.warning("Отгрузка: не определил размер заказа %s, в «Отгрузки» не записан", o.get("order_no"))
             continue
+        qty = max(1, int(o.get("qty") or 1))
         before = stock[code][0] if code in stock else None
-        after = before - 1 if before is not None and before >= 1 else None
+        after = max(before - qty, 0) if before is not None and before >= 1 else None
         a = parse_article(o.get("article") or "")
-        sheets.add_shipment(code, 1, f"{who} (курьер)", before, after, today,
+        sheets.add_shipment(code, qty, f"{who} (курьер)", before, after, today,
                             o.get("order_no", ""), (a or {}).get("legs", ""), o.get("channel", ""))
         if after is not None:
             sheets.add_stock(code, after, f"{who} (доставка)")

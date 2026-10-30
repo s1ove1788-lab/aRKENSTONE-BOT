@@ -223,8 +223,8 @@ def buyer_phone(campaign_id: int, order_id, addr: dict) -> str:
 def to_table_order(o: dict, shipment: str = "", phone: str = ""):
     """Заказ Маркета -> строка таблицы (как у менеджера). None, если автоматически добавлять нельзя."""
     items = o.get("items") or []
-    if len(items) != 1 or items[0].get("count", 1) != 1:
-        return None  # несколько позиций — вручную
+    if len(items) != 1 or int(items[0].get("count", 1) or 1) < 1:
+        return None  # несколько разных позиций — вручную
     art = items[0].get("offerId") or items[0].get("shopSku") or ""
     a = parse_article(art)
     if not a:
@@ -236,6 +236,7 @@ def to_table_order(o: dict, shipment: str = "", phone: str = ""):
         color=COLOR_CODES.get(a["color_code"], ""),
         order_no=str(o.get("id")),
         article=art,
+        qty=int(items[0].get("count", 1) or 1),
     )
     if is_sgt(o):
         shipments = d.get("shipments") or []

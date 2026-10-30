@@ -61,6 +61,7 @@ class Order:
     shipment_or_phone: str
     channel: str
     address: str
+    qty: int = 1         # сколько кроватей в заказе
 
 
 def _clean(cell) -> str:
