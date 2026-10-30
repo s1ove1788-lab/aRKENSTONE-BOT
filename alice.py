@@ -64,13 +64,20 @@ def _day(cmd: str, today, entities=None):
         return today + timedelta(days=1)
     if "вчера" in cmd:
         return today - timedelta(days=1)
+    for i, stem in enumerate(("понедельник", "вторник", "сред", "четверг", "пятниц", "суббот", "воскресен")):
+        if stem in cmd:  # «на понедельник» — ближайший такой день (если сегодня тот же день, то сегодня)
+            return today + timedelta(days=(i - today.weekday()) % 7)
     r = logic.parse_range(cmd, today) if re.search(r"\d{1,2}\s*(?:" + "|".join(m[:3] for m in MONTH_GEN) + ")", cmd) else None
     return r[0] if r else today
 
 
 def _say_day(day, today) -> str:
     delta = (day - today).days
-    return {0: "сегодня", 1: "завтра", 2: "послезавтра", -1: "вчера"}.get(delta, f"{day.day} {MONTH_GEN[day.month - 1]}")
+    names = {0: "сегодня", 1: "завтра", 2: "послезавтра", -1: "вчера"}
+    if delta in names:
+        return names[delta]
+    wd = ["понедельник", "вторник", "среду", "четверг", "пятницу", "субботу", "воскресенье"][day.weekday()]
+    return f"{wd}, {day.day} {MONTH_GEN[day.month - 1]}"
 
 
 def _shipped_done(today) -> int:
