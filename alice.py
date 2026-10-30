@@ -164,24 +164,41 @@ def handler(event, context=None):
 
 
 class _H(BaseHTTPRequestHandler):
-    def do_POST(self):
-        if self.path.rstrip("/") != f"/alice/{config.ALICE_SECRET}":
-            self.send_response(404)
-            self.end_headers()
-            return
-        try:
-            n = int(self.headers.get("Content-Length") or 0)
-            out = json.dumps(handle(json.loads(self.rfile.read(n) or b"{}")), ensure_ascii=False).encode("utf-8")
-        except Exception:
-            log.exception("Алиса: плохой запрос")
-            self.send_response(400)
-            self.end_headers()
-            return
-        self.send_response(200)
+    def _body(self) -> bytes:
+        """Тело запроса: и с Content-Length, и «кусочками» (chunked), как умеют разные прокси."""
+        if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
+            out = b""
+            while True:
+                size = int((self.rfile.readline() or b"0").split(b";")[0].strip() or b"0", 16)
+                if size == 0:
+                    self.rfile.readline()
+                    return out
+                out += self.rfile.read(size)
+                self.rfile.readline()
+        return self.rfile.read(int(self.headers.get("Content-Length") or 0))
+
+    def _send(self, code: int, payload: dict) -> None:
+        out = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.send_response(code)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(out)))
         self.end_headers()
         self.wfile.write(out)
+
+    def do_POST(self):
+        if self.path.split("?")[0].rstrip("/") != f"/alice/{config.ALICE_SECRET}":
+            log.warning("Алиса: запрос на неверный адрес (длина пути %d) — проверьте секрет в адресе навыка", len(self.path))
+            return self._send(404, {"error": "not found"})
+        try:
+            raw = self._body()
+            body = json.loads(raw or b"{}")
+            res = handle(body)
+            log.info("Алиса: запрос «%s» -> ответ отправлен", ((body.get("request") or {}).get("command") or "")[:60])
+            self._send(200, res)
+        except Exception:
+            log.exception("Алиса: не смог обработать запрос")
+            self._send(200, {"response": {"text": "Что-то пошло не так, попробуйте ещё раз.", "end_session": False},
+                             "version": "1.0"})
 
     def do_GET(self):  # проверка «жив ли адрес» из браузера
         self.send_response(200)
