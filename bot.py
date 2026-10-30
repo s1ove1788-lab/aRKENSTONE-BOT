@@ -1232,6 +1232,11 @@ def main() -> None:
     if not config.MANAGER_IDS:
         log.warning("MANAGER_IDS пуст: никто не сможет стать менеджером и загружать PDF. "
                     "Напишите боту /id и впишите свой ID в настройки.")
+    try:
+        import alice
+        alice.start()
+    except Exception:
+        log.exception("Не смог запустить навык Алисы")
     me = mx.get_me()
     if me.status_code in (401, 403):
         sys.exit("MAX не принял токен. Проверьте MAX_BOT_TOKEN.")
