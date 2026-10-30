@@ -34,12 +34,43 @@ def _color(cmd: str):
     return None
 
 
-def _day(cmd: str, today):
+MONTH_GEN = ["января", "февраля", "марта", "апреля", "мая", "июня", "июля", "августа", "сентября", "октября",
+             "ноября", "декабря"]
+
+
+def _day(cmd: str, today, entities=None):
+    """На какой день вопрос: «завтра», «послезавтра», «3 ноября» (Алиса сама разбирает дату в entities)."""
+    from datetime import date
+    for e in entities or []:
+        if e.get("type") != "YANDEX.DATETIME":
+            continue
+        v = e.get("value") or {}
+        try:
+            y, m, d = today.year, today.month, today.day
+            if "year" in v:
+                y = y + v["year"] if v.get("year_is_relative") else v["year"]
+            if "month" in v:
+                m = m + v["month"] if v.get("month_is_relative") else v["month"]
+            if "day" in v:
+                d = d + v["day"] if v.get("day_is_relative") else v["day"]
+                if v.get("day_is_relative"):
+                    return today + timedelta(days=v["day"])
+            return date(y, m, d)
+        except (ValueError, TypeError):
+            pass
     if "послезавтра" in cmd:
         return today + timedelta(days=2)
     if "завтра" in cmd:
         return today + timedelta(days=1)
-    return today
+    if "вчера" in cmd:
+        return today - timedelta(days=1)
+    r = logic.parse_range(cmd, today) if re.search(r"\d{1,2}\s*(?:" + "|".join(m[:3] for m in MONTH_GEN) + ")", cmd) else None
+    return r[0] if r else today
+
+
+def _say_day(day, today) -> str:
+    delta = (day - today).days
+    return {0: "сегодня", 1: "завтра", 2: "послезавтра", -1: "вчера"}.get(delta, f"{day.day} {MONTH_GEN[day.month - 1]}")
 
 
 def _shipped_done(today) -> int:
@@ -64,14 +95,17 @@ def _beds(n: int) -> str:
     return f"{n} {_plural(n, 'кровать', 'кровати', 'кроватей')}"
 
 
-def answer(cmd: str, today) -> str:
+def answer(cmd: str, today, entities=None) -> str:
     cmd = (cmd or "").lower().replace("ё", "е")
 
     if "отгруз" in cmd or "отправ" in cmd:
-        orders = sheets.read_orders()
-        total = logic.today_total(orders, today)
-        left = max(0, total - _shipped_done(today))
-        return "Отгрузок на сегодня нет." if not left else f"На сегодня отгрузить {_beds(left)}."
+        day = _day(cmd, today, entities)
+        if day < today:
+            return "Этот день уже прошёл."
+        total = logic.today_total(sheets.read_orders(), day)  # считает отгрузки на любой день
+        left = max(0, total - (_shipped_done(today) if day == today else 0))
+        when = _say_day(day, today)
+        return f"Отгрузок на {when} нет." if not left else f"На {when} отгрузить {_beds(left)}."
 
     if "каркас" in cmd:
         fr = sheets.frames_get()
@@ -83,8 +117,8 @@ def answer(cmd: str, today) -> str:
         return "Сваренные каркасы. " + ", ".join(parts) + f". Всего {sum(fr.values())}."
 
     if "план" in cmd or "производств" in cmd or "что делать" in cmd:
-        day = _day(cmd, today)
-        label = {0: "на сегодня", 1: "на завтра", 2: "на послезавтра"}[(day - today).days]
+        day = _day(cmd, today, entities)
+        label = "на " + _say_day(day, today)
         counts: dict = {}
         for o in sheets.read_orders():
             if o["status"]:
@@ -147,7 +181,7 @@ def handle(body: dict) -> dict:
         text = "Слушаю. " + HELP
     else:
         try:
-            text = answer(cmd, datetime.now(ZoneInfo(config.TIMEZONE)).date())
+            text = answer(cmd, datetime.now(ZoneInfo(config.TIMEZONE)).date(), (req.get("nlu") or {}).get("entities"))
         except Exception:
             log.exception("Алиса: ошибка при ответе")
             text = "Не получилось получить данные из таблицы. Попробуйте ещё раз."
