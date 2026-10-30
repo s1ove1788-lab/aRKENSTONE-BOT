@@ -340,3 +340,24 @@ def article_name(article: str, fallback: str = "") -> str:
         return fallback or article or "товар"
     color = {"04": "чёрная", "06": "белая"}.get(a["color_code"], a["color_code"])
     return f"{a['width']}/{a['legs']} {color}"
+
+
+def parse_frames(text: str, widths: list) -> list:
+    """Каркасы: «120 8», «120 - 8 шт.», «160 -2» (минус = убрать). Возвращает [(ширина, изменение)] или {'error': ...}."""
+    res = []
+    for line in re.split(r"[\n;,]+", text or ""):
+        line = line.strip()
+        if not line:
+            continue
+        m = re.fullmatch(r"(\d{2,3})\s+[-−](\d{1,3})\s*(?:шт\.?)?", line, re.I)
+        sign = -1
+        if not m:
+            m = re.fullmatch(r"(\d{2,3})\s*(?:[-–—:=]|\s)\s*(\d{1,3})\s*(?:шт\.?)?", line, re.I)
+            sign = 1
+        if not m:
+            return [{"error": f"не понял «{line}» — пишите так: 120 8"}]
+        w, n = int(m.group(1)), int(m.group(2))
+        if w not in widths:
+            return [{"error": f"размера {w} нет. Есть: {', '.join(map(str, widths))}"}]
+        res.append((w, sign * n))
+    return res or [{"error": "пусто — напишите, например: 120 8"}]

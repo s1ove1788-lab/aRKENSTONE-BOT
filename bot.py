@@ -169,7 +169,8 @@ def home(ctx: Ctx, notification=None) -> None:
                 [cb("↩️ Возврат", "c:ret")], CHANGE_ROLE]
         text = "🚚 Меню курьера"
     else:
-        rows = [[cb("📋 План производства", "p:plan")], [cb("✅ Кровати отгружены", "p:shipped")],
+        rows = [[cb("📋 План производства", "p:plan")], [cb("🔩 Сваренные каркасы", "p:fr")],
+                [cb("✅ Кровати отгружены", "p:shipped")],
                 [cb("📦 Остатки", "p:stock")], CHANGE_ROLE]
         text = "🏭 Меню производства"
     if config.AI_KEY and role in config.AI_ROLES:
@@ -513,11 +514,21 @@ def production_shipped(ctx: Ctx) -> None:
 def production(ctx: Ctx, payload: str) -> None:
     parts = payload.split(":", 2)
     action = parts[1] if len(parts) > 1 else ""
-    if action in ("plan", "stock", "cur", "shipped"):
+    if action in ("plan", "stock", "cur", "shipped", "fr"):
         pending.pop(ctx.uid, None)
 
     if action == "shipped":
         return production_shipped(ctx)
+
+    if action == "fr":
+        return frames_view(ctx)
+
+    if action == "fradd":
+        pending[ctx.uid] = ("frames",)
+        return ctx.show("🔩 Добавить каркасы\n\nНапишите, какие каркасы сварены: ширина и сколько штук, например:\n"
+                        "120 8\n\nНесколько размеров — каждый с новой строки:\n120 8\n160 4\n\n"
+                        "Если ошиблись, минус уберёт лишнее: 120 -2",
+                        [[cb("⬅️ Назад", "p:fr")]])
 
     if action == "plan":
         text = logic.production_plan(sheets.read_orders(), now_date())
@@ -548,6 +559,26 @@ def production(ctx: Ctx, payload: str) -> None:
     home(ctx)
 
 
+def frames_view(ctx: Ctx, note: str = "") -> None:
+    fr = sheets.frames_get()
+    lines = ([note, ""] if note else []) + ["🔩 Сваренные каркасы", ""]
+    lines += [f"{w} - {n} шт." for w, n in sorted(fr.items())]
+    lines += ["", f"Всего: {sum(fr.values())} шт."]
+    ctx.show("\n".join(lines), [[cb("➕ Добавить каркас", "p:fradd")], MENU_BTN])
+
+
+def save_frames(ctx: Ctx, name: str, text: str) -> None:
+    items = logic.parse_frames(text, sheets.frame_widths())
+    if items and isinstance(items[0], dict):
+        return ctx.show("⚠️ " + items[0]["error"], [[cb("⬅️ Назад", "p:fr")]])
+    done = []
+    for w, d in items:
+        new = sheets.frames_add(w, d, name)
+        done.append(f"{w}: {'+' if d > 0 else ''}{d} → теперь {new} шт.")
+    pending.pop(ctx.uid, None)
+    frames_view(ctx, "✅ Записано:\n" + "\n".join(done))
+
+
 def save_stock_from_text(ctx: Ctx, name: str, text: str) -> None:
     m = re.fullmatch(r"\s*(\d{1,4})\s*(шт\.?)?\s*", text, re.I)
     if not m:
@@ -555,8 +586,17 @@ def save_stock_from_text(ctx: Ctx, name: str, text: str) -> None:
                         [[cb("↩️ Отмена", "p:stock")]])
     code = pending.pop(ctx.uid)[1]
     qty = int(m.group(1))
+    before = (sheets.latest_stock().get(code) or (0, ""))[0]
     sheets.add_stock(code, qty, name)
-    ctx.show(f"✅ Записал: {code} — {qty} шт.",
+    extra = ""
+    if qty > before:  # на склад прибавились готовые кровати: этот размер (любого цвета) списываем со сваренных каркасов
+        try:
+            width = int(code.split(".")[0])
+            left = sheets.frames_add(width, -(qty - before), name + " (в остатки)")
+            extra = f"\n🔩 Каркасов {width} списано: {qty - before}, осталось {left} шт."
+        except Exception:
+            log.exception("Не смог списать каркасы")
+    ctx.show(f"✅ Записал: {code} — {qty} шт." + extra,
              [[cb("✏️ Внести ещё", "p:stock")], [cb("📊 Текущие остатки", "p:cur")], MENU_BTN])
 
 
@@ -1049,6 +1089,8 @@ def handle_message(u: dict) -> None:
                 return ai_answer(ctx, raw)
             if mode[0] == "return":
                 return save_return(ctx, name, raw, mode[1] or "")
+            if mode[0] == "frames":
+                return save_frames(ctx, name, raw)
             if mode[0] == "move":
                 return save_move(ctx, name, raw, mode[1], mode[2])
             return save_stock_from_text(ctx, name, raw)

@@ -409,6 +409,79 @@ def latest_stock() -> dict:
     return res
 
 
+# --------------------------------------------------------------- каркасы
+FRAMES_HEADERS = ["Размер", "Количество"]
+
+
+def frame_widths() -> list:
+    return sorted({int(c.split(".")[0]) for c in config.STOCK_CODES})
+
+
+def _frames_ws():
+    """Вкладка со сваренными каркасами. Подходит и «Свареные каркасы», и «Сваренные каркасы»; нет — создаём."""
+    ws = _tabs.get("frames")
+    if ws is None:
+        book = get_book()
+        names = [config.FRAMES_TAB, "Свареные каркасы", "Сваренные каркасы", "Каркасы"]
+        for n in names:
+            try:
+                ws = book.worksheet(n)
+                break
+            except gspread.WorksheetNotFound:
+                continue
+        if ws is None:
+            ws = book.add_worksheet(title=config.FRAMES_TAB, rows=50, cols=2)
+            ws.append_row(FRAMES_HEADERS, value_input_option="RAW")
+        _tabs["frames"] = ws
+    values = ws.get_all_values()
+    have = {v[0].strip() for v in values[1:] if v and v[0].strip()}
+    missing = [w for w in frame_widths() if str(w) not in have]
+    if missing:
+        ws.append_rows([[w, 0] for w in missing], value_input_option="USER_ENTERED")
+    return ws
+
+
+def _frames_col(values: list) -> int:
+    """Номер столбца (с 0) с количеством: по заголовку «Кол…» (в вашей таблице он с опечаткой), иначе второй."""
+    for i, h in enumerate(values[0] if values else []):
+        if (h or "").strip().lower().startswith("кол"):
+            return i
+    return 1
+
+
+def _num(x) -> int:
+    try:
+        return int(float(str(x).replace(",", ".").replace(" ", "") or 0))
+    except ValueError:
+        return 0
+
+
+def frames_get() -> dict:
+    """{ширина: сколько сваренных каркасов}."""
+    ws = _frames_ws()
+    values = ws.get_all_values()
+    col = _frames_col(values)
+    res = {w: 0 for w in frame_widths()}
+    for v in values[1:]:
+        if v and v[0].strip().isdigit():
+            res[int(v[0])] = _num(v[col]) if col < len(v) else 0
+    return res
+
+
+def frames_add(width: int, delta: int, who: str = "") -> int:
+    """Меняет число каркасов размера width прямо в ячейке (минус — убрать, ниже нуля не уходит). Возвращает новое число."""
+    ws = _frames_ws()
+    values = ws.get_all_values()
+    col = _frames_col(values)
+    for i, v in enumerate(values[1:], start=2):
+        if v and v[0].strip() == str(width):
+            new = max(0, (_num(v[col]) if col < len(v) else 0) + delta)
+            ws.update_cell(i, col + 1, new)
+            return new
+    ws.append_row([width, max(0, delta)], value_input_option="RAW")
+    return max(0, delta)
+
+
 # --------------------------------------------------------------- возвраты
 RETURNS_HEADERS = ["Дата", "Тип возврата", "Размер", "Статус"]
 RET_TAKEN = "Принят на склад"
