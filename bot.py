@@ -542,7 +542,7 @@ def production(ctx: Ctx, payload: str) -> None:
 
     if action == "s" and len(parts) == 3 and parts[2] in config.STOCK_CODES:
         pending[ctx.uid] = ("stock", parts[2])
-        return ctx.show(f"Остаток {parts[2]}: напишите числом, сколько штук сейчас (например, 5).",
+        return ctx.show(f"Остаток {parts[2]}: напишите, сколько штук ДОБАВИТЬ к текущему (например, 2). Лишнее уберёт минус: -1.",
                         [[cb("↩️ Отмена", "p:stock")]])
 
     if action == "cur":
@@ -580,23 +580,26 @@ def save_frames(ctx: Ctx, name: str, text: str) -> None:
 
 
 def save_stock_from_text(ctx: Ctx, name: str, text: str) -> None:
-    m = re.fullmatch(r"\s*(\d{1,4})\s*(шт\.?)?\s*", text, re.I)
+    """Число прибавляется к текущему остатку (минус — убрать, например -1 при ошибке)."""
+    m = re.fullmatch(r"\s*([+-]?)\s*(\d{1,4})\s*(шт\.?)?\s*", text, re.I)
     if not m:
-        return ctx.show("Нужно просто число, например 5. Или нажмите «Отмена».",
+        return ctx.show("Нужно просто число, например 2 (добавить) или -1 (убрать). Или нажмите «Отмена».",
                         [[cb("↩️ Отмена", "p:stock")]])
     code = pending.pop(ctx.uid)[1]
-    qty = int(m.group(1))
+    delta = int(m.group(2)) * (-1 if m.group(1) == "-" else 1)
     before = (sheets.latest_stock().get(code) or (0, ""))[0]
-    sheets.add_stock(code, qty, name)
+    after = max(0, before + delta)
+    sheets.add_stock(code, after, name)
     extra = ""
-    if qty > before:  # на склад прибавились готовые кровати: этот размер (любого цвета) списываем со сваренных каркасов
+    if after > before:  # на склад прибавились готовые кровати: этот размер (любого цвета) списываем со сваренных каркасов
         try:
             width = int(code.split(".")[0])
-            left = sheets.frames_add(width, -(qty - before), name + " (в остатки)")
-            extra = f"\n🔩 Каркасов {width} списано: {qty - before}, осталось {left} шт."
+            left = sheets.frames_add(width, -(after - before), name + " (в остатки)")
+            extra = f"\n🔩 Каркасов {width} списано: {after - before}, осталось {left} шт."
         except Exception:
             log.exception("Не смог списать каркасы")
-    ctx.show(f"✅ Записал: {code} — {qty} шт." + extra,
+    sign = "+" if delta > 0 else ""
+    ctx.show(f"✅ {code}: {sign}{delta} → теперь на складе {after} шт." + extra,
              [[cb("✏️ Внести ещё", "p:stock")], [cb("📊 Текущие остатки", "p:cur")], MENU_BTN])
 
 
