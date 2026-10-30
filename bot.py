@@ -164,6 +164,7 @@ def home(ctx: Ctx, notification=None) -> None:
         except Exception:
             log.exception("Не смог получить ссылку на таблицу заказов")
         rows.append([cb("📦 Таблица остатков", "p:cur")])
+        rows.append([cb("🔄 Сверка", "m:sync")])
         rows.append(CHANGE_ROLE)
         text = ("👔 Меню менеджера\n\nЧтобы добавить заказы, просто пришлите мне PDF-файл в этот чат.\n"
                 "Таблицы открываются в Google Таблицах — там их можно редактировать.")
@@ -698,6 +699,23 @@ def record_shipments(marked: list, who: str, today) -> None:
 
 
 # ---------------------------------------------------------- нажатия кнопок
+def run_sverka(ctx: Ctx) -> None:
+    """Сверка заказов Яндекс Маркета и Озона с таблицей (кнопка «Сверка» и команда /sverka)."""
+    ctx.show("Сверяю заказы площадок с таблицей…", [MENU_BTN])
+    lines = []
+    if config.YM_TOKEN:
+        r = market_check()
+        lines.append("Яндекс Маркет: " + ("не получилось проверить, смотрите логи" if r is None else
+                     f"в обработке {r['total']}, не хватало в таблице — {r['new']}, добавлено — {r['added']}"))
+    if config.OZ_CLIENT_ID and config.OZ_API_KEY:
+        r = ozon_check()
+        lines.append("Озон: " + ("не получилось проверить, смотрите логи" if r is None else
+                     f"в обработке {r['total']}, не хватало в таблице — {r['new']}"))
+    lines.append("Вайлдберриз: пока не подключён.")
+    lines.append("\nО найденных заказах бот присылает отдельные уведомления.")
+    ctx.show("\n".join(lines), [MENU_BTN])
+
+
 def on_payload(ctx: Ctx, name: str, payload: str) -> None:
     if payload.startswith("role:"):
         return choose_role(ctx, name, payload[5:])
@@ -713,6 +731,8 @@ def on_payload(ctx: Ctx, name: str, payload: str) -> None:
         return home(ctx)
     if payload in ("ai:start", "ai:end") and config.AI_KEY and user["role"] in config.AI_ROLES:
         return ai_start(ctx) if payload == "ai:start" else ai_end(ctx)
+    if payload == "m:sync" and user["role"] == "manager":
+        return run_sverka(ctx)
     if payload.startswith("c:") and user["role"] == "courier":
         return courier(ctx, payload)
     if payload.startswith("p:"):
@@ -1114,19 +1134,7 @@ def handle_message(u: dict) -> None:
     if cmd == "/sverka":  # сверить все площадки с таблицей прямо сейчас (только менеджер)
         if sender_id not in config.MANAGER_IDS:
             return ctx.show("Команда только для менеджера.", [MENU_BTN])
-        ctx.show("Сверяю заказы площадок с таблицей…", [MENU_BTN])
-        lines = []
-        if config.YM_TOKEN:
-            r = market_check()
-            lines.append("Яндекс Маркет: " + ("не получилось проверить, смотрите логи" if r is None else
-                         f"в обработке {r['total']}, не хватало в таблице — {r['new']}, добавлено — {r['added']}"))
-        if config.OZ_CLIENT_ID and config.OZ_API_KEY:
-            r = ozon_check()
-            lines.append("Озон: " + ("не получилось проверить, смотрите логи" if r is None else
-                         f"в обработке {r['total']}, не хватало в таблице — {r['new']}"))
-        lines.append("Вайлдберриз: пока не подключён.")
-        lines.append("\nО найденных заказах бот присылает отдельные уведомления.")
-        return ctx.show("\n".join(lines), [MENU_BTN])
+        return run_sverka(ctx)
     if cmd == "/ymnow":  # проверить Маркет прямо сейчас (только менеджер)
         if sender_id not in config.MANAGER_IDS:
             return ctx.show("Команда только для менеджера.", [MENU_BTN])
