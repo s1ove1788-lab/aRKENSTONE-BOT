@@ -21,7 +21,23 @@ MAX_IN_MESSAGE = 15
 
 
 def _get(path: str, params=None):
-    return requests.get(BASE + path, headers={"Api-Key": config.YM_TOKEN}, params=params, timeout=30)
+    """GET к Маркету. При сбое на стороне Маркета (5xx) или обрыве связи пробует ещё до 3 раз с паузой."""
+    import time
+    last = None
+    for pause in (0, 3, 10, 30):
+        if pause:
+            time.sleep(pause)
+        try:
+            r = requests.get(BASE + path, headers={"Api-Key": config.YM_TOKEN}, params=params, timeout=30)
+        except requests.RequestException as e:
+            last = e
+            continue
+        if r.status_code < 500:
+            return r
+        last = r
+    if isinstance(last, requests.Response):
+        return last
+    raise last
 
 
 # --------------------------------------------------------------- запросы

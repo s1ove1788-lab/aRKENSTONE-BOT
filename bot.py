@@ -717,17 +717,28 @@ def market_check():
     """Один проход слежения за Маркетом. None — если не получилось."""
     try:
         res = ym_watch.poll(broadcast)
+        if ym_state["fails"] >= 3:  # раньше сообщали о сбое — теперь сообщаем, что всё наладилось
+            for uid, u in list(users.items()):
+                if u["role"] == "manager" and allowed(uid, "manager"):
+                    mx.send({"type": "user", "id": uid}, "✅ Яндекс Маркет снова отвечает, слежение работает.")
         ym_state["fails"] = 0
         return res
-    except Exception:
+    except Exception as e:
         log.exception("Ошибка проверки Яндекс Маркета")
         ym_state["fails"] += 1
         if ym_state["fails"] == 3:  # три раза подряд — сообщаем менеджерам один раз
+            code = getattr(getattr(e, "response", None), "status_code", None)
+            if code in (401, 403):
+                why = "Маркет не принимает токен (код %s). Скорее всего, токен отозван или у него нет нужных прав." % code
+            elif code and code >= 500:
+                why = ("Сбой на стороне Маркета (код %s). Токен и бот в порядке, просто у Маркета временные проблемы. "
+                       "Бот продолжит проверять сам и напишет, когда всё наладится." % code)
+            else:
+                why = "Нет связи с Маркетом. Подробности в логах бота."
             for uid, u in list(users.items()):
-                if u["role"] == "manager":
+                if u["role"] == "manager" and allowed(uid, "manager"):
                     mx.send({"type": "user", "id": uid},
-                            "⚠️ Не получается получить заказы с Яндекс Маркета (3 проверки подряд). "
-                            "Возможно, токен отозван или у Маркета сбой. Подробности в логах бота.")
+                            "⚠️ Не получается получить заказы с Яндекс Маркета (3 проверки подряд).\n" + why)
         return None
 
 
