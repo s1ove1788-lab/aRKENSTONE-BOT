@@ -482,6 +482,65 @@ def frames_add(width: int, delta: int, who: str = "") -> int:
     return max(0, delta)
 
 
+# ------------------------------------------------- склад: сырьё и ТМЦ
+INV_HEADERS = ["Название", "Остаток", "Ед.", "Минимум"]
+
+
+def _inv_ws(kind: str):
+    return _tab(config.INV_TABS[kind], INV_HEADERS)
+
+
+def _inv_cols(header: list) -> dict:
+    """Столбцы ищем по названию в шапке (название, остаток/количество, ед., минимум), иначе 1–4 по порядку."""
+    cols = {"name": 0, "qty": 1, "unit": 2, "min": 3}
+    for i, h in enumerate(header):
+        t = (h or "").strip().lower()
+        if t.startswith("назв") or t.startswith("позиц") or t.startswith("материал"):
+            cols["name"] = i
+        elif t.startswith("остат") or t.startswith("кол"):
+            cols["qty"] = i
+        elif t.startswith("ед"):
+            cols["unit"] = i
+        elif t.startswith("мин"):
+            cols["min"] = i
+    return cols
+
+
+def _fnum(x) -> float:
+    try:
+        return float(str(x).replace(",", ".").replace(" ", "") or 0)
+    except ValueError:
+        return 0.0
+
+
+def inv_get(kind: str) -> list:
+    """[{'row', 'name', 'qty', 'unit', 'min'}] — позиции склада из таблицы."""
+    values = _inv_ws(kind).get_all_values()
+    cols = _inv_cols(values[0] if values else [])
+    res = []
+    for i, v in enumerate(values[1:], start=2):
+        g = lambda k: (v[cols[k]].strip() if cols[k] < len(v) else "")
+        if g("name"):
+            res.append({"row": i, "name": g("name"), "qty": _fnum(g("qty")), "unit": g("unit"), "min": _fnum(g("min"))})
+    return res
+
+
+def inv_set(kind: str, row: int, qty: float) -> None:
+    ws = _inv_ws(kind)
+    cols = _inv_cols(ws.row_values(1))
+    ws.update_cell(row, cols["qty"] + 1, int(qty) if float(qty).is_integer() else round(qty, 3))
+
+
+def inv_new(kind: str, name: str, unit: str = "", minimum: float = 0) -> None:
+    ws = _inv_ws(kind)
+    cols = _inv_cols(ws.row_values(1))
+    row = [""] * (max(cols.values()) + 1)
+    row[cols["name"]], row[cols["qty"]], row[cols["unit"]] = name, 0, unit
+    if minimum:
+        row[cols["min"]] = int(minimum) if float(minimum).is_integer() else minimum
+    ws.append_row(row, value_input_option="USER_ENTERED")
+
+
 # --------------------------------------------------------------- возвраты
 RETURNS_HEADERS = ["Дата", "Тип возврата", "Размер", "Статус"]
 RET_TAKEN = "Принят на склад"

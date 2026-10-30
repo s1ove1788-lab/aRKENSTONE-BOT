@@ -161,6 +161,7 @@ def home(ctx: Ctx, notification=None) -> None:
         except Exception:
             log.exception("Не смог получить ссылку на таблицу заказов")
         rows.append([cb("📦 Таблица остатков", "p:cur")])
+        rows.append([cb(config.INV_TITLES["raw"], "p:inv:raw"), cb(config.INV_TITLES["tmc"], "p:inv:tmc")])
         rows.append(CHANGE_ROLE)
         text = ("👔 Меню менеджера\n\nЧтобы добавить заказы, просто пришлите мне PDF-файл в этот чат.\n"
                 "Таблицы открываются в Google Таблицах — там их можно редактировать.")
@@ -171,7 +172,8 @@ def home(ctx: Ctx, notification=None) -> None:
     else:
         rows = [[cb("📋 План производства", "p:plan")], [cb("🔩 Сваренные каркасы", "p:fr")],
                 [cb("✅ Кровати отгружены", "p:shipped")],
-                [cb("📦 Остатки", "p:stock")], CHANGE_ROLE]
+                [cb("📦 Остатки", "p:stock")],
+                [cb(config.INV_TITLES["raw"], "p:inv:raw"), cb(config.INV_TITLES["tmc"], "p:inv:tmc")], CHANGE_ROLE]
         text = "🏭 Меню производства"
     if config.AI_KEY and role in config.AI_ROLES:
         rows.insert(len(rows) - 1, [cb("💬 ИИ-помощник", "ai:start")])  # перед «Сменить роль»
@@ -514,7 +516,7 @@ def production_shipped(ctx: Ctx) -> None:
 def production(ctx: Ctx, payload: str) -> None:
     parts = payload.split(":", 2)
     action = parts[1] if len(parts) > 1 else ""
-    if action in ("plan", "stock", "cur", "shipped", "fr"):
+    if action in ("plan", "stock", "cur", "shipped", "fr", "inv"):
         pending.pop(ctx.uid, None)
 
     if action == "shipped":
@@ -522,6 +524,18 @@ def production(ctx: Ctx, payload: str) -> None:
 
     if action == "fr":
         return frames_view(ctx)
+
+    kind = parts[2] if len(parts) > 2 else ""
+    if action in ("inv", "ia", "ie", "in") and kind in config.INV_TABS:
+        if action == "inv":
+            return inv_view(ctx, kind)
+        pending[ctx.uid] = ("inv", kind, action)
+        title = config.INV_TITLES[kind]
+        texts = {"ia": f"{title}: приход\n\nНапишите, что пришло и сколько, например:\nтруба 50\n\nНесколько позиций — с новой строки.",
+                 "ie": f"{title}: расход\n\nНапишите, что ушло и сколько, например:\nкраска 2\n\nНесколько позиций — с новой строки.",
+                 "in": f"{title}: новая позиция\n\nНапишите название, единицу и (по желанию) минимум через запятую, например:\n"
+                       "Труба 40×20, м, 50\n\nОстаток сначала будет 0 — потом внесите приход."}
+        return ctx.show(texts[action], [[cb("⬅️ Назад", f"p:inv:{kind}")]])
 
     if action == "fradd":
         pending[ctx.uid] = ("frames",)
@@ -557,6 +571,60 @@ def production(ctx: Ctx, payload: str) -> None:
         return ctx.show("\n".join(lines), [[cb("✏️ Внести остаток", "p:stock")], MENU_BTN])
 
     home(ctx)
+
+
+def inv_view(ctx: Ctx, kind: str, note: str = "") -> None:
+    items = sheets.inv_get(kind)
+    title = config.INV_TITLES[kind]
+    lines = ([note, ""] if note else []) + [title, ""]
+    for i in items:
+        low = i["min"] and i["qty"] < i["min"]
+        lines.append(f"{'⚠️ ' if low else ''}{i['name']} — {logic.fmt_qty(i['qty'])} {i['unit']}".rstrip())
+    if not items:
+        lines.append("Пока пусто. Добавьте позицию кнопкой «🆕 Новая позиция» или впишите её в таблицу.")
+    elif any(i["min"] and i["qty"] < i["min"] for i in items):
+        lines += ["", "⚠️ — ниже минимума"]
+    ctx.show("\n".join(lines), [[cb("➕ Приход", f"p:ia:{kind}"), cb("➖ Расход", f"p:ie:{kind}")],
+                                [cb("🆕 Новая позиция", f"p:in:{kind}")], MENU_BTN])
+
+
+def save_inv(ctx: Ctx, name: str, text: str, kind: str, action: str) -> None:
+    back = [[cb("⬅️ Назад", f"p:inv:{kind}")]]
+    if action == "in":  # «Название, ед., минимум»
+        bits = [b.strip() for b in text.split(",")]
+        if not bits[0]:
+            return ctx.show("⚠️ Напишите название, например: Труба 40×20, м, 50", back)
+        mn = 0.0
+        if len(bits) > 2:
+            try:
+                mn = float(bits[2].replace(",", ".")) if bits[2] else 0.0
+            except ValueError:
+                return ctx.show("⚠️ Минимум должен быть числом, например: Труба 40×20, м, 50", back)
+        if any(i["name"].lower() == bits[0].lower() for i in sheets.inv_get(kind)):
+            return ctx.show(f"⚠️ «{bits[0]}» уже есть в списке.", back)
+        sheets.inv_new(kind, bits[0], bits[1] if len(bits) > 1 else "", mn)
+        pending.pop(ctx.uid, None)
+        return inv_view(ctx, kind, f"✅ Добавлена позиция: {bits[0]}")
+    items = sheets.inv_get(kind)
+    parsed = logic.parse_inv(text, items)
+    if parsed and isinstance(parsed[0], dict):
+        return ctx.show("⚠️ " + parsed[0]["error"], back)
+    sign = 1 if action == "ia" else -1
+    done, low = [], []
+    for item, n in parsed:
+        new = max(0.0, item["qty"] + sign * n)
+        sheets.inv_set(kind, item["row"], new)
+        item["qty"] = new
+        done.append(f"{item['name']}: {'+' if sign > 0 else '−'}{logic.fmt_qty(n)} → {logic.fmt_qty(new)} {item['unit']}".rstrip())
+        if sign < 0 and item["min"] and new < item["min"]:
+            low.append(f"⚠️ {config.INV_TITLES[kind]}: {item['name']} — осталось {logic.fmt_qty(new)} {item['unit']}, "
+                       f"минимум {logic.fmt_qty(item['min'])}")
+    pending.pop(ctx.uid, None)
+    for text_low in low:
+        for uid, u in list(users.items()):
+            if u["role"] == "manager" and uid != ctx.uid and allowed(uid, "manager"):
+                mx.send({"type": "user", "id": uid}, text_low)
+    inv_view(ctx, kind, "✅ Записано:\n" + "\n".join(done) + ("\n\n" + "\n".join(low) if low else ""))
 
 
 def frames_view(ctx: Ctx, note: str = "") -> None:
@@ -645,7 +713,7 @@ def on_payload(ctx: Ctx, name: str, payload: str) -> None:
     if payload.startswith("p:"):
         # производство — всё; менеджер — только остатки (просмотр и внесение)
         section = payload.split(":")[1]
-        if user["role"] == "prod" or (user["role"] == "manager" and section in ("stock", "s", "cur")):
+        if user["role"] == "prod" or (user["role"] == "manager" and section in ("stock", "s", "cur", "inv", "ia", "ie", "in")):
             return production(ctx, payload)
     home(ctx, notification="Эта кнопка вам недоступна")
 
@@ -1092,6 +1160,8 @@ def handle_message(u: dict) -> None:
                 return ai_answer(ctx, raw)
             if mode[0] == "return":
                 return save_return(ctx, name, raw, mode[1] or "")
+            if mode[0] == "inv":
+                return save_inv(ctx, name, raw, mode[1], mode[2])
             if mode[0] == "frames":
                 return save_frames(ctx, name, raw)
             if mode[0] == "move":

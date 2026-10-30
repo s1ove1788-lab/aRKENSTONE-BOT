@@ -361,3 +361,39 @@ def parse_frames(text: str, widths: list) -> list:
             return [{"error": f"размера {w} нет. Есть: {', '.join(map(str, widths))}"}]
         res.append((w, sign * n))
     return res or [{"error": "пусто — напишите, например: 120 8"}]
+
+
+def fmt_qty(x: float) -> str:
+    return str(int(x)) if float(x).is_integer() else f"{x:.3f}".rstrip("0").rstrip(".")
+
+
+def inv_find(items: list, query: str):
+    """Ищет позицию склада по названию: точное совпадение, иначе единственное, которое содержит введённое.
+    Возвращает (позиция, None) или (None, текст ошибки)."""
+    q = " ".join(query.lower().split())
+    exact = [i for i in items if i["name"].lower() == q]
+    if exact:
+        return exact[0], None
+    part = [i for i in items if q and q in i["name"].lower()]
+    if len(part) == 1:
+        return part[0], None
+    if len(part) > 1:
+        return None, f"«{query}» подходит к нескольким: " + ", ".join(i["name"] for i in part[:6]) + ". Напишите точнее."
+    return None, f"Позиции «{query}» нет в таблице. Добавьте её кнопкой «🆕 Новая позиция»."
+
+
+def parse_inv(text: str, items: list) -> list:
+    """«труба 50», «краска 2,5» (по строке на позицию) -> [(позиция, число)] или [{'error': ...}]."""
+    res = []
+    for line in re.split(r"[\n;]+", text or ""):
+        line = line.strip()
+        if not line:
+            continue
+        m = re.fullmatch(r"(.+?)[\s:=-]+(\d+(?:[.,]\d+)?)\s*[а-яa-z.]*", line, re.I)
+        if not m:
+            return [{"error": f"не понял «{line}» — пишите так: труба 50"}]
+        item, err = inv_find(items, m.group(1))
+        if err:
+            return [{"error": err}]
+        res.append((item, float(m.group(2).replace(",", "."))))
+    return res or [{"error": "пусто — напишите, например: труба 50"}]
