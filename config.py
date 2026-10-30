@@ -80,9 +80,9 @@ INV_TABS = {"raw": os.getenv("RAW_TAB", "Сырьё").strip(), "tmc": os.getenv(
 INV_TITLES = {"raw": "🧱 Сырьё", "tmc": "🧰 ТМЦ"}
 ALICE_SECRET = os.getenv("ALICE_SECRET", "").strip()  # включает навык Алисы; это же секретная часть адреса
 try:
-    ALICE_PORT = int(os.getenv("PORT") or os.getenv("ALICE_PORT") or "8080")
+    ALICE_PORT = int(os.getenv("PORT") or os.getenv("ALICE_PORT") or "3000")
 except ValueError:
-    ALICE_PORT = 8080
+    ALICE_PORT = 3000
 FRAMES_TAB = os.getenv("FRAMES_TAB", "Свареные каркасы").strip()  # вкладка со сваренными каркасами (размер и количество)
 RETURNS_TAB = "Возвраты"  # таблица возвратов: дата, тип возврата, размер, статус
 SETTINGS_TAB = "Настройки"  # служебные значения бота (код таблицы стоимости доставок и т.п.)
