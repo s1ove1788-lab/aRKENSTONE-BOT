@@ -275,18 +275,18 @@ def ensure_status_dropdown(ws) -> None:
         _invalidate()
 
 
-def stamp_manual_delivered() -> int:
+def stamp_manual_delivered() -> list:
     """Менеджер выбрал в списке просто «Доставлен» — дописываем дату и время, как при нажатии у курьера
-    (по дате потом считаются доставки и недельный итог). Возвращает число строк."""
+    (по дате потом считаются доставки и недельный итог). Возвращает отмеченные строки."""
     rows = [r for r in read_orders(force=True) if r["status"].strip().lower().rstrip(".") == "доставлен"]
     if not rows:
-        return 0
+        return []
     stamp = "Доставлен " + datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m %H:%M")
     col = _col_letter(layout()["status"])
     orders_ws().batch_update([{"range": f"{col}{r['row']}", "values": [[stamp]]} for r in rows],
                              value_input_option="RAW")
     _invalidate()
-    return len(rows)
+    return rows
 
 
 def safe_sync_colors() -> None:

@@ -1343,8 +1343,20 @@ def main() -> None:
         if time.time() - last_reload > RELOAD_EVERY:
             last_reload = time.time()
             try:
-                if sheets.stamp_manual_delivered() and costs:  # менеджер выбрал «Доставлен» в списке — считаем как доставку
-                    costs.backfill(now_date())
+                manual = sheets.stamp_manual_delivered()  # менеджер выбрал «Доставлен» в списке — считаем как доставку
+                if manual:
+                    today_ = now_date()
+                    try:
+                        record_shipments(manual, "менеджер", today_)  # таблица «Отгрузки» + списание каркасов
+                    except Exception:
+                        log.exception("Не смог записать отгрузку по ручной отметке")
+                    try:
+                        if costs:
+                            costs.record(manual, today_)
+                    except Exception:
+                        log.exception("Не смог записать стоимость по ручной отметке")
+                    broadcast_managers(f"✅ Отметка «Доставлен» вручную в таблице: {len(manual)} шт. "
+                                       "Записал в отгрузки, списал каркасы и добавил в расчёт доставки.")
             except Exception:
                 log.exception("Не смог обработать ручную отметку «Доставлен»")
             sheets.safe_sync_colors()  # подхватываем ручные пометки менеджера («Отмена», «Возврат»)
