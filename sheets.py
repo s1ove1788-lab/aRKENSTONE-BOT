@@ -169,15 +169,15 @@ def read_orders(force: bool = False) -> list:
         return v[i].strip() if i is not None and i < len(v) else ""
 
     rows = []
-    seen: set = set()
+    seen: dict = {}
     for i, v in enumerate(values[1:], start=2):
         v = list(v) + [""] * (width - len(v))
         if not cell(v, "order_no"):
             continue
         dkey = tuple(" ".join(cell(v, k).lower().split()) for k in
                      ("order_no", "address", "phone", "size", "color", "article"))
-        dup = dkey in seen  # точная копия строки выше: тот же заказ, адрес, размер, цвет — не вторая кровать
-        seen.add(dkey)
+        dup_of = seen.get(dkey)  # строка, на которую похожа эта (тот же заказ, адрес, размер, цвет); только для /dups
+        seen.setdefault(dkey, i)
         try:
             qty = max(1, int(float(cell(v, "qty").replace(",", ".")))) if cell(v, "qty") else 1
         except ValueError:
@@ -187,7 +187,7 @@ def read_orders(force: bool = False) -> list:
             "ship": cell(v, "ship"), "delivery": cell(v, "delivery"), "size": cell(v, "size"), "qty": qty,
             "color": cell(v, "color"), "order_no": cell(v, "order_no"), "article": cell(v, "article"),
             "phone": cell(v, "phone"), "address": cell(v, "address"), "status": cell(v, "status"),
-            "dup": dup,
+            "dup_of": dup_of,
         })
     _cache.update(t=now, rows=rows)
     return rows
@@ -319,7 +319,7 @@ def mark_delivered(order_nos: list) -> list:
         )
         _invalidate()
         safe_sync_colors()
-    return [r for r in marked if not r.get("dup")]  # копии строк помечены, но в расчёты не идут; только отмеченные сейчас (повторное нажатие ничего не вернёт)
+    return marked  # только те, что отмечены сейчас (повторное нажатие ничего не вернёт)
 
 
 # ---------------------------------------------------------- пользователи

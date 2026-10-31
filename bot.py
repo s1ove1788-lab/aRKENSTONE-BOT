@@ -1140,6 +1140,17 @@ def handle_message(u: dict) -> None:
             log.exception("Не смог починить строки")
             return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
         return ctx.show(f"🛠 Исправлено строк: {n}." if n else "Съехавших строк не нашёл.", [MENU_BTN])
+    if cmd == "/dups":  # строки, похожие на копии друг друга (чтобы менеджер сам решил, что отменить)
+        if sender_id not in config.MANAGER_IDS and not allowed(sender_id, "prod"):
+            return ctx.show("Команда только для менеджера и производства.", [MENU_BTN])
+        rows = [o for o in sheets.read_orders(force=True) if o.get("dup_of") and not o["status"]]
+        if not rows:
+            return ctx.show("Похожих друг на друга строк без статуса не нашёл.", [MENU_BTN])
+        lines = [f"• строка {o['row']} похожа на строку {o['dup_of']}: {o['channel']} № {o['order_no']}, "
+                 f"{logic.item_line(o)}, {logic.short(o['address'], 40)}" for o in rows[:25]]
+        return ctx.show("🔎 Возможные копии (тот же номер заказа, адрес, размер и цвет).\n"
+                        "Если это не вторая кровать, а копия — впишите в «Статус» слово «Отмена».\n\n" + "\n".join(lines),
+                        [MENU_BTN])
     if cmd == "/planchk":  # почему число в плане производства отличается от таблицы
         if sender_id not in config.MANAGER_IDS and not allowed(sender_id, "prod"):
             return ctx.show("Команда только для менеджера и производства.", [MENU_BTN])

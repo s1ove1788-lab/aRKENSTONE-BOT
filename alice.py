@@ -128,7 +128,7 @@ def answer(cmd: str, today, entities=None) -> str:
         label = "на " + _say_day(day, today)
         counts: dict = {}
         for o in sheets.read_orders():
-            if o["status"] or o.get("dup"):
+            if o["status"]:
                 continue
             r = logic.key_range(o, today)
             if r and r[0] <= day <= r[1]:

@@ -107,7 +107,7 @@ def courier_items(orders: list, today: date) -> list:
     Город: сегодняшние + недоставленные за прошлые дни (с пометкой «просрочено»)."""
     res = []
     for o in orders:
-        if o["status"] or o.get("dup"):
+        if o["status"]:
             continue
         city = is_city(o)
         r = key_range(o, today)
@@ -125,7 +125,7 @@ def day_items(orders: list, day: date, today: date) -> list:
     """[(заказ, False)] на конкретный будущий день (только просмотр для курьера). Без хвостов и «непонятных дат»."""
     res = []
     for o in orders:
-        if o["status"] or o.get("dup"):
+        if o["status"]:
             continue
         r = key_range(o, today)
         if r and r[0] <= day <= r[1]:
@@ -242,7 +242,7 @@ def production_plan(orders: list, today: date) -> str:
     buckets: dict = {}
     total = 0
     for o in orders:
-        if o["status"] or o.get("dup"):
+        if o["status"]:
             continue
         r = key_range(o, today)
         if r is not None and r[1] < today:
@@ -287,8 +287,6 @@ def ship_plan(orders: list, today: date) -> Counter:
     """Что по таблице нужно отгрузить сегодня: {'160.04': 1}."""
     plan: Counter = Counter()
     for o in orders:
-        if o.get("dup"):
-            continue
         st = o["status"].lower()
         if st and not st.startswith("доставлен"):  # «Отмена» и т.п. не считаем
             continue
@@ -436,7 +434,7 @@ def parse_inv(text: str, items: list) -> list:
 
 def plan_check(orders: list, today: date) -> str:
     """Сверка «таблица vs план производства»: какие недоставленные заказы не попали в план и почему."""
-    open_rows = [o for o in orders if not o["status"] and not o.get("dup")]
+    open_rows = [o for o in orders if not o["status"]]
     in_plan = [o for o in open_rows if not ((r := key_range(o, today)) is not None and r[1] < today)]
     out = [o for o in open_rows if o not in in_plan]
     lines = [f"🔎 Сверка плана с таблицей ({today:%d.%m})", "",
