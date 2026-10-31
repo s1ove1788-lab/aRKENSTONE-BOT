@@ -1131,6 +1131,15 @@ def handle_message(u: dict) -> None:
         except Exception as e:
             log.exception("Ошибка разбора заказа Маркета")
             return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
+    if cmd == "/fixrows":  # починить строки, записанные старой версией бота (до столбца «Количество»)
+        if sender_id not in config.MANAGER_IDS:
+            return
+        try:
+            n = sheets.fix_shifted_rows()
+        except Exception as e:
+            log.exception("Не смог починить строки")
+            return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
+        return ctx.show(f"🛠 Исправлено строк: {n}." if n else "Съехавших строк не нашёл.", [MENU_BTN])
     if cmd == "/planchk":  # почему число в плане производства отличается от таблицы
         if sender_id not in config.MANAGER_IDS and not allowed(sender_id, "prod"):
             return ctx.show("Команда только для менеджера и производства.", [MENU_BTN])

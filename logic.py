@@ -7,6 +7,7 @@ MONTHS = {"янв": 1, "фев": 2, "мар": 3, "апр": 4, "мая": 5, "ма
           "июл": 7, "авг": 8, "сен": 9, "окт": 10, "ноя": 11, "дек": 12}
 
 _RANGE = re.compile(r"(\d{1,2})\s*[-–—]\s*(\d{1,2})\s*[.\s]?\s*([а-яё]{3,})", re.I)
+_FULL = re.compile(r"(\d{1,2})\s*[.\s]\s*([а-яё]{3,})\s*[-–—]\s*(\d{1,2})\s*[.\s]\s*([а-яё]{3,})", re.I)
 _NUM = re.compile(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?")
 _SINGLE = re.compile(r"(\d{1,2})\s*[.\s]\s*([а-яё]{3,})", re.I)
 
@@ -34,10 +35,25 @@ def _mk(day: int, month: int, today: date, year=None):
 def parse_range(text: str, today: date):
     """'26.окт' -> (26 окт, 26 окт); '22-26 окт' -> (22 окт, 26 окт); непонятное -> None."""
     t = (text or "").strip().lower()
+    m = _FULL.search(t)  # «30.окт–06.ноя»: месяц указан у обеих дат
+    if m and MONTHS.get(m.group(2)[:3]) and MONTHS.get(m.group(4)[:3]):
+        a = _mk(int(m.group(1)), MONTHS[m.group(2)[:3]], today)
+        b = _mk(int(m.group(3)), MONTHS[m.group(4)[:3]], today)
+        if a and b:
+            if b < a and a.year == b.year:  # переход через новый год
+                b = _mk(int(m.group(3)), MONTHS[m.group(4)[:3]], today, a.year + 1)
+            return (a, b) if b and a <= b else (a, a)
     m = _RANGE.search(t)
     if m and MONTHS.get(m.group(3)[:3]):
         month = MONTHS[m.group(3)[:3]]
-        a, b = _mk(int(m.group(1)), month, today), _mk(int(m.group(2)), month, today)
+        d1, d2 = int(m.group(1)), int(m.group(2))
+        if d1 > d2:  # «30-06 ноя»: первая дата в прошлом месяце (30 окт – 6 ноя)
+            pm = month - 1 or 12
+            a = _mk(d1, pm, today, today.year - 1 if pm == 12 and month == 1 else None)
+            b = _mk(d2, month, today)
+            if a and b and a <= b:
+                return (a, b)
+        a, b = _mk(d1, month, today), _mk(d2, month, today)
         if a and b:
             return (a, b) if a <= b else (b, a)
     m = _NUM.search(t)

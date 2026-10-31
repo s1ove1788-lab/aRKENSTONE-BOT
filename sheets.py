@@ -274,6 +274,31 @@ def add_orders(orders: list) -> list:
     return new
 
 
+def fix_shifted_rows() -> int:
+    """Чинит строки, которые старая версия бота записала в таблицу ДО добавления столбца «Количество»:
+    все столбцы после «Размера» съехали на одну ячейку влево. Возвращает, сколько строк исправлено."""
+    ws = orders_ws()
+    values = ws.get_all_values()
+    lay = _set_layout(values[0] if values else [])
+    if "qty" not in lay:
+        return 0
+    q, last = lay["qty"], lay["address"]
+    colors = ("чёрный", "черный", "белый")
+    data = []
+    for i, v in enumerate(values[1:], start=2):
+        v = list(v) + [""] * (last + 2 - len(v))
+        if v[q].strip().lower() in colors and v[lay["color"]].strip() and not v[lay["address"]].strip():
+            old = [x.strip() for x in v[q:last + 1]]          # цвет, номер, артикул, телефон, адрес
+            new = ["1"] + old[:-1]                               # количество = 1, остальное сдвигаем вправо
+            for off, val in enumerate(new):
+                data.append({"range": f"{_col_letter(q + off)}{i}", "values": [[val]]})
+    if data:
+        ws.batch_update(data, value_input_option="RAW")
+        _invalidate()
+        safe_sync_colors()
+    return len(data) // max(1, last - q + 1)
+
+
 def mark_delivered(order_nos: list) -> list:
     """Пишет в столбец «Статус» отметку о доставке. Строки остаются в таблице, но пропадают из списков."""
     wanted = set(order_nos)
