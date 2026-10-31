@@ -1,4 +1,5 @@
 """Тонкая обёртка над HTTP API мессенджера MAX."""
+import json
 import logging
 import time
 
@@ -127,6 +128,14 @@ def send(target: dict, text: str, rows=None):
         try:
             r = requests.post(f"{config.API}/messages", params={param: target["id"]},
                               headers=_headers(), json=body, timeout=30)
+            if r.status_code == 400 and body.get("attachments"):
+                # чаще всего MAX не принял одну из кнопок. Пишем в лог, какие были кнопки, и шлём текст без них,
+                # чтобы сообщение не потерялось
+                log.warning("MAX не принял кнопки для %s: %s %s | кнопки: %s", target, r.status_code, r.text[:200],
+                            json.dumps(rows, ensure_ascii=False)[:600])
+                _throttle(target)
+                r = requests.post(f"{config.API}/messages", params={param: target["id"]},
+                                  headers=_headers(), json={"text": chunk}, timeout=30)
             if r.status_code != 200:
                 log.warning("Не отправилось %s: %s %s", target, r.status_code, r.text[:300])
                 ok = False
