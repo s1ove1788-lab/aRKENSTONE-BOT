@@ -227,7 +227,10 @@ def sync_colors() -> int:
     """Закрашивает строки заказов по статусу (зелёный / жёлтый / красный). Возвращает, сколько строк перекрашено.
     Работает и для ручных пометок менеджера («Отмена», «Возврат»): вызывается после изменений и раз в 5 минут."""
     ws = orders_ws()
-    ensure_status_dropdown(ws)
+    try:
+        ensure_status_dropdown(ws)
+    except Exception:
+        log.exception("Не смог настроить список в колонке «Статус»")  # цвета всё равно красим
     todo: list = []  # (строка, имя цвета, цвет)
     seen_rows = set()
     for r in read_orders(force=True):
@@ -262,7 +265,7 @@ def ensure_status_dropdown(ws) -> None:
         return
     if not _dropdown_done["ok"]:
         get_book().batch_update({"requests": [{"setDataValidation": {
-            "range": {"sheetId": ws.id, "startRowIndex": 1, "endRowIndex": 2000,
+            "range": {"sheetId": ws.id, "startRowIndex": 1, "endRowIndex": max(ws.row_count, 2),
                       "startColumnIndex": col, "endColumnIndex": col + 1},
             "rule": {"condition": {"type": "ONE_OF_LIST", "values": [{"userEnteredValue": v} for v in STATUS_CHOICES]},
                      "showCustomUi": True, "strict": False}}}]})
