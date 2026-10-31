@@ -47,11 +47,10 @@ def campaigns() -> list:
     return r.json().get("campaigns") or []
 
 
-def fetch_processing(campaign_id: int) -> list:
-    """Все заказы кампании в статусе PROCESSING (по умолчанию Маркет отдаёт последние 30 дней)."""
+def _fetch_status(campaign_id: int, status: str) -> list:
     orders, token, seen_tokens = [], None, set()
     for _ in range(20):  # не больше 20 страниц по 50 заказов
-        params = {"status": "PROCESSING", "limit": 50}
+        params = {"status": status, "limit": 50}
         if token:
             params["pageToken"] = token
         r = _get(f"/v2/campaigns/{campaign_id}/orders", params)
@@ -62,6 +61,21 @@ def fetch_processing(campaign_id: int) -> list:
         if not token or token in seen_tokens:
             break
         seen_tokens.add(token)
+    return orders
+
+
+def fetch_processing(campaign_id: int) -> list:
+    """Заказы кампании в статусе PROCESSING (последние 30 дней) плюс свежие (до 3 суток) уже переданные в доставку:
+    заказ мог за ночь уйти из «в обработке», пока бот его не заметил."""
+    orders = _fetch_status(campaign_id, "PROCESSING")
+    have = {str(o.get("id")) for o in orders}
+    border = datetime.now() - timedelta(days=3)
+    try:
+        for o in _fetch_status(campaign_id, "DELIVERY"):
+            if str(o.get("id")) not in have and _created(o) >= border:
+                orders.append(o)
+    except Exception as e:  # доп. проверка не должна ломать основную
+        log.warning("Маркет: не получил заказы в статусе DELIVERY: %s", e)
     return orders
 
 
@@ -385,7 +399,7 @@ def diagnose(order_id: str) -> str:
     items = o.get("items") or []
     lines.append("Товары: " + (", ".join(f"{it.get('offerId') or it.get('shopSku') or '?'} ×{it.get('count', 1)}" for it in items) or "нет"))
     if o.get("status") != "PROCESSING":
-        lines.append("➡️ Бот следит только за статусом PROCESSING («в обработке»). В другом статусе он заказ не увидит.")
+        lines.append("➡️ Бот следит за статусом PROCESSING («в обработке») и за свежими (до 3 суток) заказами в статусе DELIVERY. В других статусах он заказ не увидит.")
     seen = sheets.market_seen()
     if order_id in seen:
         why = ""
