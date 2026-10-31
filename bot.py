@@ -1140,6 +1140,23 @@ def handle_message(u: dict) -> None:
             log.exception("Не смог починить строки")
             return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
         return ctx.show(f"🛠 Исправлено строк: {n}." if n else "Съехавших строк не нашёл.", [MENU_BTN])
+    if cmd == "/colors":  # покрасить таблицу и настроить список в «Статусе» прямо сейчас (только менеджер)
+        if sender_id not in config.MANAGER_IDS:
+            return ctx.show("Команда только для менеджера.", [MENU_BTN])
+        out = ["🎨 Версия бота с голубым цветом города и списком статусов."]
+        try:
+            sheets.ensure_status_dropdown(sheets.orders_ws())
+            out.append("✅ Список в колонке «Статус» настроен, пустые статусы заполнены словом «Доставляется».")
+        except Exception as e:
+            log.exception("Список статусов")
+            out.append("⚠️ Список в «Статусе» не настроился: " + str(e)[:300])
+        try:
+            n = sheets.sync_colors()
+            out.append(f"✅ Перекрашено строк: {n}.")
+        except Exception as e:
+            log.exception("Покраска")
+            out.append("⚠️ Покраска не удалась: " + str(e)[:300])
+        return ctx.show("\n".join(out), [MENU_BTN])
     if cmd == "/dups":  # строки, похожие на копии друг друга (чтобы менеджер сам решил, что отменить)
         if sender_id not in config.MANAGER_IDS and not allowed(sender_id, "prod"):
             return ctx.show("Команда только для менеджера и производства.", [MENU_BTN])
