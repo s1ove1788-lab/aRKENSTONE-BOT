@@ -56,6 +56,15 @@ def parse_range(text: str, today: date):
         a, b = _mk(d1, month, today), _mk(d2, month, today)
         if a and b:
             return (a, b) if a <= b else (b, a)
+    m = re.search(r"(\d{1,2})\.(\d{1,2})\s*[-–—]\s*(\d{1,2})\.(\d{1,2})(?!\d)", t)  # «30.10-06.11»
+    if m:
+        a = _mk(int(m.group(1)), int(m.group(2)), today)
+        b = _mk(int(m.group(3)), int(m.group(4)), today)
+        if a and b:
+            if b < a:
+                b = _mk(int(m.group(3)), int(m.group(4)), today, a.year + 1)
+            if b and a <= b:
+                return (a, b)
     m = _NUM.search(t)
     if m:
         year = int(m.group(3)) if m.group(3) else None
@@ -85,7 +94,10 @@ def key_text(o: dict) -> str:
 
 
 def key_range(o: dict, today: date):
-    return parse_range(key_text(o), today)
+    r = parse_range(key_text(o), today)
+    if r and is_city(o):
+        return (r[1], r[1])  # городская доставка с диапазоном «30.10–06.11» считается на последний день диапазона
+    return r
 
 
 # ------------------------------------------------------------- выборки
