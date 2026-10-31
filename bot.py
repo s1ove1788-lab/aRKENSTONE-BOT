@@ -1131,6 +1131,10 @@ def handle_message(u: dict) -> None:
         except Exception as e:
             log.exception("Ошибка разбора заказа Маркета")
             return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
+    if cmd == "/planchk":  # почему число в плане производства отличается от таблицы
+        if sender_id not in config.MANAGER_IDS and not allowed(sender_id, "prod"):
+            return ctx.show("Команда только для менеджера и производства.", [MENU_BTN])
+        return ctx.show(logic.plan_check(sheets.read_orders(force=True), now_date()), [MENU_BTN])
     if cmd == "/sverka":  # сверить все площадки с таблицей прямо сейчас (только менеджер)
         if sender_id not in config.MANAGER_IDS:
             return ctx.show("Команда только для менеджера.", [MENU_BTN])

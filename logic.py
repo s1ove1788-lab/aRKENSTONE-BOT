@@ -397,3 +397,24 @@ def parse_inv(text: str, items: list) -> list:
             return [{"error": err}]
         res.append((item, float(m.group(2).replace(",", "."))))
     return res or [{"error": "пусто — напишите, например: труба 50"}]
+
+
+def plan_check(orders: list, today: date) -> str:
+    """Сверка «таблица vs план производства»: какие недоставленные заказы не попали в план и почему."""
+    open_rows = [o for o in orders if not o["status"]]
+    in_plan = [o for o in open_rows if not ((r := key_range(o, today)) is not None and r[1] < today)]
+    out = [o for o in open_rows if o not in in_plan]
+    lines = [f"🔎 Сверка плана с таблицей ({today:%d.%m})", "",
+             f"В таблице без статуса: {len(open_rows)} строк, {sum(qty(o) for o in open_rows)} шт.",
+             f"В плане производства: {len(in_plan)} строк, {sum(qty(o) for o in in_plan)} шт.", ""]
+    if out:
+        lines.append("Не попали в план — дата уже прошла, а доставки нет:")
+        for o in out[:20]:
+            r = key_range(o, today)
+            lines.append(f"• № {o['order_no']} · {o['channel']} · {short(o['address'], 30)} — "
+                         f"{key_text(o)} ×{qty(o)}")
+        lines.append("\nЭто просроченные заказы: их видит курьер (город) или менеджер. Если заказ уже доставлен, "
+                     "поставьте в «Статусе» «Доставлен» — тогда он пропадёт и из этого списка.")
+    else:
+        lines.append("Все недоставленные заказы учтены в плане.")
+    return "\n".join(lines)
