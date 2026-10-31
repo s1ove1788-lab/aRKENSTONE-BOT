@@ -235,6 +235,9 @@ def russia_card(g: dict) -> str:
     return head + "\n\n" + "\n".join(lines)
 
 
+_MON_SHORT = ["янв", "фев", "мар", "апр", "мая", "июн", "июл", "авг", "сен", "окт", "ноя", "дек"]
+
+
 def production_plan(orders: list, today: date) -> str:
     buckets: dict = {}
     total = 0
@@ -246,6 +249,8 @@ def production_plan(orders: list, today: date) -> str:
             continue  # прошло и не доставлено — это забота курьеров, в план не включаем
         sort_key = r[0] if r else date.max
         label = key_text(o) or "дата не указана"
+        if r is not None and is_city(o):
+            label = f"{r[1]:%d}.{_MON_SHORT[r[1].month - 1]}"  # город: все диапазоны сводим на последний день
         buckets.setdefault((sort_key, label), Counter())[item_line(o)] += qty(o)
         total += qty(o)
     if not buckets:
