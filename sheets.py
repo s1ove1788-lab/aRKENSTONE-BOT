@@ -183,11 +183,15 @@ def read_orders(force: bool = False) -> list:
             qty = max(1, int(float(cell(v, "qty").replace(",", ".")))) if cell(v, "qty") else 1
         except ValueError:
             qty = 1
+        raw_status = cell(v, "status")
+        if raw_status.lower().startswith("доставляется"):
+            raw_status = ""  # «Доставляется» — заказ ещё в работе, для логики бота это то же, что пустой статус
         rows.append({
             "row": i, "added": cell(v, "added"), "channel": cell(v, "channel"), "kind": cell(v, "kind"),
             "ship": cell(v, "ship"), "delivery": cell(v, "delivery"), "size": cell(v, "size"), "qty": qty,
             "color": cell(v, "color"), "order_no": cell(v, "order_no"), "article": cell(v, "article"),
-            "phone": cell(v, "phone"), "address": cell(v, "address"), "status": cell(v, "status"),
+            "phone": cell(v, "phone"), "address": cell(v, "address"), "status": raw_status,
+            "has_status": bool(cell(v, "status")),
             "dup_of": dup_of,
         })
     _cache.update(t=now, rows=rows)
@@ -200,7 +204,10 @@ YELLOW = {"red": 1.0, "green": 1.0, "blue": 0.0}     # ещё не достав�
 BLUE = {"red": 0.6, "green": 0.8, "blue": 1.0}       # городской заказ, ещё не доставлен
 RED = {"red": 1.0, "green": 0.3, "blue": 0.3}        # отмена или возврат
 WHITE = {"red": 1.0, "green": 1.0, "blue": 1.0}
-_colored: dict = {}  # номер строки -> (номер заказа, цвет), чтобы не перекрашивать лишний раз
+STATUS_OPEN = "Доставляется"
+STATUS_CHOICES = [STATUS_OPEN, "Доставлен", "Отмена", "Возврат"]
+_colored: dict = {}
+_dropdown_done = {"ok": False}  # номер строки -> (номер заказа, цвет), чтобы не перекрашивать лишний раз
 
 
 def color_for(status: str, city: bool = False):
@@ -220,6 +227,7 @@ def sync_colors() -> int:
     """Закрашивает строки заказов по статусу (зелёный / жёлтый / красный). Возвращает, сколько строк перекрашено.
     Работает и для ручных пометок менеджера («Отмена», «Возврат»): вызывается после изменений и раз в 5 минут."""
     ws = orders_ws()
+    ensure_status_dropdown(ws)
     todo: list = []  # (строка, имя цвета, цвет)
     seen_rows = set()
     for r in read_orders(force=True):
@@ -246,6 +254,41 @@ def sync_colors() -> int:
     return len(todo)
 
 
+def ensure_status_dropdown(ws) -> None:
+    """Делает ячейки колонки «Статус» выпадающим списком (Доставляется / Доставлен / Отмена / Возврат)
+    и пишет «Доставляется» в строках, где статус пуст. Другие значения (например «Доставлен 31.10 14:05») разрешены."""
+    col = layout().get("status")
+    if col is None:
+        return
+    if not _dropdown_done["ok"]:
+        get_book().batch_update({"requests": [{"setDataValidation": {
+            "range": {"sheetId": ws.id, "startRowIndex": 1, "endRowIndex": 2000,
+                      "startColumnIndex": col, "endColumnIndex": col + 1},
+            "rule": {"condition": {"type": "ONE_OF_LIST", "values": [{"userEnteredValue": v} for v in STATUS_CHOICES]},
+                     "showCustomUi": True, "strict": False}}}]})
+        _dropdown_done["ok"] = True
+    empty = [r["row"] for r in read_orders() if not r.get("has_status")]
+    if empty:
+        letter = _col_letter(col)
+        ws.batch_update([{"range": f"{letter}{n}", "values": [[STATUS_OPEN]]} for n in empty],
+                        value_input_option="RAW")
+        _invalidate()
+
+
+def stamp_manual_delivered() -> int:
+    """Менеджер выбрал в списке просто «Доставлен» — дописываем дату и время, как при нажатии у курьера
+    (по дате потом считаются доставки и недельный итог). Возвращает число строк."""
+    rows = [r for r in read_orders(force=True) if r["status"].strip().lower().rstrip(".") == "доставлен"]
+    if not rows:
+        return 0
+    stamp = "Доставлен " + datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m %H:%M")
+    col = _col_letter(layout()["status"])
+    orders_ws().batch_update([{"range": f"{col}{r['row']}", "values": [[stamp]]} for r in rows],
+                             value_input_option="RAW")
+    _invalidate()
+    return len(rows)
+
+
 def safe_sync_colors() -> None:
     try:
         sync_colors()
@@ -270,7 +313,7 @@ def add_orders(orders: list) -> list:
             vals = {"added": now, "channel": o.channel, "kind": o.kind, "ship": o.ship_date,
                     "delivery": o.delivery_date, "size": o.size, "qty": getattr(o, "qty", 1) or 1,
                     "color": o.color, "order_no": o.order_no, "article": o.article,
-                    "phone": o.shipment_or_phone, "address": o.address, "status": ""}
+                    "phone": o.shipment_or_phone, "address": o.address, "status": STATUS_OPEN}
             row = [""] * width
             for key, val in vals.items():
                 if key in lay:

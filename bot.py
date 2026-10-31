@@ -1342,6 +1342,11 @@ def main() -> None:
 
         if time.time() - last_reload > RELOAD_EVERY:
             last_reload = time.time()
+            try:
+                if sheets.stamp_manual_delivered() and costs:  # менеджер выбрал «Доставлен» в списке — считаем как доставку
+                    costs.backfill(now_date())
+            except Exception:
+                log.exception("Не смог обработать ручную отметку «Доставлен»")
             sheets.safe_sync_colors()  # подхватываем ручные пометки менеджера («Отмена», «Возврат»)
             try:
                 reload_directory()
