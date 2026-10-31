@@ -239,7 +239,8 @@ def to_table_orders(p: dict) -> list:
         ship = _local(p.get("shipment_date"))
         ship_text = f"{ship.day:02d}.{MONTHS[ship.month - 1]}" if ship else "—"
         delivery = _delivery_text(p)
-        phone, address = str(p.get("tracking_number") or ""), ""
+        address, _ = _customer(p)  # Озон отдаёт адрес не всегда; если не отдал — менеджер впишет сам
+        phone = str(p.get("tracking_number") or "")  # трек ПЭК менеджер сохраняет в кабинете позже — дописываем при проверках
     else:
         address, phone = _customer(p)
         address = address or region_text(p)
@@ -360,8 +361,44 @@ def discovery(mode: str = "") -> list:
 
 
 # ----------------------------------------------------------------- опрос
+def fill_pek(current: dict, notify) -> None:
+    """У ОЗ ПЭК трек-номер появляется в кабинете позже, чем заказ, а адрес Озон иногда отдаёт только в подробностях:
+    дописываем в пустые ячейки таблицы то, что Озон отдаёт сейчас."""
+    rows = [r for r in sheets.read_orders(force=True)
+            if r["channel"] == "ОЗ ПЭК" and not r["status"] and r["order_no"].split("#")[0] in current
+            and (not r["phone"] or not r["address"])]
+    if not rows:
+        return
+    updates, notes = [], []
+    for r in rows:
+        p = current[r["order_no"].split("#")[0]]
+        track = str(p.get("tracking_number") or "").strip()
+        address, _ = _customer(p)
+        if not address and not r["address"]:
+            full = fetch_posting(str(p.get("posting_number")))
+            if full:
+                address, _ = _customer(full)
+                track = track or str(full.get("tracking_number") or "").strip()
+        got = []
+        if track and not r["phone"]:
+            updates.append((r["row"], "phone", track))
+            got.append("трек-номер")
+        if address and not r["address"]:
+            updates.append((r["row"], "address", address))
+            got.append("адрес")
+        if got:
+            notes.append(f"• № {r['order_no']} · {logic.item_line(r)}: {' и '.join(got)}")
+    if updates:
+        sheets.fill_cells(updates)
+        notify("🧩 Озон ПЭК — дописал в таблицу недостающее:\n" + "\n".join(notes))
+        log.info("Озон ПЭК: дописано ячеек %d", len(updates))
+
+
 def poll(notify) -> dict:
-    current = {str(p["posting_number"]): p for p in fetch_unfulfilled() if p.get("posting_number")}
+    allp = [p for p in fetch_unfulfilled(only_active=False) if p.get("posting_number")]
+    current = {str(p["posting_number"]): p for p in allp if p.get("status") in ACTIVE_STATUSES}
+    cancelled = {str(p["posting_number"]): ((p.get("cancellation") or {}).get("cancel_reason") or "причина не указана")
+                 for p in allp if p.get("status") == "cancelled"}
     seen = sheets.oz_seen()
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
     sample = format_posting(max(current.values(), key=lambda p: p.get("in_process_at") or "")) if current else ""
@@ -394,7 +431,7 @@ def poll(notify) -> dict:
                         tags[pn] = "✅ добавлен в таблицу" + (f" ({sum(x.qty for x in got)} шт.)" if sum(x.qty for x in got) > 1 else "") + (
                             f"\n⚠️ Озон не отдал: {', '.join(miss)} — впишите в таблицу вручную" if miss else "")
                     else:
-                        tags[pn] = "✅ добавлен в таблицу, адрес впишите вручную (Озон его не отдаёт)"
+                        tags[pn] = "✅ добавлен в таблицу, трек-номер и адрес дополню сам, когда Озон их отдаст (если не появятся — впишите вручную)"
             except Exception:
                 log.exception("Не удалось записать заказы Озона в таблицу")
                 for pn in by_posting:
@@ -408,4 +445,16 @@ def poll(notify) -> dict:
         head = "🔄 Сверка с таблицей: нашёл в Озоне заказы, которых в таблице не было.\n\n" if any(_old(p) for p in fresh) else ""
         notify(head + build_message(fresh, tags))
         log.info("Озон: новых отправлений %d, добавлено в таблицу %d", len(fresh), added)
+    try:
+        fill_pek(current, notify)
+    except Exception:
+        log.exception("Не смог дописать данные ПЭК-заказов")
+    try:
+        gone = sheets.cancel_rows({k: v for k, v in cancelled.items() if k not in current})
+        if gone:
+            notify("❌ Отменено на Озоне — строки в таблице отмечены «Отмена»:\n" + "\n".join(
+                f"• № {r['order_no']} · {logic.item_line(r)} · {logic.short(r['address'], 40)} — {why}" for r, why in gone))
+            log.info("Озон: отменено заказов %d", len(gone))
+    except Exception:
+        log.exception("Не смог отметить отменённые заказы Озона")
     return {"total": len(current), "new": len(fresh), "baseline": False, "sample": sample}

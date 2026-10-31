@@ -64,6 +64,24 @@ def _fetch_status(campaign_id: int, status: str) -> list:
     return orders
 
 
+CANCEL_WHY = {"USER_CHANGED_MIND": "покупатель передумал", "USER_NOT_PAID": "не оплачен",
+              "USER_REFUSED_DELIVERY": "покупателя не устроила доставка", "USER_REFUSED_PRODUCT": "покупателя не устроил товар",
+              "USER_REFUSED_QUALITY": "покупателя не устроило качество", "USER_UNREACHABLE": "не дозвонились до покупателя",
+              "RESERVATION_EXPIRED": "истёк резерв", "PROCESSING_EXPIRED": "не обработан вовремя",
+              "SHOP_FAILED": "отменил магазин", "SHOP_PENDING_CANCELLED": "отменил магазин",
+              "REPLACING_ORDER": "заказ заменён", "DELIVERY_SERVICE_UNDELIVERED": "не доставлен",
+              "USER_PLACED_OTHER_ORDER": "покупатель оформил другой заказ", "WRONG_ITEM": "не тот товар"}
+
+
+def fetch_cancelled(campaign_id: int) -> dict:
+    """{номер заказа: причина} для отменённых заказов кампании за последние 30 дней."""
+    res = {}
+    for o in _fetch_status(campaign_id, "CANCELLED"):
+        sub = o.get("substatus") or ""
+        res[str(o.get("id"))] = CANCEL_WHY.get(sub, sub.lower().replace("_", " ") or "причина не указана")
+    return res
+
+
 def fetch_processing(campaign_id: int) -> list:
     """Заказы кампании в статусе PROCESSING (последние 30 дней) плюс свежие (до 3 суток) уже переданные в доставку:
     заказ мог за ночь уйти из «в обработке», пока бот его не заметил."""
@@ -317,9 +335,14 @@ def poll(notify) -> dict:
     """Один проход. notify(text) — как разослать уведомление.
     Возвращает {'total', 'new', 'added' (записано в таблицу), 'baseline', 'sample'}."""
     current: dict = {}
+    cancelled: dict = {}
     for c in campaigns():
         for o in fetch_processing(c["id"]):
             current[str(o["id"])] = (c["id"], o)
+        try:
+            cancelled.update(fetch_cancelled(c["id"]))
+        except Exception as e:  # отмены — дополнительная проверка, основной опрос от неё не зависит
+            log.warning("Маркет: не получил отменённые заказы: %s", e)
 
     seen = sheets.market_seen()
     now = datetime.now().strftime("%d.%m.%Y %H:%M")
@@ -365,6 +388,15 @@ def poll(notify) -> dict:
         head = ("🔄 Сверка с таблицей: нашёл в Маркете заказы, которых в таблице не было.\n\n" if recon else "")
         notify(head + build_message([o for _, _, o in fresh], tags, smap))
         log.info("Яндекс Маркет: новых заказов %d, добавлено в таблицу %d", len(fresh), added)
+
+    try:
+        gone = sheets.cancel_rows({k: v for k, v in cancelled.items() if k not in current})
+        if gone:
+            notify("❌ Отменено в Яндекс Маркете — строки в таблице отмечены «Отмена»:\n" + "\n".join(
+                f"• № {r['order_no']} · {logic.item_line(r)} · {logic.short(r['address'], 40)} — {why}" for r, why in gone))
+            log.info("Яндекс Маркет: отменено заказов %d", len(gone))
+    except Exception:
+        log.exception("Не смог отметить отменённые заказы Маркета")
 
     if config.YM_AUTOADD:
         try:

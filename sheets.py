@@ -292,6 +292,24 @@ def stamp_manual_delivered() -> list:
     return rows
 
 
+def cancel_rows(reasons: dict) -> list:
+    """Площадка сообщила, что заказ отменён: у открытых строк (без статуса) пишем «Отмена ДД.ММ».
+    reasons: {номер заказа без «#N»: причина}. Возвращает [(строка, причина)] — только то, что отмечено сейчас."""
+    if not reasons:
+        return []
+    hit = [(r, reasons[r["order_no"].split("#")[0]]) for r in read_orders(force=True)
+           if not r["status"] and r["order_no"].split("#")[0] in reasons]
+    if not hit:
+        return []
+    stamp = "Отмена " + datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m")
+    col = _col_letter(layout()["status"])
+    orders_ws().batch_update([{"range": f"{col}{r['row']}", "values": [[stamp]]} for r, _ in hit],
+                             value_input_option="RAW")
+    _invalidate()
+    safe_sync_colors()
+    return hit
+
+
 def safe_sync_colors() -> None:
     try:
         sync_colors()
@@ -712,6 +730,15 @@ def set_shipment_cell(row: int, value: str) -> None:
     """Вписывает номер отгрузки в столбец «Отгрузка / телефон» уже существующей строки."""
     orders_ws().update(values=[[value]], range_name=f"{_col_letter(layout()['phone'])}{row}", value_input_option="RAW")
     _invalidate()
+
+
+def fill_cells(updates: list) -> None:
+    """updates: [(номер строки, поле, текст)] — вписывает значения в ячейки (только вызывающий решает, что пусто)."""
+    if updates:
+        lay = layout()
+        orders_ws().batch_update([{"range": f"{_col_letter(lay[f])}{r}", "values": [[t]]} for r, f, t in updates],
+                                 value_input_option="RAW")
+        _invalidate()
 
 
 def set_order_dates(updates: list) -> None:
