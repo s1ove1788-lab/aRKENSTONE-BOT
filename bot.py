@@ -179,7 +179,7 @@ def home(ctx: Ctx, notification=None) -> None:
     else:
         rows = [[cb("📋 План производства", "p:plan")], [cb("🔩 Сваренные каркасы", "p:fr")],
                 [cb("✅ Кровати отгружены", "p:shipped")],
-                [cb("📦 Остатки", "p:stock")], CHANGE_ROLE]
+                [cb("🎨 Покрашенные каркасы", "p:stock")], CHANGE_ROLE]
         text = "🏭 Меню производства"
     if config.AI_KEY and role in config.AI_ROLES:
         rows.insert(len(rows) - 1, [cb("💬 ИИ-помощник", "ai:start")])  # перед «Сменить роль»
@@ -552,29 +552,29 @@ def production(ctx: Ctx, payload: str) -> None:
 
     if action == "plan":
         text = logic.production_plan(sheets.read_orders(), now_date())
-        return ctx.show(text, [[cb("📦 Остатки", "p:stock")], MENU_BTN])
+        return ctx.show(text, [[cb("🎨 Покрашенные каркасы", "p:stock")], MENU_BTN])
 
     if action == "stock":
         codes = config.STOCK_CODES
         rows = [[cb(c, f"p:s:{c}") for c in codes[i:i + 2]] for i in range(0, len(codes), 2)]
-        rows += [[cb("📊 Текущие остатки", "p:cur")], MENU_BTN]
-        return ctx.show("📦 Остатки\nВыберите размер (число — ширина; 04 — чёрная, 06 — белая):", rows)
+        rows += [[cb("📊 Сколько сейчас", "p:cur")], MENU_BTN]
+        return ctx.show("🎨 Покрашенные каркасы\nВыберите размер (число — ширина; 04 — чёрная, 06 — белая):", rows)
 
     if action == "s" and len(parts) == 3 and parts[2] in config.STOCK_CODES:
         pending[ctx.uid] = ("stock", parts[2])
-        return ctx.show(f"Остаток {parts[2]}: напишите, сколько штук ДОБАВИТЬ к текущему (например, 2). Лишнее уберёт минус: -1.",
+        return ctx.show(f"Покрашенные {parts[2]}: напишите, сколько штук ДОБАВИТЬ к текущему (например, 2). Лишнее уберёт минус: -1.",
                         [[cb("↩️ Отмена", "p:stock")]])
 
     if action == "cur":
         stock = sheets.latest_stock()
-        lines = ["📊 Текущие остатки", ""]
+        lines = ["📊 Покрашенные каркасы — сейчас", ""]
         for code in config.STOCK_CODES:
             if code in stock:
                 qty, when = stock[code]
                 lines.append(f"{code} — {qty} шт." + (f" ({when.split(' ')[0]})" if when else ""))
             else:
                 lines.append(f"{code} — нет данных")
-        return ctx.show("\n".join(lines), [[cb("✏️ Внести остаток", "p:stock")], MENU_BTN])
+        return ctx.show("\n".join(lines), [[cb("✏️ Внести каркасы", "p:stock")], MENU_BTN])
 
     home(ctx)
 
@@ -673,8 +673,8 @@ def save_stock_from_text(ctx: Ctx, name: str, text: str) -> None:
         except Exception:
             log.exception("Не смог списать каркасы")
     sign = "+" if delta > 0 else ""
-    ctx.show(f"✅ {code}: {sign}{delta} → теперь на складе {after} шт." + extra,
-             [[cb("✏️ Внести ещё", "p:stock")], [cb("📊 Текущие остатки", "p:cur")], MENU_BTN])
+    ctx.show(f"✅ {code}: {sign}{delta} → теперь покрашено {after} шт." + extra,
+             [[cb("✏️ Внести ещё", "p:stock")], [cb("📊 Сколько сейчас", "p:cur")], MENU_BTN])
 
 
 def record_shipments(marked: list, who: str, today) -> None:
