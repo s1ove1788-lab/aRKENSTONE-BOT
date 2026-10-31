@@ -9,6 +9,7 @@ from zoneinfo import ZoneInfo
 import gspread
 
 import config
+import logic
 from pdf_parser import Order
 
 log = logging.getLogger("orders-bot")
@@ -196,16 +197,18 @@ def read_orders(force: bool = False) -> list:
 # ------------------------------------------------------------- цвета строк
 GREEN = {"red": 0.0, "green": 1.0, "blue": 0.0}      # доставлен
 YELLOW = {"red": 1.0, "green": 1.0, "blue": 0.0}     # ещё не доставлен
+BLUE = {"red": 0.6, "green": 0.8, "blue": 1.0}       # городской заказ, ещё не доставлен
 RED = {"red": 1.0, "green": 0.3, "blue": 0.3}        # отмена или возврат
 WHITE = {"red": 1.0, "green": 1.0, "blue": 1.0}
 _colored: dict = {}  # номер строки -> (номер заказа, цвет), чтобы не перекрашивать лишний раз
 
 
-def color_for(status: str):
-    """Цвет строки по столбцу «Статус»: пусто — жёлтый, «Доставлен…» — зелёный, «Отмена/Возврат» — красный."""
+def color_for(status: str, city: bool = False):
+    """Цвет строки по столбцу «Статус»: пусто — жёлтый (город — голубой), «Доставлен…» — зелёный,
+    «Отмена/Возврат» — красный."""
     st = (status or "").strip().lower().replace("ё", "е")
     if not st:
-        return "yellow", YELLOW
+        return ("blue", BLUE) if city else ("yellow", YELLOW)
     if "отмен" in st or "возврат" in st:
         return "red", RED
     if st.startswith("доставлен"):
@@ -221,7 +224,7 @@ def sync_colors() -> int:
     seen_rows = set()
     for r in read_orders(force=True):
         seen_rows.add(r["row"])
-        c = color_for(r["status"])
+        c = color_for(r["status"], logic.is_city(r))
         name, rgb = c if c else ("none", WHITE)
         if c is None and r["row"] not in _colored:
             continue  # незнакомый статус и мы эту строку не красили — не трогаем
