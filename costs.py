@@ -10,7 +10,8 @@ import sheets
 
 log = logging.getLogger("orders-bot")
 TAB = "Доставки"
-HEADERS = ["Дата доставки", "Тип", "Адрес", "Цена", "Итог дня", "Номер заказа", "Размер", "Дата отгрузки", "Расчёт", "Период"]
+HEADERS = ["Дата отгрузки", "Тип", "Адрес", "Цена", "Итог дня", "Номер заказа", "Размер", "Дата доставки", "Расчёт", "Период"]
+OLD_FIRST = "Дата доставки"  # старый формат: в первом столбце день нажатия «Доставлен», в «Дате отгрузки» — текст из заказа
 _state = {"ws": None, "sep": ","}
 
 
@@ -45,6 +46,7 @@ def create(email: str) -> str:
         pass
     sheets.set_setting("cost_sheet_id", book.id)
     _state["ws"] = None
+    _state.pop("fmt", None)
     return f"https://docs.google.com/spreadsheets/d/{book.id}/edit"
 
 
@@ -69,6 +71,7 @@ def connect(link: str) -> str:
     book = sheets.get_client().open_by_key(sid)  # упадёт, если у бота нет доступа
     sheets.set_setting("cost_sheet_id", sid)
     _state["ws"] = None
+    _state.pop("fmt", None)
     _ws()  # создаст лист «Доставки» с шапкой
     return f"https://docs.google.com/spreadsheets/d/{book.id}/edit"
 
@@ -109,6 +112,94 @@ def _ws():
     return _state["ws"]
 
 
+def new_format() -> bool:
+    """True, если в таблице уже новый формат: первый столбец — дата отгрузки, строки упорядочены по ней."""
+    ws = _ws()
+    if "fmt" not in _state:
+        _state["fmt"] = (ws.row_values(1) or [""])[0].strip() == HEADERS[0]
+    return _state["fmt"]
+
+
+def _ship_day(o: dict, delivered):
+    """Дата отгрузки заказа (для диапазона — его последний день); если не поняли — день доставки."""
+    r = logic.parse_range(o.get("ship") or "", delivered)
+    if not r:
+        return delivered
+    d = r[1]
+    if (d - delivered).days > 60:  # «30.дек», а сейчас январь
+        try:
+            d = d.replace(year=d.year - 1)
+        except ValueError:
+            pass
+    return d
+
+
+def _pdate(text: str):
+    from datetime import datetime, date
+    try:
+        return datetime.strptime((text or "").strip(), "%d.%m.%Y").date()
+    except ValueError:
+        return date.max
+
+
+def resort() -> int:
+    """Упорядочивает все строки по дате отгрузки (внутри даты — как были), заново пишет «Итог дня», цвета и недельные суммы.
+    Возвращает число строк."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    ws = _ws()
+    vals = [list(v) + [""] * (10 - len(v)) for v in ws.get_all_values()[1:]]
+    vals = [v for v in vals if any(x.strip() for x in v[:8])]
+    if not vals:
+        return 0
+    vals.sort(key=lambda v: _pdate(v[0]))  # сортировка устойчивая: порядок внутри даты сохраняется
+
+    def num(x):
+        try:
+            return int(float(str(x).replace(" ", "").replace(",", ".")))
+        except ValueError:
+            return x
+
+    n = len(vals)
+    ws.batch_clear([f"A2:J{n + 50}"])
+    ws.update(range_name=f"A2:H{n + 1}", value_input_option="RAW",
+              values=[[v[0], v[1], v[2], num(v[3]), "", v[5], v[6], v[7]] for v in vals])
+    _write_totals(ws, 2, n + 1)
+    paint(ws, {i: v[1].strip() for i, v in enumerate(vals, start=2) if v[1].strip()})
+    weekly(datetime.now(ZoneInfo(config.TIMEZONE)).date())
+    return n
+
+
+def migrate() -> str:
+    """Переводит старую таблицу (первый столбец — день доставки) в новый формат: первый столбец — дата отгрузки,
+    «Дата доставки» уходит в восьмой столбец, все строки упорядочиваются по отгрузке. Цены не меняются."""
+    ws = _ws()
+    first = ws.row_values(1)
+    if first and first[0].strip() == HEADERS[0]:
+        _state["fmt"] = True
+        return f"Таблица уже в новом формате. Упорядочил строки по дате отгрузки: {resort()} шт."
+    vals = [list(v) + [""] * (10 - len(v)) for v in ws.get_all_values()[1:]]
+    out = []
+    for i, v in enumerate(vals, start=2):
+        if not any(x.strip() for x in v[:8]):
+            continue
+        delivered = _pdate(v[0])
+        a, h = v[0], v[0]
+        if delivered.year < 9999 and v[7].strip():
+            r = logic.parse_range(v[7], delivered)
+            if r:
+                d = r[1]
+                if (d - delivered).days > 60:
+                    d = d.replace(year=d.year - 1)
+                a = d.strftime("%d.%m.%Y")
+        out.append((i, a, h))
+    ws.update(range_name="A1:J1", values=[HEADERS], value_input_option="RAW")
+    ws.batch_update([{"range": f"A{i}", "values": [[a]]} for i, a, _ in out]
+                    + [{"range": f"H{i}", "values": [[h]]} for i, _, h in out], value_input_option="RAW")
+    _state["fmt"] = True
+    return f"Перевёл {len(out)} строк в новый формат. Упорядочил по дате отгрузки: {resort()} шт."
+
+
 def _formula(row: int, sep: str) -> str:
     return f'=IF(A{row}<>A{row + 1}{sep}SUMIF(A:A{sep}A{row}{sep}D:D){sep}"")'
 
@@ -125,34 +216,41 @@ def _write_totals(ws, first: int, last: int) -> None:
 
 
 def record(marked: list, day) -> int:
-    """Записывает доставленные заказы (строки таблицы заказов) в таблицу стоимости. Возвращает число строк."""
+    """Записывает доставленные заказы (строки таблицы заказов) в таблицу стоимости. Возвращает число строк.
+    Новый формат: дата строки — дата отгрузки заказа, таблица упорядочена по ней; день доставки — в столбце H."""
     if not enabled() or not marked:
         return 0
     ws = _ws()
-    date = day.strftime("%d.%m.%Y")
+    fmt_new = new_format()
+    delivered = day.strftime("%d.%m.%Y")
     marked = [o for o in marked for _ in range(max(1, int(o.get("qty") or 1)))]  # заказ на 2 кровати = 2 строки расчёта
-    counts: dict = {}  # (тип, «ключ») -> сколько кроватей уже записано; для города ключ — адрес, для остальных — пусто
+    counts: dict = {}  # (дата, тип, «ключ») -> сколько кроватей уже записано; для города ключ — адрес, для остальных — пусто
 
-    def key(kind: str, address: str, order_no: str) -> tuple:
+    def key(date: str, kind: str, address: str, order_no: str) -> tuple:
         if kind != "Город":
-            return (kind, "")
+            return (date, kind, "")
         addr = " ".join((address or "").lower().split())
-        return (kind, addr or f"№{order_no}")  # адреса нет — считаем отдельной доставкой
+        return (date, kind, addr or f"№{order_no}")  # адреса нет — считаем отдельной доставкой
 
     for v in ws.get_all_values()[1:]:
-        if len(v) >= 3 and v[0] == date:
-            k = key(v[1], v[2], v[5] if len(v) > 5 else "")
+        if len(v) >= 3 and v[0]:
+            k = key(v[0], v[1], v[2], v[5] if len(v) > 5 else "")
             counts[k] = counts.get(k, 0) + 1
     rows = []
     for o in marked:
         kind, base = delivery_type(o)
-        k = key(kind, o.get("address") or "", o.get("order_no", ""))
+        date = _ship_day(o, day).strftime("%d.%m.%Y") if fmt_new else delivered
+        k = key(date, kind, o.get("address") or "", o.get("order_no", ""))
         extra = config.COST_CITY_EXTRA if kind == "Город" else config.COST_EXTRA
         price = base if counts.get(k, 0) == 0 else extra
         counts[k] = counts.get(k, 0) + 1
-        rows.append([date, kind, o.get("address") or "", price, "", o.get("order_no", ""),
-                     " ".join(x for x in (o.get("size", ""), o.get("color", "")) if x), o.get("ship", "")])
+        size = " ".join(x for x in (o.get("size", ""), o.get("color", "")) if x)
+        rows.append([date, kind, o.get("address") or "", price, "", o.get("order_no", ""), size,
+                     delivered if fmt_new else o.get("ship", "")])
     resp = ws.append_rows(rows, value_input_option="RAW")
+    if fmt_new:
+        resort()  # новые строки встают на своё место по дате отгрузки
+        return len(rows)
     rng = ((resp or {}).get("updates") or {}).get("updatedRange", "")  # «Доставки!A5:F7»
     try:
         first = int(rng.split("!")[-1].split(":")[0].lstrip("ABCDEFGHIJ"))
@@ -171,8 +269,12 @@ def record_returns(items: list, day) -> int:
     date = day.strftime("%d.%m.%Y")
     rows = []
     for name, qty in items:
-        rows += [[date, "Возврат", "", config.COST_RETURN, "", f"возврат: {name}", name, ""] for _ in range(qty)]
+        rows += [[date, "Возврат", "", config.COST_RETURN, "", f"возврат: {name}", name, date if new_format() else ""]
+                 for _ in range(qty)]
     resp = ws.append_rows(rows, value_input_option="RAW")
+    if new_format():
+        resort()
+        return len(rows)
     rng = ((resp or {}).get("updates") or {}).get("updatedRange", "")
     try:
         first = int(rng.split("!")[-1].split(":")[0].lstrip("ABCDEFGHIJ"))

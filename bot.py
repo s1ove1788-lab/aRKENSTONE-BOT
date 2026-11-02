@@ -1140,6 +1140,16 @@ def handle_message(u: dict) -> None:
             log.exception("Не смог починить строки")
             return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
         return ctx.show(f"🛠 Исправлено строк: {n}." if n else "Съехавших строк не нашёл.", [MENU_BTN])
+    if cmd == "/costsort":  # перевести таблицу расчёта на порядок по дате отгрузки (только менеджер)
+        if sender_id not in config.MANAGER_IDS:
+            return ctx.show("Команда только для менеджера.", [MENU_BTN])
+        if not costs or not costs.enabled():
+            return ctx.show("Таблица стоимости доставок не подключена (/costsheet <ссылка>).", [MENU_BTN])
+        try:
+            return ctx.show("✅ " + costs.migrate(), [MENU_BTN])
+        except Exception as e:
+            log.exception("Не смог упорядочить таблицу расчёта")
+            return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
     if cmd == "/colors":  # покрасить таблицу и настроить список в «Статусе» прямо сейчас (только менеджер)
         if sender_id not in config.MANAGER_IDS:
             return ctx.show("Команда только для менеджера.", [MENU_BTN])
