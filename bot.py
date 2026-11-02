@@ -1140,18 +1140,24 @@ def handle_message(u: dict) -> None:
             log.exception("Не смог починить строки")
             return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
         return ctx.show(f"🛠 Исправлено строк: {n}." if n else "Съехавших строк не нашёл.", [MENU_BTN])
-    if cmd == "/need":  # обновить вкладку «Нужно сделать» сразу (только менеджер и производство)
+    if cmd == "/need":  # обновить блоки «Нужно / Не хватает» на листе «Остатки» сразу (только менеджер и производство)
         if sender_id not in config.MANAGER_IDS and not allowed(sender_id, "prod"):
             return ctx.show("Команда только для менеджера и производства.", [MENU_BTN])
         try:
             sheets._need_last["grid"] = None
             sheets.need_sync()
         except Exception as e:
-            log.exception("Вкладка «Нужно сделать»")
+            log.exception("Блоки «Нужно / Не хватает»")
             return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
         counts = logic.need_counts(sheets.read_orders())
         total = sum(counts.values())
-        return ctx.show(f"✅ Вкладка «{config.NEED_TAB}» обновлена. Всего кроватей нужно сделать: {total}.", [MENU_BTN])
+        lack = 0
+        try:
+            st = sheets.latest_stock()
+            lack = sum(max(0, n - st.get(c, (0, ""))[0]) for c, n in counts.items() if c)
+        except Exception:
+            log.exception("Подсчёт нехватки")
+        return ctx.show(f"✅ Лист «Остатки» обновлён. Нужно по заказам: {total} шт., не хватает: {lack} шт.", [MENU_BTN])
     if cmd == "/sortorders":  # упорядочить таблицу заказов по дате доставки прямо сейчас (только менеджер)
         if sender_id not in config.MANAGER_IDS:
             return ctx.show("Команда только для менеджера.", [MENU_BTN])

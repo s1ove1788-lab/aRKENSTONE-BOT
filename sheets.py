@@ -310,25 +310,70 @@ def cancel_rows(reasons: dict) -> list:
     return hit
 
 
-NEED_HEADERS = ["Ширина", "Чёрные", "Белые"]
 _need_last: dict = {"grid": None}
 
 
+def _block_rows(values: list, col: int, title_row: int) -> tuple:
+    """Таблица-блок на листе «Остатки»: {ширина: строка (с 0)}, строка «Итого» (или None). title_row — строка заголовка блока,
+    ниже неё шапка (Ширина / Чёрные / Белые), затем строки с шириной в столбце col."""
+    rows, r = {}, title_row + 2
+    while r < len(values) and col < len(values[r]) and values[r][col].strip().isdigit():
+        rows[int(values[r][col].strip())] = r
+        r += 1
+    total = r if r < len(values) and col < len(values[r]) and values[r][col].strip().lower().startswith("итог") else None
+    return rows, total
+
+
 def need_sync() -> bool:
-    """Вкладка «Нужно сделать»: по ширине (120…200) сколько чёрных и белых кроватей нужно по всем недоставленным
-    и неотменённым заказам. Бот сам обновляет цифры; пишет в таблицу только если они изменились."""
+    """На листе «Остатки», рядом с таблицей остатков, бот ведёт два блока:
+    «Нужно …» — сколько кроватей нужно по всем недоставленным и неотменённым заказам (по ширине: чёрные / белые),
+    «Не хватает» — нужно минус то, что уже есть в остатках (не меньше нуля). Блоки находит по заголовкам в первых строках
+    листа; если их нет — создаёт справа от остатков. Пишет в таблицу только если цифры изменились."""
+    ws = _stock_ws()
+    values = ws.get_all_values()
+    need_col = lack_col = title_row = None
+    for r, row in enumerate(values[:3]):
+        for c, cell in enumerate(row):
+            low = cell.lower()
+            if "хватает" in low and lack_col is None:
+                lack_col, title_row = c, r
+            elif "нужно" in low and need_col is None:
+                need_col, title_row = c, r
+    widths = frame_widths()
+    created = []
+    if need_col is None or lack_col is None:
+        # блоков нет — рисуем их в том же виде, как у менеджера: заголовок, шапка, ширины, «Итого»
+        title_row = 0
+        for name, col in (("Нужно на сегодня", 4), ("Не хватает", 8)):
+            if (need_col if name.startswith("Нужно") else lack_col) is None:
+                block = [[name, "", ""], ["Ширина", "Чёрные", "Белые"]] + [[w, "", ""] for w in widths] + [["Итого", "", ""]]
+                ws.update(range_name=f"{_col_letter(col)}1", values=block, value_input_option="USER_ENTERED")
+                created.append(name)
+                if name.startswith("Нужно"):
+                    need_col = col
+                else:
+                    lack_col = col
+        values = ws.get_all_values()
     counts = logic.need_counts(read_orders())
-    widths = sorted({int(c.split(".")[0]) for c in config.STOCK_CODES})
-    grid = [[w, counts.get(f"{w}.04", 0), counts.get(f"{w}.06", 0)] for w in widths]
-    grid.append(["Итого", sum(r[1] for r in grid), sum(r[2] for r in grid)])
-    unknown = counts.get(None, 0)
-    if unknown:
-        grid.append(["Размер не определён", unknown, ""])
-    if _need_last["grid"] == grid:
+    stock = latest_stock()
+    updates, grid = [], []
+    for col, kind in ((need_col, "need"), (lack_col, "lack")):
+        rows, total = _block_rows(values, col, title_row)
+        sums = [0, 0]
+        for w, r in sorted(rows.items()):
+            for i, color in enumerate(("04", "06")):
+                need = counts.get(f"{w}.{color}", 0)
+                val = need if kind == "need" else max(0, need - stock.get(f"{w}.{color}", (0, ""))[0])
+                sums[i] += val
+                grid.append(val)
+                updates.append({"range": f"{_col_letter(col + 1 + i)}{r + 1}", "values": [[val]]})
+        if total is not None:
+            for i in range(2):
+                updates.append({"range": f"{_col_letter(col + 1 + i)}{total + 1}", "values": [[sums[i]]]})
+                grid.append(sums[i])
+    if not updates or (_need_last["grid"] == grid and not created):
         return False
-    ws = _tab(config.NEED_TAB, NEED_HEADERS)
-    ws.batch_clear(["A2:C30"])
-    ws.update(range_name=f"A2:C{len(grid) + 1}", values=grid, value_input_option="RAW")
+    ws.batch_update(updates, value_input_option="USER_ENTERED")
     _need_last["grid"] = grid
     return True
 
@@ -337,7 +382,7 @@ def safe_need_sync() -> None:
     try:
         need_sync()
     except Exception:
-        log.exception("Не смог обновить вкладку «Нужно сделать»")
+        log.exception("Не смог обновить блоки «Нужно / Не хватает» на листе «Остатки»")
 
 
 def safe_sync_colors() -> None:
