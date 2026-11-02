@@ -74,6 +74,7 @@ STATE_FILE = os.getenv("STATE_FILE", "state.json")
 USERS_TAB = "Пользователи"
 GROUPS_TAB = "Подписчики"
 STOCK_TAB = "Остатки"
+NEED_TAB = os.getenv("NEED_TAB", "Нужно сделать")  # потребность в каркасах по открытым заказам
 SHIP_TAB = "Отгрузки"
 OZON_TAB = "Озон"  # какие отправления Озона уже видели
 INV_TABS = {"raw": os.getenv("RAW_TAB", "Сырьё").strip(), "tmc": os.getenv("TMC_TAB", "ТМЦ").strip()}  # склад: сырьё и товарно-материальные ценности

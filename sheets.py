@@ -310,11 +310,42 @@ def cancel_rows(reasons: dict) -> list:
     return hit
 
 
+NEED_HEADERS = ["Ширина", "Чёрные", "Белые"]
+_need_last: dict = {"grid": None}
+
+
+def need_sync() -> bool:
+    """Вкладка «Нужно сделать»: по ширине (120…200) сколько чёрных и белых кроватей нужно по всем недоставленным
+    и неотменённым заказам. Бот сам обновляет цифры; пишет в таблицу только если они изменились."""
+    counts = logic.need_counts(read_orders())
+    widths = sorted({int(c.split(".")[0]) for c in config.STOCK_CODES})
+    grid = [[w, counts.get(f"{w}.04", 0), counts.get(f"{w}.06", 0)] for w in widths]
+    grid.append(["Итого", sum(r[1] for r in grid), sum(r[2] for r in grid)])
+    unknown = counts.get(None, 0)
+    if unknown:
+        grid.append(["Размер не определён", unknown, ""])
+    if _need_last["grid"] == grid:
+        return False
+    ws = _tab(config.NEED_TAB, NEED_HEADERS)
+    ws.batch_clear(["A2:C30"])
+    ws.update(range_name=f"A2:C{len(grid) + 1}", values=grid, value_input_option="RAW")
+    _need_last["grid"] = grid
+    return True
+
+
+def safe_need_sync() -> None:
+    try:
+        need_sync()
+    except Exception:
+        log.exception("Не смог обновить вкладку «Нужно сделать»")
+
+
 def safe_sync_colors() -> None:
     try:
         sync_colors()
     except Exception:
         log.exception("Не смог закрасить строки таблицы заказов")
+    safe_need_sync()
 
 
 def _invalidate() -> None:

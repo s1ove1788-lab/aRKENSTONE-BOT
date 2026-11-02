@@ -268,6 +268,17 @@ def production_plan(orders: list, today: date) -> str:
 _WIDTHS = sorted({int(c.split(".")[0]) for c in config.STOCK_CODES})
 
 
+def need_counts(orders: list) -> dict:
+    """Сколько кроватей нужно по всем заказам, которые ещё не доставлены и не отменены: {'160.04': 3, ...}
+    (учитывает «Количество»). Заказы с неопределённым размером в словарь под ключом None."""
+    res: Counter = Counter()
+    for o in orders:
+        if o["status"]:
+            continue
+        res[order_code(o)] += qty(o)
+    return dict(res)
+
+
 def order_code(o: dict):
     """Код размера заказа: '160.04' (ширина.цвет) — из артикула, запасной вариант из размера и цвета."""
     a = parse_article(o["article"])
