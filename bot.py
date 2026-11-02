@@ -1140,7 +1140,7 @@ def handle_message(u: dict) -> None:
             log.exception("Не смог починить строки")
             return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
         return ctx.show(f"🛠 Исправлено строк: {n}." if n else "Съехавших строк не нашёл.", [MENU_BTN])
-    if cmd == "/sortorders":  # упорядочить таблицу заказов по дате отгрузки прямо сейчас (только менеджер)
+    if cmd == "/sortorders":  # упорядочить таблицу заказов по дате доставки прямо сейчас (только менеджер)
         if sender_id not in config.MANAGER_IDS:
             return ctx.show("Команда только для менеджера.", [MENU_BTN])
         try:
@@ -1148,7 +1148,7 @@ def handle_message(u: dict) -> None:
         except Exception as e:
             log.exception("Сортировка таблицы заказов")
             return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
-        return ctx.show(f"✅ Упорядочил по дате отгрузки: {n} строк." if n else "Таблица уже упорядочена по дате отгрузки.", [MENU_BTN])
+        return ctx.show(f"✅ Упорядочил по дате доставки: {n} строк." if n else "Таблица уже упорядочена по дате доставки.", [MENU_BTN])
     if cmd == "/costsort":  # перевести таблицу расчёта на порядок по дате отгрузки (только менеджер)
         if sender_id not in config.MANAGER_IDS:
             return ctx.show("Команда только для менеджера.", [MENU_BTN])
@@ -1399,7 +1399,7 @@ def main() -> None:
                                        "Записал в отгрузки, списал каркасы и добавил в расчёт доставки.")
             except Exception:
                 log.exception("Не смог обработать ручную отметку «Доставлен»")
-            if not sheets.safe_sort_orders():  # строки, внесённые вручную внизу таблицы, встают по дате отгрузки
+            if not sheets.safe_sort_orders():  # строки, внесённые вручную внизу таблицы, встают по дате доставки
                 sheets.safe_sync_colors()  # подхватываем ручные пометки менеджера («Отмена», «Возврат»)
             try:
                 reload_directory()

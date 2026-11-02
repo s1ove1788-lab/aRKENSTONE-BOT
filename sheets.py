@@ -734,15 +734,15 @@ def set_shipment_cell(row: int, value: str) -> None:
 
 
 def _ship_sort_key(ship: str, delivery: str, today):
-    """Ключ сортировки: дата отгрузки (для диапазона — последний день), затем дата доставки; непонятное — в конец."""
+    """Ключ сортировки: дата доставки (для диапазона — последний день), затем дата отгрузки; непонятное — в конец."""
     from datetime import date
-    r = logic.parse_range(ship, today)
     d = logic.parse_range(delivery, today)
-    return (r[1] if r else date.max, r[0] if r else date.max, d[1] if d else date.max)
+    r = logic.parse_range(ship, today)
+    return (d[1] if d else date.max, d[0] if d else date.max, r[1] if r else date.max)
 
 
 def sort_orders() -> int:
-    """Упорядочивает таблицу заказов по дате отгрузки (а не по времени добавления). Внутри одной даты порядок сохраняется.
+    """Упорядочивает таблицу заказов по дате доставки (а не по времени добавления). Внутри одной даты порядок сохраняется.
     Пишет в таблицу только если порядок изменился. Возвращает число строк, если пересортировала, иначе 0."""
     ws = orders_ws()
     values = ws.get_all_values()
@@ -777,7 +777,7 @@ def safe_sort_orders() -> int:
     try:
         return sort_orders()
     except Exception:
-        log.exception("Не смог упорядочить таблицу заказов по дате отгрузки")
+        log.exception("Не смог упорядочить таблицу заказов по дате доставки")
         return 0
 
 
