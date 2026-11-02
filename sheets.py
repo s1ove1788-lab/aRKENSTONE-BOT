@@ -343,7 +343,8 @@ def add_orders(orders: list) -> list:
         # RAW — чтобы длинные номера и телефоны не превращались в числа
         orders_ws().append_rows(rows, value_input_option="RAW")
         _invalidate()
-        safe_sync_colors()
+        if not safe_sort_orders():
+            safe_sync_colors()
     return new
 
 
@@ -732,6 +733,54 @@ def set_shipment_cell(row: int, value: str) -> None:
     _invalidate()
 
 
+def _ship_sort_key(ship: str, delivery: str, today):
+    """Ключ сортировки: дата отгрузки (для диапазона — последний день), затем дата доставки; непонятное — в конец."""
+    from datetime import date
+    r = logic.parse_range(ship, today)
+    d = logic.parse_range(delivery, today)
+    return (r[1] if r else date.max, r[0] if r else date.max, d[1] if d else date.max)
+
+
+def sort_orders() -> int:
+    """Упорядочивает таблицу заказов по дате отгрузки (а не по времени добавления). Внутри одной даты порядок сохраняется.
+    Пишет в таблицу только если порядок изменился. Возвращает число строк, если пересортировала, иначе 0."""
+    ws = orders_ws()
+    values = ws.get_all_values()
+    if len(values) < 3:
+        return 0
+    lay = _set_layout(values[0])
+    if "ship" not in lay:
+        return 0
+    width = max(lay.values()) + 1
+    body = [list(v) + [""] * (width - len(v)) for v in values[1:]]
+    body = [v[:max(width, len(v))] for v in body]
+    filled = [v for v in body if any(x.strip() for x in v)]
+    today = datetime.now(ZoneInfo(config.TIMEZONE)).date()
+    ordered = sorted(filled, key=lambda v: _ship_sort_key(v[lay["ship"]], v[lay["delivery"]] if "delivery" in lay else "", today))
+    if ordered == filled:
+        return 0
+    qi = lay.get("qty")
+    out = []
+    for v in ordered:
+        v = list(v)
+        if qi is not None and v[qi].strip().isdigit():
+            v[qi] = int(v[qi])  # «Количество» остаётся числом
+        out.append(v)
+    ws.update(range_name=f"A2:{_col_letter(len(out[0]) - 1)}{len(out) + 1}", values=out, value_input_option="RAW")
+    _colored.clear()
+    _invalidate()
+    safe_sync_colors()
+    return len(out)
+
+
+def safe_sort_orders() -> int:
+    try:
+        return sort_orders()
+    except Exception:
+        log.exception("Не смог упорядочить таблицу заказов по дате отгрузки")
+        return 0
+
+
 def fill_cells(updates: list) -> None:
     """updates: [(номер строки, поле, текст)] — вписывает значения в ячейки (только вызывающий решает, что пусто)."""
     if updates:
@@ -748,7 +797,8 @@ def set_order_dates(updates: list) -> None:
         orders_ws().batch_update([{"range": f"{_col_letter(lay[f])}{r}", "values": [[t]]} for r, f, t in updates],
                                  value_input_option="RAW")
         _invalidate()
-        safe_sync_colors()
+        if not safe_sort_orders():
+            safe_sync_colors()
 
 
 # ------------------------------------------------------------------ Озон

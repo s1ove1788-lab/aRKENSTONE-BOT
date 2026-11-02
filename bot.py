@@ -1140,6 +1140,15 @@ def handle_message(u: dict) -> None:
             log.exception("Не смог починить строки")
             return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
         return ctx.show(f"🛠 Исправлено строк: {n}." if n else "Съехавших строк не нашёл.", [MENU_BTN])
+    if cmd == "/sortorders":  # упорядочить таблицу заказов по дате отгрузки прямо сейчас (только менеджер)
+        if sender_id not in config.MANAGER_IDS:
+            return ctx.show("Команда только для менеджера.", [MENU_BTN])
+        try:
+            n = sheets.sort_orders()
+        except Exception as e:
+            log.exception("Сортировка таблицы заказов")
+            return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
+        return ctx.show(f"✅ Упорядочил по дате отгрузки: {n} строк." if n else "Таблица уже упорядочена по дате отгрузки.", [MENU_BTN])
     if cmd == "/costsort":  # перевести таблицу расчёта на порядок по дате отгрузки (только менеджер)
         if sender_id not in config.MANAGER_IDS:
             return ctx.show("Команда только для менеджера.", [MENU_BTN])
@@ -1353,6 +1362,10 @@ def main() -> None:
                 sys.exit("MAX не принял токен. Проверьте MAX_BOT_TOKEN.")
             r.raise_for_status()
             data = r.json()
+        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectTimeout):
+            log.warning("MAX не ответил вовремя (обычный сетевой сбой), спрашиваю снова")
+            time.sleep(2)
+            continue
         except requests.RequestException:
             log.exception("Ошибка связи с MAX, повторю через 5 секунд")
             time.sleep(5)
@@ -1386,7 +1399,8 @@ def main() -> None:
                                        "Записал в отгрузки, списал каркасы и добавил в расчёт доставки.")
             except Exception:
                 log.exception("Не смог обработать ручную отметку «Доставлен»")
-            sheets.safe_sync_colors()  # подхватываем ручные пометки менеджера («Отмена», «Возврат»)
+            if not sheets.safe_sort_orders():  # строки, внесённые вручную внизу таблицы, встают по дате отгрузки
+                sheets.safe_sync_colors()  # подхватываем ручные пометки менеджера («Отмена», «Возврат»)
             try:
                 reload_directory()
             except Exception:
