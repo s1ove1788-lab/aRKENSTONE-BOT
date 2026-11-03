@@ -1,0 +1,45 @@
+plugins {
+    id 'com.android.application'
+}
+
+// Номер версии берётся из номера сборки на GitHub, чтобы телефон видел обновление
+def build = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()
+
+android {
+    namespace 'ru.arkenstone.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'ru.arkenstone.app'
+        minSdk 24
+        targetSdk 34
+        versionCode build
+        versionName "1.${build}"
+    }
+
+    // Постоянный ключ подписи берётся из закрытых настроек GitHub (Secrets), а не из кода.
+    // Пока его нет, APK подписывается временным ключом сборщика.
+    def ks = file('release.keystore')
+    signingConfigs {
+        if (ks.exists()) {
+            release {
+                storeFile ks
+                storePassword System.getenv("KEYSTORE_PASSWORD")
+                keyAlias System.getenv("KEY_ALIAS") ?: "arkenstone"
+                keyPassword System.getenv("KEYSTORE_PASSWORD")
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig ks.exists() ? signingConfigs.release : signingConfigs.debug
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}

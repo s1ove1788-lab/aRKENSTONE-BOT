@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Arkenstone</string>
+    <!-- Адрес приложения на сервере бота -->
+    <string name="app_url">https://bot-1792874906-7743-s1ove.bothost.tech/</string>
+</resources>
