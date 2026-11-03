@@ -265,7 +265,15 @@ def prod_data(today: date) -> dict:
         weld.append({"width": w, "need": need_w, "painted": have_w, "frames": fr.get(w, 0),
                      "todo": max(0, need_w - have_w - fr.get(w, 0))})
     return {"plan": logic.production_plan(orders, today), "stock": rows, "frames": frames, "weld": weld,
-            "today": max(0, total - done), "shipped": done, "blanks": blanks_data()}
+            "today": max(0, total - done), "shipped": done, "blanks": blanks_data(), "legs": legs_data()}
+
+
+def legs_data() -> list:
+    try:
+        return [{"height": h, "n": n} for h, n in sorted(sheets.legs_get().items())]
+    except Exception:
+        log.exception("Приложение: ножки")
+        return []
 
 
 def blanks_data() -> dict:
@@ -476,6 +484,13 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
                 if code not in config.STOCK_CODES:
                     return 400, {"error": "Нет такого размера"}
                 return 200, {"ok": True, "message": _deps["stock"](code, delta, f"{who} (приложение)")}
+            if path == "/api/prod/legs":
+                height = _int(body.get("height"), 0)
+                if height not in sheets.legs_get():
+                    return 400, {"error": "Нет такой высоты ножек"}
+                new = sheets.legs_add(height, delta)
+                log.info("Приложение: ножки %s %+d -> %d (%s)", height, delta, new, who)
+                return 200, {"ok": True, "message": f"✅ Ножки {height}: {'+' if delta > 0 else ''}{delta} → теперь {new} шт."}
             if path == "/api/prod/frames":
                 width = _int(body.get("width"), 0)
                 if width not in sheets.frame_widths():

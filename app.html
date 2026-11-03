@@ -356,8 +356,24 @@ function drawWeld(d){
       ${d.weld.map((w, i) => `<tr class="tap ${w.todo ? "short" : ""}" onclick="frameForm(${i})"><td>${w.width}</td>
         <td class="n">${w.frames}</td><td class="n">${w.todo || ""}</td>${d.blanks.ok ? `<td class="n">${en[w.width] ?? "—"}</td>` : ""}</tr>`).join("")}
     </table></div>
+    <h2>Ножки · штучно</h2>
+    ${d.legs.length ? `<div class="card" style="padding:6px 10px"><table><tr><th>Высота</th><th class="n">Есть, шт.</th></tr>
+      ${d.legs.map((l, i) => `<tr class="tap" onclick="legsForm(${i})"><td>${l.height}</td><td class="n">${l.n}</td></tr>`).join("")}</table>
+      <button class="btn" style="width:100%;margin-top:8px" onclick="legsForm()">🦵 Внести ножки</button></div>`
+      : `<div class="card muted">Нет блока «Размер ножки» на листе сваренных каркасов.</div>`}
     <div class="muted" style="margin:6px 4px">«Сварить» = нужно по заказам − уже покрашено − уже сварено. «Загот.» — на сколько каркасов хватает заготовок.
     Сваренный каркас сам списывает заготовки: 1 комплект + 4 подножки + 22 ламели.</div>`;
+}
+
+function legsForm(i){
+  const L = window._prod.legs;
+  const opts = Object.fromEntries(L.map(l => [String(l.height), `${l.height} · ${l.n} шт.`]));
+  const h = () => `+document.getElementById('l-h').dataset.v`;
+  sheet(`<h3>🦵 Ножки</h3><div class="muted">Выберите высоту и сколько штук сварили. Ошиблись — «Убрать».</div>
+    <label class="l">Высота · сейчас есть</label>${seg("l-h", opts, String((L[i ?? 0] || L[0]).height))}
+    <label class="l">Сколько штук</label>${stepper("l-n", 5)}
+    <div class="actions"><button class="btn" onclick="act(this,'/api/prod/legs',{height:${h()},delta:-num('l-n')})">− Убрать</button>
+    <button class="btn main" onclick="act(this,'/api/prod/legs',{height:${h()},delta:num('l-n')})">+ Добавить</button></div>`);
 }
 
 function drawPaint(d){

@@ -631,16 +631,47 @@ def _num(x) -> int:
         return 0
 
 
+def _legs_start(values: list) -> int:
+    """Строка (с 0), где начинается блок «Размер ножки»; нет блока — конец листа."""
+    for i, v in enumerate(values):
+        if v and v[0].strip().lower().startswith("размер нож"):
+            return i
+    return len(values)
+
+
 def frames_get() -> dict:
-    """{ширина: сколько сваренных каркасов}."""
+    """{ширина: сколько сваренных каркасов} — только верхний блок, без ножек."""
     ws = _frames_ws()
     values = ws.get_all_values()
     col = _frames_col(values)
     res = {w: 0 for w in frame_widths()}
-    for v in values[1:]:
+    for v in values[1:_legs_start(values)]:
         if v and v[0].strip().isdigit():
             res[int(v[0])] = _num(v[col]) if col < len(v) else 0
     return res
+
+
+def legs_get() -> dict:
+    """{высота: сколько ножек штучно} из блока «Размер ножки» на листе сваренных каркасов."""
+    values = _frames_ws().get_all_values()
+    res = {}
+    for v in values[_legs_start(values) + 1:]:
+        if v and v[0].strip().isdigit():
+            res[int(v[0])] = _num(v[1]) if len(v) > 1 else 0
+    return res
+
+
+def legs_add(height: int, delta: int) -> int:
+    """Меняет число ножек высоты height (ниже нуля не уходит). Возвращает новое число."""
+    ws = _frames_ws()
+    values = ws.get_all_values()
+    start = _legs_start(values)
+    for i, v in enumerate(values[start + 1:], start=start + 2):
+        if v and v[0].strip() == str(height):
+            new = max(0, (_num(v[1]) if len(v) > 1 else 0) + delta)
+            ws.update_cell(i, 2, new)
+            return new
+    raise ValueError(f"нет строки для ножек {height}")
 
 
 def frames_add(width: int, delta: int, who: str = "") -> int:
