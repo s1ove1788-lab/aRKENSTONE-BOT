@@ -652,17 +652,31 @@ def frames_get() -> dict:
 
 
 def _legs_cells(values: list) -> dict:
-    """Блок «Размер ножки» в любом месте листа: {высота: (строка, столбец количества)} — номера с единицы."""
+    """Блок «Размер ножки» в любом месте листа -> {высота: (строка, {цвет: столбец})}, номера с единицы.
+    Цвет '' — одно количество (сваренные); '04'/'06' — чёрные/белые, если под заголовком есть «Черные»/«Белые»
+    (шапка может занимать две строки из-за объединённых ячеек)."""
     for r, row in enumerate(values):
         for c, cell in enumerate(row):
-            if cell.strip().lower().startswith("размер нож"):
-                res = {}
-                for rr in range(r + 1, len(values)):
-                    v = values[rr][c].strip() if c < len(values[rr]) else ""
-                    if not v.isdigit():
-                        break
-                    res[int(v)] = (rr + 1, c + 2)
-                return res
+            if not cell.strip().lower().startswith("размер нож"):
+                continue
+            colors, res, rr = {}, {}, r + 1
+            for hr in (r, r + 1, r + 2):  # шапка: ищем «черн»/«бел» в двух строках под заголовком
+                if hr < len(values):
+                    for cc, h in enumerate(values[hr]):
+                        low = h.strip().lower()
+                        if cc > c and low.startswith("черн"):
+                            colors["04"] = cc + 1
+                        elif cc > c and low.startswith("бел"):
+                            colors["06"] = cc + 1
+            while rr < len(values) and not (values[rr][c].strip().isdigit() if c < len(values[rr]) else False) and rr <= r + 2:
+                rr += 1  # пропускаем вторую строку шапки
+            while rr < len(values):
+                v = values[rr][c].strip() if c < len(values[rr]) else ""
+                if not v.isdigit():
+                    break
+                res[int(v)] = (rr + 1, colors or {"": c + 2})
+                rr += 1
+            return res
     return {}
 
 
@@ -672,19 +686,26 @@ def _legs_ws(kind: str):
 
 
 def legs_get(kind: str = "welded") -> dict:
-    """{высота: сколько ножек штучно}."""
+    """Сваренные: {высота: шт.}. Окрашенные по цветам: {высота: {'04': чёрных, '06': белых}}."""
     values = _legs_ws(kind).get_all_values()
-    return {h: _num(_cell(values, r, c - 1)) for h, (r, c) in sorted(_legs_cells(values).items())}
+    res = {}
+    for h, (r, cols) in sorted(_legs_cells(values).items()):
+        nums = {color: _num(_cell(values, r, c - 1)) for color, c in cols.items()}
+        res[h] = nums[""] if "" in nums else nums
+    return res
 
 
-def legs_add(height: int, delta: int, kind: str = "welded") -> int:
-    """Меняет число ножек высоты height (ниже нуля не уходит). Возвращает новое число."""
+def legs_add(height: int, delta: int, kind: str = "welded", color: str = "") -> int:
+    """Меняет число ножек высоты height (и цвета, если блок по цветам). Ниже нуля не уходит. Возвращает новое число."""
     ws = _legs_ws(kind)
     values = ws.get_all_values()
     cell = _legs_cells(values).get(int(height))
     if not cell:
         raise ValueError(f"нет строки для ножек {height}")
-    r, c = cell
+    r, cols = cell
+    c = cols.get(color) or cols.get("")
+    if not c:
+        raise ValueError("выберите цвет ножек")
     new = max(0, _num(_cell(values, r, c - 1)) + delta)
     ws.update_cell(r, c, new)
     return new

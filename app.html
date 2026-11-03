@@ -363,21 +363,28 @@ function drawWeld(d){
 
 function legsForm(i, kind){
   kind = kind || "welded";
-  const L = kind === "painted" ? window._prod.legs_painted : window._prod.legs;
-  const opts = Object.fromEntries(L.map(l => [String(l.height), `${l.height} · ${l.n} шт.`]));
+  const painted = kind === "painted";
+  const L = painted ? window._prod.legs_painted : window._prod.legs;
+  const opts = Object.fromEntries(L.map(l => [String(l.height), painted ? `${l.height}` : `${l.height} · ${l.n} шт.`]));
   const h = `+document.getElementById('l-h').dataset.v`;
-  const title = kind === "painted" ? "🎨 Окрашенные ножки" : "🦵 Сваренные ножки";
-  const hint = kind === "painted" ? "Выберите высоту и сколько покрасили. Столько же спишется из сваренных ножек." : "Выберите высоту и сколько штук сварили. Ошиблись — «Убрать».";
+  const col = painted ? `,color:document.getElementById('l-c').dataset.v` : "";
+  const title = painted ? "🎨 Окрашенные ножки" : "🦵 Сваренные ножки";
+  const hint = painted ? "Выберите высоту, цвет и сколько покрасили. Столько же спишется из сваренных ножек."
+                       : "Выберите высоту и сколько штук сварили. Ошиблись — «Убрать».";
   sheet(`<h3>${title}</h3><div class="muted">${hint}</div>
-    <label class="l">Высота · сейчас есть</label>${seg("l-h", opts, String((L[i ?? 0] || L[0]).height))}
+    <label class="l">Высота</label>${seg("l-h", opts, String((L[i ?? 0] || L[0]).height))}
+    ${painted ? `<label class="l">Цвет</label>${seg("l-c", {black: "Чёрные", white: "Белые"}, "black")}` : ""}
     <label class="l">Сколько штук</label>${stepper("l-n", 5)}
-    <div class="actions"><button class="btn" onclick="act(this,'/api/prod/legs',{kind:'${kind}',height:${h},delta:-num('l-n')})">− Убрать</button>
-    <button class="btn main" onclick="act(this,'/api/prod/legs',{kind:'${kind}',height:${h},delta:num('l-n')})">+ Добавить</button></div>`);
+    <div class="actions"><button class="btn" onclick="act(this,'/api/prod/legs',{kind:'${kind}',height:${h}${col},delta:-num('l-n')})">− Убрать</button>
+    <button class="btn main" onclick="act(this,'/api/prod/legs',{kind:'${kind}',height:${h}${col},delta:num('l-n')})">+ Добавить</button></div>`);
 }
 
 function legsBlock(list, kind, title, btn){
-  return `<h2>${title}</h2>` + (list.length ? `<div class="card" style="padding:6px 10px"><table><tr><th>Высота</th><th class="n">Есть, шт.</th></tr>
-    ${list.map((l, i) => `<tr class="tap" onclick="legsForm(${i},'${kind}')"><td>${l.height}</td><td class="n">${l.n}</td></tr>`).join("")}</table>
+  const painted = kind === "painted";
+  const head = painted ? `<tr><th>Высота</th><th class="n">Чёрные</th><th class="n">Белые</th></tr>` : `<tr><th>Высота</th><th class="n">Есть, шт.</th></tr>`;
+  const cells = l => painted ? `<td class="n">${l.black ?? 0}</td><td class="n">${l.white ?? 0}</td>` : `<td class="n">${l.n}</td>`;
+  return `<h2>${title}</h2>` + (list.length ? `<div class="card" style="padding:6px 10px"><table>${head}
+    ${list.map((l, i) => `<tr class="tap" onclick="legsForm(${i},'${kind}')"><td>${l.height}</td>${cells(l)}</tr>`).join("")}</table>
     <button class="btn" style="width:100%;margin-top:8px" onclick="legsForm(0,'${kind}')">${btn}</button></div>`
     : `<div class="card muted">Нет блока «Размер ножки» на листе.</div>`);
 }

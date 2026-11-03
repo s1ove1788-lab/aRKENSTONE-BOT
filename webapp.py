@@ -270,7 +270,8 @@ def prod_data(today: date) -> dict:
 
 def legs_data(kind: str = "welded") -> list:
     try:
-        return [{"height": h, "n": n} for h, n in sheets.legs_get(kind).items()]
+        return [{"height": h, **({"n": n} if isinstance(n, int) else {"black": n.get("04", 0), "white": n.get("06", 0)})}
+                for h, n in sheets.legs_get(kind).items()]
     except Exception:
         log.exception("Приложение: ножки (%s)", kind)
         return []
@@ -489,9 +490,14 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
                 kind = "painted" if body.get("kind") == "painted" else "welded"
                 if height not in sheets.legs_get(kind):
                     return 400, {"error": "Нет такой высоты ножек"}
-                new = sheets.legs_add(height, delta, kind)
+                color = {"black": "04", "white": "06"}.get(body.get("color"), "")
+                try:
+                    new = sheets.legs_add(height, delta, kind, color)
+                except ValueError as e:
+                    return 400, {"error": str(e)}
                 title = "Окрашенные ножки" if kind == "painted" else "Ножки"
-                msg = f"✅ {title} {height}: {'+' if delta > 0 else ''}{delta} → теперь {new} шт."
+                cname = {"04": " чёрные", "06": " белые"}.get(color, "")
+                msg = f"✅ {title} {height}{cname}: {'+' if delta > 0 else ''}{delta} → теперь {new} шт."
                 if kind == "painted" and delta > 0:  # покрасили — столько же уходит из сваренных
                     try:
                         left = sheets.legs_add(height, -delta, "welded")
