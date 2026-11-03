@@ -250,8 +250,9 @@ const num = id => parseFloat(String(document.getElementById(id).value).replace("
 /* ------------------------------ курьер */
 function drawCourier(d){
   window._ret = d.returns; window._days = d.days;
-  let h = `<div class="toolbar"><button class="btn" onclick="returnForm()">↩️ Возврат</button>
-    <button class="btn" onclick="payView()">💰 Расчёт</button></div>`;
+  let h = d.pay ? `<div class="toolbar"><button class="btn" onclick="returnForm()">↩️ Возврат</button>
+    <button class="btn" onclick="payView()">💰 Расчёт</button></div>`
+    : `<button class="btn" style="width:100%;margin-bottom:6px" onclick="returnForm()">↩️ Возврат</button>`;
   d.days.forEach((day, di) => {
     const table = day.rows.length ? `<table class="dl">
       <tr><th>Куда</th><th>Кровать</th><th class="n">Шт</th></tr>

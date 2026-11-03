@@ -50,6 +50,13 @@ self.addEventListener("fetch", () => {});
 """
 
 _deps: dict = {}  # функции бота: deliver, move, notify, shipped, stock, frames, inv_apply, inv_create, returns, pdf
+# Кто видит «Расчёт доставок» в приложении: коды телефонов через запятую в переменной PAY_CODES на Bothost.
+# Пусто — не видит никто. Переменную меняет только владелец хостинга, из приложения её не изменить.
+def pay_codes() -> set:
+    import os
+    return {c for c in (norm_code(x) for x in os.getenv("PAY_CODES", "").split(",")) if c}
+
+
 RETURN_KINDS = {"ya": "Яндекс", "oz": "Озон", "wb": "Вайлдберриз"}
 MAX_PDF = 20 * 1024 * 1024
 _lock = threading.Lock()  # записи в таблицу из приложения — по одной, чтобы не мешали друг другу
@@ -195,7 +202,7 @@ def _rows(items: list) -> list:
     return rows
 
 
-def courier_data(today: date) -> dict:
+def courier_data(today: date, pay: bool = False) -> dict:
     orders = sheets.read_orders()
     days = []
     for n, label in ((0, "Сегодня"), (1, "Завтра"), (2, "Послезавтра")):
@@ -204,7 +211,7 @@ def courier_data(today: date) -> dict:
         rows = _rows(items)
         days.append({"label": label, "date": f"{day:%d.%m} ({logic.WEEKDAYS[day.weekday()]})", "today": n == 0,
                      "rows": rows, "qty": sum(r["qty"] for r in rows)})
-    return {"days": days,
+    return {"days": days, "pay": pay,
             "returns": {"kinds": RETURN_KINDS, "codes": [{"code": c, "name": logic.code_name(c)} for c in config.STOCK_CODES]}}
 
 
@@ -285,7 +292,7 @@ def open_orders(today: date) -> dict:
     return {"rows": rows, "url": sheets.sheet_url("orders")}
 
 
-def manager_data(today: date) -> dict:
+def manager_data(today: date, pay: bool = False) -> dict:
     orders = sheets.read_orders()
     open_ = [o for o in orders if not o["status"]]
     links = []
@@ -295,7 +302,7 @@ def manager_data(today: date) -> dict:
         log.exception("Приложение: ссылки на таблицы")
     try:
         import costs
-        if costs.enabled():
+        if pay and costs.enabled():
             links.append({"title": "💰 Расчёт доставок", "url": costs.sheet_url()})
     except ImportError:
         pass
@@ -356,11 +363,12 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
     if not me:
         return 403, {"error": "Телефон не добавлен", "code": code}
     tabs = ROLE_TABS[me["role"]]
+    pay = code in pay_codes()
     who = me["name"] or "сотрудник"
     today = now_date()
 
     if path == "/api/courier" and "courier" in tabs:
-        return 200, courier_data(today)
+        return 200, courier_data(today, pay)
     if path == "/api/prod" and "prod" in tabs:
         return 200, prod_data(today)
     if path == "/api/keeper" and "keeper" in tabs:
@@ -368,7 +376,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
     if path == "/api/manager/orders" and "manager" in tabs:
         return 200, open_orders(today)
     if path == "/api/manager" and "manager" in tabs:
-        return 200, manager_data(today)
+        return 200, manager_data(today, pay)
 
     if method == "POST" and path in ("/api/courier/done", "/api/courier/move") and "courier" in tabs:
         kind, key = body.get("kind"), str(body.get("key") or "")
@@ -395,7 +403,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
             log.exception("Приложение: не смог уведомить менеджеров о переносе")
         return 200, {"ok": True, "message": f"📅 Перенесено на {new}"}
 
-    if path == "/api/courier/pay" and "courier" in tabs:
+    if path == "/api/courier/pay" and "courier" in tabs and pay:
         return 200, courier_pay(today)
 
     if method == "POST" and path == "/api/courier/return" and "courier" in tabs:
