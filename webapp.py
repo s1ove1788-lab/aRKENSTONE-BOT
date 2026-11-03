@@ -173,27 +173,38 @@ def _qty_text(o: dict) -> str:
     return f" ×{logic.qty(o)}" if logic.qty(o) > 1 else ""
 
 
+def _rows(items: list) -> list:
+    """Строки таблицы доставок: одна отгрузка по России или один городской адрес — одна строка."""
+    rows = []
+    for g in logic.russia_groups(items):
+        cnt = logic.count_items(g["orders"])
+        rows.append({
+            "kind": "ru", "key": g["key"], "late": g["late"], "channel": g["channel"],
+            "place": "Отгрузка" + (f" №{g['shipment']}" if g["shipment"] else ""),
+            "beds": [f"{name}" + (f" ×{n}" if n > 1 else "") for name, n in sorted(cnt.items())],
+            "qty": sum(cnt.values()), "orders": [o["order_no"] for o in g["orders"]],
+        })
+    for o, late in logic.city_items(items):
+        rows.append({
+            "kind": "city", "key": o["order_no"], "late": late, "channel": o["channel"],
+            "place": o["address"] or "адрес не указан", "address": o["address"],
+            "beds": [logic.item_line(o)], "qty": logic.qty(o), "orders": [o["order_no"]],
+            "phone": logic.fmt_phone(o["phone"]),
+            "tel": re.sub(r"[^\d+]", "", (o["phone"] or "").split("доб")[0]),
+        })
+    return rows
+
+
 def courier_data(today: date) -> dict:
     orders = sheets.read_orders()
-    items = logic.courier_items(orders, today)
-    ru = [{
-        "key": g["key"], "late": g["late"],
-        "title": g["channel"] + (f" №{g['shipment']}" if g["shipment"] else ""),
-        "count": sum(logic.qty(o) for o in g["orders"]),
-        "lines": [f"{name} — {n} шт." for name, n in sorted(logic.count_items(g["orders"]).items())],
-    } for g in logic.russia_groups(items)]
-    city = [{
-        "key": o["order_no"], "late": late, "address": o["address"] or "адрес не указан",
-        "item": logic.item_line(o) + _qty_text(o), "phone": logic.fmt_phone(o["phone"]),
-        "tel": re.sub(r"[^\d+]", "", (o["phone"] or "").split("доб")[0]),
-        "title": f"{o['channel']} · № {o['order_no']}",
-    } for o, late in logic.city_items(items)]
-    ahead = []
-    for n, label in ((1, "Завтра"), (2, "Послезавтра")):
+    days = []
+    for n, label in ((0, "Сегодня"), (1, "Завтра"), (2, "Послезавтра")):
         day = today + timedelta(days=n)
-        ahead.append({"label": label, "count": len(logic.day_items(orders, day, today)),
-                      "text": logic.day_preview(logic.day_items(orders, day, today), day, label)})
-    return {"date": today.strftime("%d.%m"), "ru": ru, "city": city, "ahead": ahead,
+        items = logic.courier_items(orders, today) if n == 0 else logic.day_items(orders, day, today)
+        rows = _rows(items)
+        days.append({"label": label, "date": f"{day:%d.%m} ({logic.WEEKDAYS[day.weekday()]})", "today": n == 0,
+                     "rows": rows, "qty": sum(r["qty"] for r in rows)})
+    return {"days": days,
             "returns": {"kinds": RETURN_KINDS, "codes": [{"code": c, "name": logic.code_name(c)} for c in config.STOCK_CODES]}}
 
 

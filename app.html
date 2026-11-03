@@ -97,6 +97,10 @@ tr.tap td:last-child::after{content:" ›";color:var(--muted)}
   border-radius:10px;padding:10px 6px;font:inherit;cursor:pointer}
 .seg button.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
 label.l{display:block;font-size:13px;color:var(--muted);margin:6px 2px 4px}
+table.dl td{vertical-align:top}
+table.dl .pl{font-weight:600}
+table.dl .ch{color:var(--muted);font-size:13px}
+tr.short .ch{color:inherit}
 .result{white-space:pre-wrap;background:var(--ok-bg);border-radius:12px;padding:12px;margin-top:10px}
 .badge:empty{display:none}
 </style>
@@ -238,65 +242,48 @@ const num = id => parseFloat(String(document.getElementById(id).value).replace("
 
 /* ------------------------------ курьер */
 function drawCourier(d){
-  const card = (kind, it, inner, sub) => `
-    <div class="card ${it.late ? "late" : ""}" data-kind="${kind}" data-key="${esc(it.key)}">
-      <div class="top" onclick="this.parentNode.querySelector('.body').hidden^=1">
-        <div class="grow"><div class="title">${inner}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>
-        <span class="badge">${it.late ? "просрочен" : (it.count ? it.count + " шт." : "")}</span>
-      </div>
-      <div class="body" hidden>
-        ${it.lines ? `<ul class="lines">${it.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}
-        <div class="actions">
-          ${it.tel ? `<a class="btn" href="tel:${esc(it.tel)}">📞 Позвонить</a>` : ""}
-          ${it.address && kind === "city" ? `<a class="btn" target="_blank" href="https://yandex.ru/maps/?text=${encodeURIComponent(it.address)}">🗺 Карта</a>` : ""}
-          <button class="btn main wide" onclick="done(this)">✅ Доставлен</button>
-          <button class="btn wide" onclick="moveForm(this)">📅 Перенос</button>
-        </div>
-      </div>
-    </div>`;
-  window._ret = d.returns;
+  window._ret = d.returns; window._days = d.days;
   let h = `<div class="toolbar"><button class="btn" onclick="returnForm()">↩️ Возврат</button>
     <button class="btn" onclick="payView()">💰 Расчёт</button></div>`;
-  if (!d.ru.length && !d.city.length) h += `<div class="empty">На сегодня (${d.date}) доставок нет 🎉</div>`;
-  if (d.ru.length) h += `<h2>По России · ${d.date}</h2>` + d.ru.map(g => card("ru", g, esc(g.title))).join("");
-  if (d.city.length) h += `<h2>Город · ${d.date}</h2>` + d.city.map(o =>
-    card("city", o, esc(o.address), `${esc(o.item)}${o.phone ? " · " + esc(o.phone) : ""}<br>${esc(o.title)}`)).join("");
-  h += `<h2>Дальше</h2>` + d.ahead.map(a => `
-    <details class="card"><summary class="row"><span class="grow">📅 ${a.label}</span><span class="badge">${a.count} шт.</span></summary>
-    <pre style="margin-top:10px">${esc(a.text.split("\n").slice(1).join("\n").trim())}</pre></details>`).join("");
+  d.days.forEach((day, di) => {
+    const table = day.rows.length ? `<table class="dl">
+      <tr><th>Куда</th><th>Кровать</th><th class="n">Шт</th></tr>
+      ${day.rows.map((r, ri) => `<tr class="tap ${r.late ? "short" : ""}" onclick="deliveryView(${di},${ri})">
+        <td><div class="pl">${esc(r.place)}</div><div class="ch">${esc(r.channel)}${r.late ? " · просрочен" : ""}</div></td>
+        <td>${r.beds.map(esc).join("<br>")}</td><td class="n">${r.qty}</td></tr>`).join("")}
+      </table>` : `<div class="muted" style="text-align:center;padding:8px">${day.today ? "Доставок нет 🎉" : "Доставок пока нет"}</div>`;
+    if (day.today) h += `<h2>${day.label} · ${day.date}</h2><div class="card">${table}</div>`;
+    else h += `<details class="card" style="margin-top:12px"><summary class="row"><span class="grow title">📅 ${day.label} · ${day.date}</span>
+      <span class="badge">${day.qty} шт. ▾</span></summary><div style="margin-top:8px">${table}</div></details>`;
+  });
   $("#main").innerHTML = h;
 }
 
-async function done(btn){
-  const c = btn.closest(".card");
-  if (!confirm("Отметить как доставленный?")) return;
-  btn.disabled = true;
-  try { const r = await call("/api/courier/done", {kind: c.dataset.kind, key: c.dataset.key}); toast(r.message); }
-  catch(e) { toast(e.message); }
-  load();
-}
-
-function moveForm(btn){
-  const c = btn.closest(".card");
-  const box = btn.parentNode;
-  if (box.querySelector(".open-form")) return;
+function deliveryView(di, ri){
+  const day = window._days[di], r = day.rows[ri];
+  window._cur = r;
   const t = new Date(); t.setDate(t.getDate() + 1);
   const min = t.toISOString().slice(0,10);
-  box.insertAdjacentHTML("beforeend", `<div class="wide open-form" style="grid-column:1/-1">
-    <input type="date" min="${min}" value="${min}">
-    <div class="actions" style="margin-top:0">
-      <button class="btn" onclick="this.closest('.open-form').remove()">Отмена</button>
-      <button class="btn main" onclick="move(this)">Перенести</button>
-    </div></div>`);
+  sheet(`<h3>${esc(r.place)}</h3><div class="muted">${esc(r.channel)} · ${day.label.toLowerCase()} ${day.date}${r.late ? " · просрочен" : ""}</div>
+    <table><tr><th>Кровать</th></tr>${r.beds.map(b => `<tr><td>${esc(b)}</td></tr>`).join("")}</table>
+    <div class="muted" style="margin-top:8px">Заказ${r.orders.length > 1 ? "ы" : ""}: ${r.orders.map(esc).join(", ")}${r.phone ? `<br>Телефон: ${esc(r.phone)}` : ""}</div>
+    <div class="actions">
+      ${r.tel ? `<a class="btn" href="tel:${esc(r.tel)}">📞 Позвонить</a>` : ""}
+      ${r.address ? `<a class="btn" target="_blank" href="https://yandex.ru/maps/?text=${encodeURIComponent(r.address)}">🗺 Карта</a>` : ""}
+      ${day.today ? `<button class="btn main wide" onclick="doneCur(this)">✅ Доставлен</button>
+      <div class="wide" style="grid-column:1/-1"><label class="l">Перенести на дату</label>
+        <input id="mv-date" type="date" min="${min}" value="${min}">
+        <button class="btn" style="width:100%" onclick="moveCur(this)">📅 Перенести</button></div>` : ""}
+    </div>`);
 }
 
-async function move(btn){
-  const c = btn.closest(".card");
-  const date = btn.closest(".open-form").querySelector("input").value;
-  btn.disabled = true;
-  try { const r = await call("/api/courier/move", {kind: c.dataset.kind, key: c.dataset.key, date}); toast(r.message); }
-  catch(e) { toast(e.message); btn.disabled = false; return; }
-  load();
+async function doneCur(btn){
+  if (!confirm("Отметить как доставленный?")) return;
+  await act(btn, "/api/courier/done", {kind: window._cur.kind, key: window._cur.key});
+}
+
+async function moveCur(btn){
+  await act(btn, "/api/courier/move", {kind: window._cur.kind, key: window._cur.key, date: document.getElementById("mv-date").value});
 }
 
 function returnForm(){
