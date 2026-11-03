@@ -169,8 +169,10 @@ def home(ctx: Ctx, notification=None) -> None:
         text = ("👔 Меню менеджера\n\nЧтобы добавить заказы, просто пришлите мне PDF-файл в этот чат.\n"
                 "Таблицы открываются в Google Таблицах — там их можно редактировать.")
     elif role == "courier":
-        rows = [[cb("🚚 Доставки", "c:home")], [cb("💰 Расчёт доставок", "c:pay")],
-                [cb("↩️ Возврат", "c:ret")], CHANGE_ROLE]
+        rows = [[cb("🚚 Доставки", "c:home")]]
+        if ctx.uid in config.PAY_IDS:  # расчёт видит только тот, чей ID в PAY_IDS
+            rows.append([cb("💰 Расчёт доставок", "c:pay")])
+        rows += [[cb("↩️ Возврат", "c:ret")], CHANGE_ROLE]
         text = "🚚 Меню курьера"
     elif role == "keeper":
         rows = [[cb(config.INV_TITLES["raw"], "p:inv:raw"), cb(config.INV_TITLES["tmc"], "p:inv:tmc")], CHANGE_ROLE]
@@ -273,6 +275,8 @@ def courier_home(ctx: Ctx, today, notification=None) -> None:
 
 def courier_pay(ctx: Ctx, today) -> None:
     pending.pop(ctx.uid, None)
+    if ctx.uid not in config.PAY_IDS:
+        return courier_home(ctx, today, "Расчёт доступен только владельцу")
     rows = []
     url = costs.sheet_url()
     if url:

@@ -23,6 +23,7 @@ MANAGER_IDS = _parse_ids(os.getenv("MANAGER_IDS", ""))
 COURIER_IDS = _parse_ids(os.getenv("COURIER_IDS", ""))  # кто может быть курьером (ID через запятую)
 PROD_IDS = _parse_ids(os.getenv("PROD_IDS", ""))        # кто может быть в отделе производства
 KEEPER_IDS = _parse_ids(os.getenv("KEEPER_IDS", ""))    # кто может быть кладовщиком (склад: сырьё и ТМЦ)
+PAY_IDS = _parse_ids(os.getenv("PAY_IDS", ""))          # кто видит «Расчёт доставок» в MAX (ID через запятую); пусто — никто
 
 CREDS_FILE = os.getenv("GOOGLE_CREDENTIALS_FILE", "credentials.json")
 # Либо содержимое credentials.json целиком (для хостингов), либо то же в base64
