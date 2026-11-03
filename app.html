@@ -332,7 +332,8 @@ function drawProd(d){
     ${d.today ? `<button class="btn main big" style="width:100%;margin-bottom:10px" onclick="shippedForm()">✅ Кровати отгружены · ${d.today} шт.</button>`
       : `<div class="card muted" style="text-align:center">${d.shipped ? `Сегодня отгружено ${d.shipped} шт. ✅` : "На сегодня отгрузок нет"}</div>`}
     <h2>Покрашенные · нажмите, чтобы внести</h2><div class="card"><table><tr><th>Кровать</th><th class="n">Есть</th><th class="n">Нужно</th></tr>${stock}</table></div>
-    <h2>Сваренные каркасы</h2><div class="card"><table>${frames}</table></div>
+    <h2>Сваренные каркасы · нажмите, чтобы внести</h2><div class="card"><table>${frames}</table>
+      <button class="btn main" style="width:100%;margin-top:10px" onclick="frameForm()">🔩 Внести сваренные каркасы</button></div>
     <h2>План</h2><div class="card"><pre>${esc(d.plan.split("\n").slice(2).join("\n"))}</pre></div>`;
 }
 
@@ -350,12 +351,16 @@ function stockForm(i){
     <button class="btn main" onclick="act(this,'/api/prod/stock',{code:'${x.code}',delta:num('s-n')})">+ Добавить</button></div>`);
 }
 
+const fw = () => document.getElementById('f-w').dataset.v;
 function frameForm(i){
-  const f = window._prod.frames[i];
-  sheet(`<h3>🔩 Каркасы ${f.width}</h3><div class="muted">Сейчас сварено: ${f.n} шт.</div>
-    ${stepper("f-n", 1)}
-    <div class="actions"><button class="btn" onclick="act(this,'/api/prod/frames',{width:${f.width},delta:-num('f-n')})">− Убрать</button>
-    <button class="btn main" onclick="act(this,'/api/prod/frames',{width:${f.width},delta:num('f-n')})">+ Сварено</button></div>`);
+  const fr = window._prod.frames;
+  const first = fr[i ?? 0] || {width: 120};
+  const sizes = Object.fromEntries(fr.map(f => [String(f.width), `${f.width} · ${f.n} шт.`]));
+  sheet(`<h3>🔩 Сваренные каркасы</h3><div class="muted">Выберите размер и сколько сварили. Ошиблись — «Убрать».</div>
+    <label class="l">Размер · сейчас сварено</label>${seg("f-w", sizes, String(first.width))}
+    <label class="l">Сколько</label>${stepper("f-n", 1)}
+    <div class="actions"><button class="btn" onclick="act(this,'/api/prod/frames',{width:+fw(),delta:-num('f-n')})">− Убрать</button>
+    <button class="btn main" onclick="act(this,'/api/prod/frames',{width:+fw(),delta:num('f-n')})">+ Сварено</button></div>`);
 }
 
 /* ------------------------------ склад */
