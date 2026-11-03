@@ -38,10 +38,16 @@ STATIC = {  # что отдаём браузеру как есть
     "/": ("app.html", "text/html; charset=utf-8"),
     "/app": ("app.html", "text/html; charset=utf-8"),
     "/manifest.webmanifest": ("app/manifest.webmanifest", "application/manifest+json"),
-    "/sw.js": ("app/sw.js", "text/javascript; charset=utf-8"),
     "/icon-192.png": ("app/icon-192.png", "image/png"),
     "/icon-512.png": ("app/icon-512.png", "image/png"),
 }
+
+# Нужен, чтобы телефон предлагал «Установить приложение». Хранится здесь, а не файлом .js:
+# увидев .js в проекте, Bothost решает, что бот на Node.js, и запускает не то.
+SW_JS = b"""self.addEventListener("install", () => self.skipWaiting());
+self.addEventListener("activate", e => e.waitUntil(self.clients.claim()));
+self.addEventListener("fetch", () => {});
+"""
 
 _deps: dict = {"deliver": None, "move": None, "notify": None}
 _lock = threading.Lock()  # записи в таблицу из приложения — по одной, чтобы не мешали друг другу
@@ -349,6 +355,8 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path.startswith("/api/"):
             return self._api("GET", {})
+        if path == "/sw.js":
+            return self._send(200, SW_JS, "text/javascript; charset=utf-8", "no-cache")
         if path in ("/health", "/ok"):
             return self._send(200, b"ok", "text/plain")
         if path.startswith("/alice"):
