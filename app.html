@@ -79,6 +79,25 @@ details summary{cursor:pointer;font-weight:600;list-style:none}
 details summary::-webkit-details-marker{display:none}
 .spin{opacity:.6}
 nav[hidden]{display:none}
+.tap{cursor:pointer}
+.tap:active{background:var(--chip)}
+tr.tap td:last-child::after{content:" ›";color:var(--muted)}
+.toolbar{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:6px}
+.big{font-size:18px;padding:18px}
+.sheet-bg{position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:20;display:flex;align-items:flex-end;justify-content:center}
+.sheet{background:var(--card);width:100%;max-width:640px;border-radius:20px 20px 0 0;
+  padding:18px 16px calc(18px + env(safe-area-inset-bottom));max-height:88vh;overflow:auto}
+.sheet h3{margin:0 0 4px;font-size:19px}
+.sheet .muted{margin-bottom:12px}
+.stepper{display:grid;grid-template-columns:64px 1fr 64px;gap:8px;margin:10px 0}
+.stepper input{text-align:center;font-size:24px;font-weight:700;margin:0}
+.stepper .btn{font-size:24px;padding:10px}
+.seg{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
+.seg button{flex:1;min-width:64px;border:1px solid var(--line);background:var(--bg);color:var(--ink);
+  border-radius:10px;padding:10px 6px;font:inherit;cursor:pointer}
+.seg button.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
+label.l{display:block;font-size:13px;color:var(--muted);margin:6px 2px 4px}
+.result{white-space:pre-wrap;background:var(--ok-bg);border-radius:12px;padding:12px;margin-top:10px}
 .badge:empty{display:none}
 </style>
 </head>
@@ -182,11 +201,40 @@ async function load(){
     if (me) $("#main").innerHTML = `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="load()">Повторить</button></div>`;
   } finally {
     $("#refresh").classList.remove("spin");
-    timer = setInterval(() => { if (!document.querySelector(".open-form")) load(); }, 60000);
+    timer = setInterval(() => { if (!document.querySelector(".open-form, .sheet-bg")) load(); }, 60000);
   }
 }
 $("#refresh").onclick = () => me && me.ok ? load() : boot();
 document.addEventListener("visibilitychange", () => { if (!document.hidden && me && me.ok) load(); });
+
+/* ------------------------------ окно-форма снизу */
+function sheet(html){
+  closeSheet();
+  document.body.insertAdjacentHTML("beforeend", `<div class="sheet-bg" onclick="if(event.target===this)closeSheet()"><div class="sheet">${html}</div></div>`);
+  return document.querySelector(".sheet");
+}
+function closeSheet(){ document.querySelectorAll(".sheet-bg").forEach(e => e.remove()); }
+function stepper(id, val){
+  return `<div class="stepper"><button class="btn" onclick="step('${id}',-1)">−</button>
+    <input id="${id}" type="number" inputmode="decimal" min="0" value="${val}"><button class="btn" onclick="step('${id}',1)">+</button></div>`;
+}
+function step(id, d){ const i = document.getElementById(id); i.value = Math.max(0, (parseFloat(i.value.replace(",", ".")) || 0) + d); }
+function seg(id, opts, on){
+  return `<div class="seg" id="${id}" data-v="${esc(on)}">${Object.entries(opts).map(([k,v]) =>
+    `<button class="${k===on?"on":""}" data-k="${esc(k)}" onclick="pick(this)">${esc(v)}</button>`).join("")}</div>`;
+}
+function pick(b){ const g = b.parentNode; g.dataset.v = b.dataset.k; g.querySelectorAll("button").forEach(x => x.classList.toggle("on", x === b)); }
+async function act(btn, path, body, keepOpen){
+  btn.disabled = true;
+  try {
+    const r = await call(path, body);
+    if (keepOpen) { const box = btn.closest(".sheet"); box.querySelector(".result")?.remove();
+      box.insertAdjacentHTML("beforeend", `<div class="result">${esc(r.message)}</div>`); btn.disabled = false; }
+    else { closeSheet(); toast(r.message.split("\n")[0]); }
+    load();
+  } catch(e) { toast(e.message); btn.disabled = false; }
+}
+const num = id => parseFloat(String(document.getElementById(id).value).replace(",", ".")) || 0;
 
 /* ------------------------------ курьер */
 function drawCourier(d){
@@ -206,7 +254,9 @@ function drawCourier(d){
         </div>
       </div>
     </div>`;
-  let h = "";
+  window._ret = d.returns;
+  let h = `<div class="toolbar"><button class="btn" onclick="returnForm()">↩️ Возврат</button>
+    <button class="btn" onclick="payView()">💰 Расчёт</button></div>`;
   if (!d.ru.length && !d.city.length) h += `<div class="empty">На сегодня (${d.date}) доставок нет 🎉</div>`;
   if (d.ru.length) h += `<h2>По России · ${d.date}</h2>` + d.ru.map(g => card("ru", g, esc(g.title))).join("");
   if (d.city.length) h += `<h2>Город · ${d.date}</h2>` + d.city.map(o =>
@@ -249,27 +299,92 @@ async function move(btn){
   load();
 }
 
-/* ------------------------------ цех */
+function returnForm(){
+  const r = window._ret;
+  const codes = Object.fromEntries(r.codes.map(c => [c.code, c.name.replace("/30 ", " ")]));
+  sheet(`<h3>↩️ Возврат</h3><div class="muted">Кровать сразу добавится в остатки склада и в расчёт.</div>
+    <label class="l">Площадка</label>${seg("r-kind", r.kinds, "ya")}
+    <label class="l">Кровать</label>${seg("r-code", codes, r.codes[0].code)}
+    <label class="l">Ножки</label>${seg("r-legs", {"25":"25","30":"30","35":"35"}, "30")}
+    <label class="l">Сколько</label>${stepper("r-qty", 1)}
+    <button class="btn main big" style="width:100%" onclick="act(this,'/api/courier/return',{kind:document.getElementById('r-kind').dataset.v,
+      code:document.getElementById('r-code').dataset.v, legs:document.getElementById('r-legs').dataset.v, qty:num('r-qty')}, true)">Записать возврат</button>`);
+}
+
+async function payView(){
+  const box = sheet(`<h3>💰 Расчёт доставок</h3><div class="muted">Загрузка…</div>`);
+  try {
+    const r = await call("/api/courier/pay");
+    box.innerHTML = `<h3>💰 Расчёт доставок</h3><pre style="margin:10px 0">${esc(r.text)}</pre>` +
+      (r.url ? `<a class="btn" target="_blank" href="${esc(r.url)}">📊 Открыть таблицу</a>` : "");
+  } catch(e) { box.querySelector(".muted").textContent = e.message; }
+}
+
+/* ------------------------------ производство */
 function drawProd(d){
-  const stock = d.stock.map(s => {
-    const short = s.have !== null && s.need > s.have;
-    return `<tr class="${short ? "short" : ""}"><td>${esc(s.name)}</td><td class="n">${s.have ?? "—"}</td><td class="n">${s.need || ""}</td></tr>`;
+  window._prod = d;
+  const stock = d.stock.map((x, i) => {
+    const short = x.have !== null && x.need > x.have;
+    return `<tr class="tap ${short ? "short" : ""}" onclick="stockForm(${i})"><td>${esc(x.name)}</td><td class="n">${x.have ?? "—"}</td><td class="n">${x.need || ""}</td></tr>`;
   }).join("");
+  const frames = d.frames.map((f, i) => `<tr class="tap" onclick="frameForm(${i})"><td>${f.width}</td><td class="n">${f.n}</td></tr>`).join("");
   $("#main").innerHTML = `
-    <div class="stats"><div class="stat"><b>${d.today}</b><small>отгрузить сегодня</small></div>
-      <div class="stat"><b>${d.frames.reduce((a,f) => a + f.n, 0)}</b><small>каркасов</small></div>
-      <div class="stat"><b>${d.stock.reduce((a,s) => a + (s.have || 0), 0)}</b><small>покрашено</small></div></div>
-    <h2>Остатки</h2><div class="card"><table><tr><th>Кровать</th><th class="n">Есть</th><th class="n">Нужно</th></tr>${stock}</table></div>
-    <h2>Сваренные каркасы</h2><div class="card"><table>${d.frames.map(f => `<tr><td>${f.width}</td><td class="n">${f.n}</td></tr>`).join("")}</table></div>
+    ${d.today ? `<button class="btn main big" style="width:100%;margin-bottom:10px" onclick="shippedForm()">✅ Кровати отгружены · ${d.today} шт.</button>`
+      : `<div class="card muted" style="text-align:center">${d.shipped ? `Сегодня отгружено ${d.shipped} шт. ✅` : "На сегодня отгрузок нет"}</div>`}
+    <h2>Покрашенные · нажмите, чтобы внести</h2><div class="card"><table><tr><th>Кровать</th><th class="n">Есть</th><th class="n">Нужно</th></tr>${stock}</table></div>
+    <h2>Сваренные каркасы</h2><div class="card"><table>${frames}</table></div>
     <h2>План</h2><div class="card"><pre>${esc(d.plan.split("\n").slice(2).join("\n"))}</pre></div>`;
 }
 
+function shippedForm(){
+  sheet(`<h3>Кровати отгружены?</h3><div class="muted">Отметим ${window._prod.today} шт. на сегодня и сообщим менеджеру.</div>
+    <div class="actions"><button class="btn" onclick="closeSheet()">Отмена</button>
+    <button class="btn main" onclick="act(this,'/api/prod/shipped',{})">Да, отгружены</button></div>`);
+}
+
+function stockForm(i){
+  const x = window._prod.stock[i];
+  sheet(`<h3>🎨 ${esc(x.name)}</h3><div class="muted">Сейчас покрашено: ${x.have ?? "нет данных"}. Добавленные спишутся со сваренных каркасов.</div>
+    ${stepper("s-n", 1)}
+    <div class="actions"><button class="btn" onclick="act(this,'/api/prod/stock',{code:'${x.code}',delta:-num('s-n')})">− Убрать</button>
+    <button class="btn main" onclick="act(this,'/api/prod/stock',{code:'${x.code}',delta:num('s-n')})">+ Добавить</button></div>`);
+}
+
+function frameForm(i){
+  const f = window._prod.frames[i];
+  sheet(`<h3>🔩 Каркасы ${f.width}</h3><div class="muted">Сейчас сварено: ${f.n} шт.</div>
+    ${stepper("f-n", 1)}
+    <div class="actions"><button class="btn" onclick="act(this,'/api/prod/frames',{width:${f.width},delta:-num('f-n')})">− Убрать</button>
+    <button class="btn main" onclick="act(this,'/api/prod/frames',{width:${f.width},delta:num('f-n')})">+ Сварено</button></div>`);
+}
+
 /* ------------------------------ склад */
+const INV = {raw:"Сырьё", tmc:"ТМЦ"};
 function drawKeeper(d){
-  const list = (title, items) => `<h2>${title}</h2><div class="card">` + (items.length
-    ? `<table>${items.map(i => `<tr class="${i.low ? "short" : ""}"><td>${esc(i.name)}${i.low ? " · заканчивается" : ""}</td><td class="n">${esc(i.qty)} ${esc(i.unit)}</td></tr>`).join("")}</table>`
-    : `<div class="muted">Пока пусто</div>`) + `</div>`;
-  $("#main").innerHTML = list("Сырьё", d.raw) + list("ТМЦ", d.tmc);
+  window._inv = d;
+  const list = kind => `<h2>${INV[kind]}</h2><div class="card">` + (d[kind].length
+    ? `<table>${d[kind].map((i, n) => `<tr class="tap ${i.low ? "short" : ""}" onclick="invForm('${kind}',${n})"><td>${esc(i.name)}${i.low ? " · заканчивается" : ""}</td><td class="n">${esc(i.qty)} ${esc(i.unit)}</td></tr>`).join("")}</table>`
+    : `<div class="muted">Пока пусто</div>`) +
+    `<button class="btn" style="width:100%;margin-top:10px" onclick="invNew('${kind}')">🆕 Новая позиция</button></div>`;
+  $("#main").innerHTML = list("raw") + list("tmc");
+}
+
+function invForm(kind, n){
+  const i = window._inv[kind][n];
+  const body = sign => `{kind:'${kind}',row:${i.row},name:${esc(JSON.stringify(i.name))},qty:num('i-n'),sign:'${sign}'}`;
+  sheet(`<h3>${esc(i.name)}</h3><div class="muted">Сейчас: ${esc(i.qty)} ${esc(i.unit)}${i.min ? ` · минимум ${esc(i.min)}` : ""}</div>
+    ${stepper("i-n", 1)}
+    <div class="actions"><button class="btn" onclick="act(this,'/api/keeper/move',${body("out")})">➖ Расход</button>
+    <button class="btn main" onclick="act(this,'/api/keeper/move',${body("in")})">➕ Приход</button></div>`);
+}
+
+function invNew(kind){
+  sheet(`<h3>🆕 ${INV[kind]}: новая позиция</h3><div class="muted">Остаток будет 0 — потом внесите приход.</div>
+    <label class="l">Название</label><input id="n-name" placeholder="Труба 40×20">
+    <label class="l">Единица</label><input id="n-unit" placeholder="м, шт, л, кг">
+    <label class="l">Минимум (предупредим, когда меньше)</label><input id="n-min" type="number" inputmode="decimal" placeholder="необязательно">
+    <button class="btn main big" style="width:100%" onclick="act(this,'/api/keeper/new',{kind:'${kind}',name:document.getElementById('n-name').value,
+      unit:document.getElementById('n-unit').value,min:document.getElementById('n-min').value})">Добавить</button>`);
 }
 
 /* ------------------------------ менеджер */
@@ -278,6 +393,9 @@ function drawManager(d){
     <div class="stats"><div class="stat"><b>${d.today}</b><small>отгрузить сегодня</small></div>
       <div class="stat"><b>${d.open}</b><small>в работе</small></div>
       <div class="stat"><b>${d.city}</b><small>по городу</small></div></div>
+    <label class="btn main big" style="margin:10px 0">📄 Загрузить PDF с заказами
+      <input type="file" accept="application/pdf,.pdf" hidden onchange="uploadPdf(this)"></label>
+    ${d.links.length ? `<div class="toolbar">${d.links.map(l => `<a class="btn" target="_blank" href="${esc(l.url)}">${esc(l.title)}</a>`).join("")}</div>` : ""}
     <h2>Добавить сотрудника</h2>
     <div class="card open-form" id="addform">
       <input id="f-code" placeholder="Код с телефона, например K7QM-2XPA" autocapitalize="characters" autocomplete="off">
@@ -291,6 +409,20 @@ function drawManager(d){
       <div class="sub">${esc(x.label)} · ${esc(x.code)}</div></div>
       ${x.code === me.code ? `<span class="badge">это вы</span>` : `<button class="btn" onclick="removeDevice('${esc(x.code)}','${esc(x.name)}')">Убрать</button>`}</div>`).join("")
       : `<div class="empty">Пока никого</div>`}`;
+}
+
+async function uploadPdf(input){
+  const f = input.files[0]; input.value = "";
+  if (!f) return;
+  const box = sheet(`<h3>📄 ${esc(f.name)}</h3><div class="muted">Читаю файл…</div>`);
+  try {
+    const r = await fetch("/api/manager/pdf", {method: "POST", body: f,
+      headers: {"X-Token": TOKEN, "X-Filename": encodeURIComponent(f.name), "Content-Type": "application/pdf"}});
+    const j = await r.json().catch(() => ({}));
+    box.innerHTML = `<h3>📄 ${esc(f.name)}</h3><div class="result">${esc(j.message || j.error || "Ошибка связи")}</div>
+      <button class="btn" style="width:100%;margin-top:10px" onclick="closeSheet()">Готово</button>`;
+    load();
+  } catch(e) { box.querySelector(".muted").textContent = e.message; }
 }
 
 async function addDevice(btn){

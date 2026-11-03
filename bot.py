@@ -310,7 +310,8 @@ def courier_return_type(ctx: Ctx, key: str) -> None:
              [[cb("⬅️ Назад", "c:ret")]])
 
 
-def save_return(ctx: Ctx, name: str, text: str, kind: str = "") -> None:
+def return_apply(text: str, kind: str, who: str) -> tuple:
+    """Возврат: «160/30 ч 2» по строкам. Возвращает (ок?, строки отчёта)."""
     today = now_date()
     items = logic.parse_shipments(text)
     lines, rows, for_costs = [], [], []
@@ -323,20 +324,19 @@ def save_return(ctx: Ctx, name: str, text: str, kind: str = "") -> None:
         rows += [(kind, title)] * it["qty"]
         for_costs.append((title, it["qty"]))
     if not rows:
-        return ctx.show("\n".join(lines or ["Не понял сообщение."]) + "\n\nПример: 160/30 ч",
-                        [[cb("⬅️ Назад", "c:ret")]])
+        return False, lines or ["Не понял сообщение."]
     try:
         sheets.add_returns(rows, today)  # сразу со статусом «Принят на склад»
     except Exception:
         log.exception("Не смог записать возврат в таблицу возвратов")
-        return ctx.show("⚠️ Не получилось записать возврат в таблицу, попробуйте ещё раз.", [[cb("⬅️ Назад", "c:ret")]])
+        return False, ["⚠️ Не получилось записать возврат в таблицу, попробуйте ещё раз."]
     try:
         stock = sheets.latest_stock()
         for it in items:
             if "error" in it:
                 continue
             new = (stock[it["code"]][0] if it["code"] in stock else 0) + it["qty"]
-            sheets.add_stock(it["code"], new, name)
+            sheets.add_stock(it["code"], new, who)
             stock[it["code"]] = (new, "")
         lines.append("📦 Добавлено в остатки склада")
     except Exception:
@@ -349,6 +349,13 @@ def save_return(ctx: Ctx, name: str, text: str, kind: str = "") -> None:
     except Exception:
         log.exception("Не смог записать возврат в таблицу расчёта")
         lines.append("⚠️ В таблицу расчёта возврат записать не удалось, сообщите менеджеру.")
+    return True, lines
+
+
+def save_return(ctx: Ctx, name: str, text: str, kind: str = "") -> None:
+    ok, lines = return_apply(text, kind, name)
+    if not ok:
+        return ctx.show("\n".join(lines) + "\n\nПример: 160/30 ч", [[cb("⬅️ Назад", "c:ret")]])
     pending.pop(ctx.uid, None)
     ctx.show("\n".join(lines), [[cb("↩️ Ещё возврат", "c:ret")], [cb("⬅️ В меню", "c:home")]])
 
@@ -519,21 +526,21 @@ def save_move(ctx: Ctx, name: str, text: str, kind: str, ident: str) -> None:
 
 
 # ------------------------------------------------------------ производство
-def production_shipped(ctx: Ctx) -> None:
+def mark_shipped(who: str, skip_uid=None) -> str:
     """«Кровати отгружены»: фиксируем, сколько отгружено сегодня, и обнуляем счётчик отгрузок на сегодня."""
     today = now_date()
     total = logic.today_total(sheets.read_orders(force=True), today)
     done = shipped_done(today)
     if total - done <= 0:
-        return ctx.show(f"Сегодня уже отмечено: отгружено {done} шт. Новых отгрузок на сегодня нет.", [MENU_BTN])
+        return f"Сегодня уже отмечено: отгружено {done} шт. Новых отгрузок на сегодня нет."
     sheets.set_setting("shipped_date", str(today))
     sheets.set_setting("shipped_n", str(total))
-    text = f"✅ Кроватей сегодня отгружено {total} шт.\nОтгрузки на сегодня обнулены."
-    ctx.show(text, [MENU_BTN])
-    who = (users.get(ctx.uid) or {}).get("name") or ""
-    for uid, u in list(users.items()):
-        if u["role"] == "manager" and uid != ctx.uid and allowed(uid, "manager"):
-            mx.send({"type": "user", "id": uid}, f"✅ Кроватей сегодня отгружено {total} шт." + (f" (отметил(а): {who})" if who else ""))
+    notify_managers(f"✅ Кроватей сегодня отгружено {total} шт." + (f" (отметил(а): {who})" if who else ""), skip_uid)
+    return f"✅ Кроватей сегодня отгружено {total} шт.\nОтгрузки на сегодня обнулены."
+
+
+def production_shipped(ctx: Ctx) -> None:
+    ctx.show(mark_shipped((users.get(ctx.uid) or {}).get("name") or "", ctx.uid), [MENU_BTN])
 
 
 def production(ctx: Ctx, payload: str) -> None:
@@ -611,28 +618,19 @@ def inv_view(ctx: Ctx, kind: str, note: str = "") -> None:
                                 [cb("🆕 Новая позиция", f"p:in:{kind}")], MENU_BTN])
 
 
-def save_inv(ctx: Ctx, name: str, text: str, kind: str, action: str) -> None:
-    back = [[cb("⬅️ Назад", f"p:inv:{kind}")]]
-    if action == "in":  # «Название, ед., минимум»
-        bits = [b.strip() for b in text.split(",")]
-        if not bits[0]:
-            return ctx.show("⚠️ Напишите название, например: Труба 40×20, м, 50", back)
-        mn = 0.0
-        if len(bits) > 2:
-            try:
-                mn = float(bits[2].replace(",", ".")) if bits[2] else 0.0
-            except ValueError:
-                return ctx.show("⚠️ Минимум должен быть числом, например: Труба 40×20, м, 50", back)
-        if any(i["name"].lower() == bits[0].lower() for i in sheets.inv_get(kind)):
-            return ctx.show(f"⚠️ «{bits[0]}» уже есть в списке.", back)
-        sheets.inv_new(kind, bits[0], bits[1] if len(bits) > 1 else "", mn)
-        pending.pop(ctx.uid, None)
-        return inv_view(ctx, kind, f"✅ Добавлена позиция: {bits[0]}")
-    items = sheets.inv_get(kind)
-    parsed = logic.parse_inv(text, items)
-    if parsed and isinstance(parsed[0], dict):
-        return ctx.show("⚠️ " + parsed[0]["error"], back)
-    sign = 1 if action == "ia" else -1
+def inv_create(kind: str, name: str, unit: str = "", minimum: float = 0.0) -> str:
+    """Новая позиция склада. Возвращает текст ошибки или пустую строку."""
+    name = " ".join((name or "").split())
+    if not name:
+        return "Напишите название"
+    if any(i["name"].lower() == name.lower() for i in sheets.inv_get(kind)):
+        return f"«{name}» уже есть в списке."
+    sheets.inv_new(kind, name, (unit or "").strip(), minimum or 0.0)
+    return ""
+
+
+def inv_apply(kind: str, parsed: list, sign: int, skip_uid=None) -> tuple:
+    """Приход (sign=1) или расход (sign=-1) по [(позиция, число)]. Возвращает (строки «записано», предупреждения)."""
     done, low = [], []
     for item, n in parsed:
         new = max(0.0, item["qty"] + sign * n)
@@ -642,11 +640,32 @@ def save_inv(ctx: Ctx, name: str, text: str, kind: str, action: str) -> None:
         if sign < 0 and item["min"] and new < item["min"]:
             low.append(f"⚠️ {config.INV_TITLES[kind]}: {item['name']} — осталось {logic.fmt_qty(new)} {item['unit']}, "
                        f"минимум {logic.fmt_qty(item['min'])}")
-    pending.pop(ctx.uid, None)
     for text_low in low:
-        for uid, u in list(users.items()):
-            if u["role"] == "manager" and uid != ctx.uid and allowed(uid, "manager"):
-                mx.send({"type": "user", "id": uid}, text_low)
+        notify_managers(text_low, skip_uid)
+    return done, low
+
+
+def save_inv(ctx: Ctx, name: str, text: str, kind: str, action: str) -> None:
+    back = [[cb("⬅️ Назад", f"p:inv:{kind}")]]
+    if action == "in":  # «Название, ед., минимум»
+        bits = [b.strip() for b in text.split(",")]
+        mn = 0.0
+        if len(bits) > 2:
+            try:
+                mn = float(bits[2].replace(",", ".")) if bits[2] else 0.0
+            except ValueError:
+                return ctx.show("⚠️ Минимум должен быть числом, например: Труба 40×20, м, 50", back)
+        err = inv_create(kind, bits[0], bits[1] if len(bits) > 1 else "", mn)
+        if err:
+            return ctx.show("⚠️ " + err + ", например: Труба 40×20, м, 50", back)
+        pending.pop(ctx.uid, None)
+        return inv_view(ctx, kind, f"✅ Добавлена позиция: {bits[0]}")
+    items = sheets.inv_get(kind)
+    parsed = logic.parse_inv(text, items)
+    if parsed and isinstance(parsed[0], dict):
+        return ctx.show("⚠️ " + parsed[0]["error"], back)
+    done, low = inv_apply(kind, parsed, 1 if action == "ia" else -1, ctx.uid)
+    pending.pop(ctx.uid, None)
     inv_view(ctx, kind, "✅ Записано:\n" + "\n".join(done) + ("\n\n" + "\n".join(low) if low else ""))
 
 
@@ -658,16 +677,39 @@ def frames_view(ctx: Ctx, note: str = "") -> None:
     ctx.show("\n".join(lines), [[cb("➕ Добавить каркас", "p:fradd")], MENU_BTN])
 
 
+def frames_apply(items: list, who: str) -> list:
+    """[(ширина, изменение)] -> строки «120: +8 → теперь 10 шт.»."""
+    done = []
+    for w, d in items:
+        new = sheets.frames_add(w, d, who)
+        done.append(f"{w}: {'+' if d > 0 else ''}{d} → теперь {new} шт.")
+    return done
+
+
 def save_frames(ctx: Ctx, name: str, text: str) -> None:
     items = logic.parse_frames(text, sheets.frame_widths())
     if items and isinstance(items[0], dict):
         return ctx.show("⚠️ " + items[0]["error"], [[cb("⬅️ Назад", "p:fr")]])
-    done = []
-    for w, d in items:
-        new = sheets.frames_add(w, d, name)
-        done.append(f"{w}: {'+' if d > 0 else ''}{d} → теперь {new} шт.")
+    done = frames_apply(items, name)
     pending.pop(ctx.uid, None)
     frames_view(ctx, "✅ Записано:\n" + "\n".join(done))
+
+
+def stock_change(code: str, delta: int, who: str) -> str:
+    """Покрашенные каркасы: прибавить delta (минус — убрать). Прибавка списывает столько же сваренных каркасов."""
+    before = (sheets.latest_stock().get(code) or (0, ""))[0]
+    after = max(0, before + delta)
+    sheets.add_stock(code, after, who)
+    extra = ""
+    if after > before:  # на склад прибавились готовые кровати: этот размер (любого цвета) списываем со сваренных каркасов
+        try:
+            width = int(code.split(".")[0])
+            left = sheets.frames_add(width, -(after - before), who + " (в остатки)")
+            extra = f"\n🔩 Каркасов {width} списано: {after - before}, осталось {left} шт."
+        except Exception:
+            log.exception("Не смог списать каркасы")
+    sign = "+" if delta > 0 else ""
+    return f"✅ {code}: {sign}{delta} → теперь покрашено {after} шт." + extra
 
 
 def save_stock_from_text(ctx: Ctx, name: str, text: str) -> None:
@@ -678,19 +720,7 @@ def save_stock_from_text(ctx: Ctx, name: str, text: str) -> None:
                         [[cb("↩️ Отмена", "p:stock")]])
     code = pending.pop(ctx.uid)[1]
     delta = int(m.group(2)) * (-1 if m.group(1) == "-" else 1)
-    before = (sheets.latest_stock().get(code) or (0, ""))[0]
-    after = max(0, before + delta)
-    sheets.add_stock(code, after, name)
-    extra = ""
-    if after > before:  # на склад прибавились готовые кровати: этот размер (любого цвета) списываем со сваренных каркасов
-        try:
-            width = int(code.split(".")[0])
-            left = sheets.frames_add(width, -(after - before), name + " (в остатки)")
-            extra = f"\n🔩 Каркасов {width} списано: {after - before}, осталось {left} шт."
-        except Exception:
-            log.exception("Не смог списать каркасы")
-    sign = "+" if delta > 0 else ""
-    ctx.show(f"✅ {code}: {sign}{delta} → теперь покрашено {after} шт." + extra,
+    ctx.show(stock_change(code, delta, name),
              [[cb("✏️ Внести ещё", "p:stock")], [cb("📊 Сколько сейчас", "p:cur")], MENU_BTN])
 
 
@@ -898,13 +928,17 @@ def market_check():
         return None
 
 
-def process_pdf(url: str, filename: str, say, who: str, uid=None) -> bool:
-    """Читает PDF и пишет заказы в таблицу. say(text, rows) — как отвечать. True — файл обработан."""
+def process_pdf(url: str, filename: str, say, who: str, uid=None, data: bytes = None) -> bool:
+    """Читает PDF и пишет заказы в таблицу. say(text, rows) — как отвечать. True — файл обработан.
+    data — сам файл (из приложения); иначе скачиваем по url (из MAX)."""
     say(f"Читаю файл «{filename}»…")
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "orders.pdf")
         try:
-            mx.download(url, path)
+            if data is not None:
+                Path(path).write_bytes(data)
+            else:
+                mx.download(url, path)
             orders = parse_pdf(path)
         except ValueError as e:
             say(f"⚠️ {e}", [MENU_BTN])
@@ -1342,7 +1376,9 @@ def main() -> None:
                     "Напишите боту /id и впишите свой ID в настройки.")
     try:  # веб-сервер: приложение для сотрудников + навык Алисы
         import webapp
-        webapp.start(deliver=deliver_orders, move=move_orders, notify=notify_managers)
+        webapp.start(deliver=deliver_orders, move=move_orders, notify=notify_managers, shipped=mark_shipped,
+                     stock=stock_change, frames=frames_apply, inv_apply=inv_apply, inv_create=inv_create,
+                     returns=return_apply, pdf=process_pdf, shipped_done=shipped_done)
     except Exception:
         log.exception("Не смог запустить веб-сервер приложения")
     me = mx.get_me()

@@ -49,7 +49,9 @@ self.addEventListener("activate", e => e.waitUntil(self.clients.claim()));
 self.addEventListener("fetch", () => {});
 """
 
-_deps: dict = {"deliver": None, "move": None, "notify": None}
+_deps: dict = {}  # функции бота: deliver, move, notify, shipped, stock, frames, inv_apply, inv_create, returns, pdf
+RETURN_KINDS = {"ya": "Яндекс", "oz": "Озон", "wb": "Вайлдберриз"}
+MAX_PDF = 20 * 1024 * 1024
 _lock = threading.Lock()  # записи в таблицу из приложения — по одной, чтобы не мешали друг другу
 _devices = {"t": 0.0, "data": {}}
 _secret = {"key": b""}
@@ -191,7 +193,18 @@ def courier_data(today: date) -> dict:
         day = today + timedelta(days=n)
         ahead.append({"label": label, "count": len(logic.day_items(orders, day, today)),
                       "text": logic.day_preview(logic.day_items(orders, day, today), day, label)})
-    return {"date": today.strftime("%d.%m"), "ru": ru, "city": city, "ahead": ahead}
+    return {"date": today.strftime("%d.%m"), "ru": ru, "city": city, "ahead": ahead,
+            "returns": {"kinds": RETURN_KINDS, "codes": [{"code": c, "name": logic.code_name(c)} for c in config.STOCK_CODES]}}
+
+
+def courier_pay(today: date) -> dict:
+    try:
+        import costs
+    except ImportError:
+        return {"text": "Расчёт доставок не подключён.", "url": ""}
+    if not costs.enabled():
+        return {"text": "Расчёт доставок пока не настроен. Попросите менеджера создать таблицу.", "url": ""}
+    return {"text": costs.summary(today), "url": costs.sheet_url()}
 
 
 def _find(today: date, kind: str, key: str) -> list:
@@ -209,21 +222,27 @@ def prod_data(today: date) -> dict:
     rows = []
     for code in config.STOCK_CODES:
         have = stock[code][0] if code in stock else None
-        rows.append({"name": logic.code_name(code), "have": have, "need": need.get(code, 0)})
+        rows.append({"code": code, "name": logic.code_name(code), "have": have, "need": need.get(code, 0)})
     try:
         frames = [{"width": w, "n": n} for w, n in sorted(sheets.frames_get().items())]
     except Exception:
         log.exception("Приложение: каркасы")
         frames = []
+    total = logic.today_total(orders, today)
+    try:
+        done = _deps["shipped_done"](today)
+    except Exception:
+        done = 0
     return {"plan": logic.production_plan(orders, today), "stock": rows, "frames": frames,
-            "today": logic.today_total(orders, today)}
+            "today": max(0, total - done), "shipped": done}
 
 
 def keeper_data() -> dict:
     res = {}
     for kind in ("raw", "tmc"):
         try:
-            res[kind] = [{"name": i["name"], "qty": logic.fmt_qty(i["qty"]), "unit": i["unit"],
+            res[kind] = [{"row": i["row"], "name": i["name"], "qty": logic.fmt_qty(i["qty"]), "unit": i["unit"],
+                          "min": logic.fmt_qty(i["min"]) if i["min"] else "",
                           "low": bool(i["min"] and i["qty"] < i["min"])} for i in sheets.inv_get(kind)]
         except Exception:
             log.exception("Приложение: склад %s", kind)
@@ -234,7 +253,20 @@ def keeper_data() -> dict:
 def manager_data(today: date) -> dict:
     orders = sheets.read_orders()
     open_ = [o for o in orders if not o["status"]]
+    links = []
+    try:
+        links.append({"title": "📊 Таблица заказов", "url": sheets.sheet_url("orders")})
+        links.append({"title": "📦 Таблица остатков", "url": sheets.sheet_url("stock")})
+    except Exception:
+        log.exception("Приложение: ссылки на таблицы")
+    try:
+        import costs
+        if costs.enabled():
+            links.append({"title": "💰 Расчёт доставок", "url": costs.sheet_url()})
+    except ImportError:
+        pass
     return {
+        "links": links,
         "today": logic.today_total(orders, today),
         "open": sum(logic.qty(o) for o in open_),
         "city": sum(logic.qty(o) for o in open_ if logic.is_city(o)),
@@ -246,6 +278,34 @@ def manager_data(today: date) -> dict:
 # --------------------------------------------------------------- запросы
 ROLE_TABS = {"manager": ["courier", "prod", "keeper", "manager"], "courier": ["courier"],
              "prod": ["prod"], "keeper": ["keeper"]}
+
+
+def _int(x, default: int) -> int:
+    try:
+        return int(float(str(x).replace(",", ".")))
+    except (TypeError, ValueError):
+        return default
+
+
+def _num(x) -> float:
+    try:
+        return max(0.0, float(str(x or 0).replace(",", ".").replace(" ", "")))
+    except ValueError:
+        return 0.0
+
+
+def upload_pdf(token: str, filename: str, data: bytes) -> tuple:
+    me = devices().get(code_for(token)) if re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token or "") else None
+    if not me or me["role"] != "manager":
+        return 403, {"error": "Загружать файлы может только менеджер"}
+    if not data.startswith(b"%PDF"):
+        return 400, {"error": "Нужен именно PDF-файл"}
+    said = []
+    with _lock:
+        ok = _deps["pdf"]("", filename or "file.pdf", lambda text, rows=None: said.append(text),
+                          f"{me['name'] or 'менеджер'} (приложение)", None, data)
+    msg = "\n".join(t for t in said if not t.startswith("Читаю файл"))
+    return (200, {"ok": True, "message": msg}) if ok else (400, {"error": msg or "Не получилось прочитать файл"})
 
 
 def api(method: str, path: str, token: str, body: dict) -> tuple:
@@ -298,6 +358,59 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         except Exception:
             log.exception("Приложение: не смог уведомить менеджеров о переносе")
         return 200, {"ok": True, "message": f"📅 Перенесено на {new}"}
+
+    if path == "/api/courier/pay" and "courier" in tabs:
+        return 200, courier_pay(today)
+
+    if method == "POST" and path == "/api/courier/return" and "courier" in tabs:
+        kind = RETURN_KINDS.get(body.get("kind"))
+        code = str(body.get("code") or "")
+        legs = str(body.get("legs") or "30")
+        qty = _int(body.get("qty"), 1)
+        if not kind or code not in config.STOCK_CODES or legs not in ("25", "30", "35") or not 1 <= qty <= 99:
+            return 400, {"error": "Выберите площадку, размер, ножки и количество"}
+        w, c = code.split(".")
+        with _lock:
+            ok, lines = _deps["returns"](f"{w}/{legs} {'ч' if c == '04' else 'б'} {qty}", kind, f"{who} (приложение)")
+        return (200 if ok else 400), ({"ok": True, "message": "\n".join(lines)} if ok else {"error": "\n".join(lines)})
+
+    if method == "POST" and path.startswith("/api/prod/") and "prod" in tabs:
+        with _lock:
+            if path == "/api/prod/shipped":
+                return 200, {"ok": True, "message": _deps["shipped"](f"{who} (приложение)")}
+            delta = _int(body.get("delta"), 0)
+            if not delta or abs(delta) > 999:
+                return 400, {"error": "Укажите количество"}
+            if path == "/api/prod/stock":
+                code = str(body.get("code") or "")
+                if code not in config.STOCK_CODES:
+                    return 400, {"error": "Нет такого размера"}
+                return 200, {"ok": True, "message": _deps["stock"](code, delta, f"{who} (приложение)")}
+            if path == "/api/prod/frames":
+                width = _int(body.get("width"), 0)
+                if width not in sheets.frame_widths():
+                    return 400, {"error": "Нет такого размера"}
+                return 200, {"ok": True, "message": "✅ " + "\n".join(_deps["frames"]([(width, delta)], f"{who} (приложение)"))}
+
+    if method == "POST" and path.startswith("/api/keeper/") and "keeper" in tabs:
+        kind = body.get("kind")
+        if kind not in config.INV_TABS:
+            return 400, {"error": "Выберите раздел склада"}
+        with _lock:
+            if path == "/api/keeper/new":
+                err = _deps["inv_create"](kind, str(body.get("name") or "")[:60], str(body.get("unit") or "")[:15],
+                                          _num(body.get("min")))
+                return (400, {"error": err}) if err else (200, {"ok": True, "message": "✅ Позиция добавлена"})
+            if path == "/api/keeper/move":
+                n = _num(body.get("qty"))
+                if n <= 0:
+                    return 400, {"error": "Укажите количество больше нуля"}
+                item = next((i for i in sheets.inv_get(kind)
+                             if i["row"] == _int(body.get("row"), 0) and i["name"] == body.get("name")), None)
+                if not item:
+                    return 409, {"error": "Список поменялся, обновите экран"}
+                done, low = _deps["inv_apply"](kind, [(item, n)], 1 if body.get("sign") == "in" else -1)
+                return 200, {"ok": True, "message": "✅ " + "\n".join(done + low)}
 
     if method == "POST" and path == "/api/manager/device" and "manager" in tabs:
         new_code, role = norm_code(body.get("code")), body.get("role")
@@ -384,6 +497,18 @@ class Handler(BaseHTTPRequestHandler):
                 log.exception("Алиса: не смог обработать запрос")
                 return self._json(200, {"response": {"text": "Что-то пошло не так, попробуйте ещё раз.",
                                                      "end_session": False}, "version": "1.0"})
+        if path == "/api/manager/pdf":
+            size = int(self.headers.get("Content-Length") or 0)
+            if size > MAX_PDF:
+                return self._json(400, {"error": "Файл больше 20 МБ"})
+            data = self.rfile.read(size)
+            from urllib.parse import unquote
+            try:
+                code, res = upload_pdf(self.headers.get("X-Token") or "", unquote(self.headers.get("X-Filename") or ""), data)
+            except Exception:
+                log.exception("Приложение: загрузка PDF")
+                code, res = 500, {"error": "Не получилось обработать файл"}
+            return self._json(code, res)
         if path.startswith("/api/"):
             try:
                 body = json.loads(self._body() or b"{}")
@@ -396,9 +521,10 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-def start(deliver, move, notify) -> None:
-    """Запускает веб-сервер в отдельном потоке: приложение на /, Алиса на /alice/<секрет>."""
-    _deps.update(deliver=deliver, move=move, notify=notify)
+def start(**hooks) -> None:
+    """Запускает веб-сервер в отдельном потоке: приложение на /, Алиса на /alice/<секрет>.
+    hooks — функции бота, которые делают то же, что кнопки в MAX."""
+    _deps.update(hooks)
     srv = ThreadingHTTPServer(("0.0.0.0", config.ALICE_PORT), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     log.info("Приложение для сотрудников: слушаю порт %d", config.ALICE_PORT)
