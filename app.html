@@ -356,24 +356,30 @@ function drawWeld(d){
       ${d.weld.map((w, i) => `<tr class="tap ${w.todo ? "short" : ""}" onclick="frameForm(${i})"><td>${w.width}</td>
         <td class="n">${w.frames}</td><td class="n">${w.todo || ""}</td>${d.blanks.ok ? `<td class="n">${en[w.width] ?? "—"}</td>` : ""}</tr>`).join("")}
     </table></div>
-    <h2>Ножки · штучно</h2>
-    ${d.legs.length ? `<div class="card" style="padding:6px 10px"><table><tr><th>Высота</th><th class="n">Есть, шт.</th></tr>
-      ${d.legs.map((l, i) => `<tr class="tap" onclick="legsForm(${i})"><td>${l.height}</td><td class="n">${l.n}</td></tr>`).join("")}</table>
-      <button class="btn" style="width:100%;margin-top:8px" onclick="legsForm()">🦵 Внести ножки</button></div>`
-      : `<div class="card muted">Нет блока «Размер ножки» на листе сваренных каркасов.</div>`}
+    ${legsBlock(d.legs, "welded", "Сваренные ножки · штучно", "🦵 Внести сваренные ножки")}
     <div class="muted" style="margin:6px 4px">«Сварить» = нужно по заказам − уже покрашено − уже сварено. «Загот.» — на сколько каркасов хватает заготовок.
     Сваренный каркас сам списывает заготовки: 1 комплект + 4 подножки + 22 ламели.</div>`;
 }
 
-function legsForm(i){
-  const L = window._prod.legs;
+function legsForm(i, kind){
+  kind = kind || "welded";
+  const L = kind === "painted" ? window._prod.legs_painted : window._prod.legs;
   const opts = Object.fromEntries(L.map(l => [String(l.height), `${l.height} · ${l.n} шт.`]));
-  const h = () => `+document.getElementById('l-h').dataset.v`;
-  sheet(`<h3>🦵 Ножки</h3><div class="muted">Выберите высоту и сколько штук сварили. Ошиблись — «Убрать».</div>
+  const h = `+document.getElementById('l-h').dataset.v`;
+  const title = kind === "painted" ? "🎨 Окрашенные ножки" : "🦵 Сваренные ножки";
+  const hint = kind === "painted" ? "Выберите высоту и сколько покрасили. Столько же спишется из сваренных ножек." : "Выберите высоту и сколько штук сварили. Ошиблись — «Убрать».";
+  sheet(`<h3>${title}</h3><div class="muted">${hint}</div>
     <label class="l">Высота · сейчас есть</label>${seg("l-h", opts, String((L[i ?? 0] || L[0]).height))}
     <label class="l">Сколько штук</label>${stepper("l-n", 5)}
-    <div class="actions"><button class="btn" onclick="act(this,'/api/prod/legs',{height:${h()},delta:-num('l-n')})">− Убрать</button>
-    <button class="btn main" onclick="act(this,'/api/prod/legs',{height:${h()},delta:num('l-n')})">+ Добавить</button></div>`);
+    <div class="actions"><button class="btn" onclick="act(this,'/api/prod/legs',{kind:'${kind}',height:${h},delta:-num('l-n')})">− Убрать</button>
+    <button class="btn main" onclick="act(this,'/api/prod/legs',{kind:'${kind}',height:${h},delta:num('l-n')})">+ Добавить</button></div>`);
+}
+
+function legsBlock(list, kind, title, btn){
+  return `<h2>${title}</h2>` + (list.length ? `<div class="card" style="padding:6px 10px"><table><tr><th>Высота</th><th class="n">Есть, шт.</th></tr>
+    ${list.map((l, i) => `<tr class="tap" onclick="legsForm(${i},'${kind}')"><td>${l.height}</td><td class="n">${l.n}</td></tr>`).join("")}</table>
+    <button class="btn" style="width:100%;margin-top:8px" onclick="legsForm(0,'${kind}')">${btn}</button></div>`
+    : `<div class="card muted">Нет блока «Размер ножки» на листе.</div>`);
 }
 
 function drawPaint(d){
@@ -387,26 +393,51 @@ function drawPaint(d){
     <h2>Окрашенные · не хватает ${lack} шт.</h2>
     <div class="card" style="padding:6px 10px"><table>
       <tr><th>Кровать</th><th class="n">Есть</th><th class="n">Нужно</th><th class="n">Не хват.</th></tr>${rows}</table></div>
-    <div class="muted" style="margin:6px 4px">Добавленные кровати сами списываются со сваренных каркасов.</div>`;
+    <div class="muted" style="margin:6px 4px">Добавленные кровати сами списываются со сваренных каркасов.</div>
+    ${legsBlock(d.legs_painted || [], "painted", "Окрашенные ножки · штучно", "🎨 Внести окрашенные ножки")}`;
+}
+
+function shortText(e){
+  if (!e.short) return "всего хватает";
+  const parts = e.short.split(", ");
+  return parts.length <= 2 ? e.short : `не хватает ${parts.length} видов деталей`;
 }
 
 function drawBlanks(d){
   const b = d.blanks;
   if (!b.ok) return `<div class="card muted">Не нашёл лист «Заготовки» в таблице.</div>`;
-  const sizes = Object.keys(b.sizes);
-  const table = (names, get) => `<table class="bt"><tr><th>Деталь</th>${sizes.map(w => `<th class="n">${w}</th>`).join("")}</tr>
-    ${names.map(n => `<tr><td>${esc(n)}</td>${sizes.map(w => `<td class="n">${get(w, n)}</td>`).join("")}</tr>`).join("")}</table>`;
   return `
+    <button class="btn main big" style="width:100%;margin-bottom:6px" onclick="blanksForm()">➕ Добавить / убрать заготовки</button>
     <h2>На сколько кроватей хватает</h2>
     <div class="card" style="padding:6px 10px"><table>
-      <tr><th>Размер</th><th class="n">Хватает</th><th>Не хватает</th></tr>
-      ${b.enough.map(e => `<tr class="${e.n ? "" : "short"}"><td>${e.width}</td><td class="n"><b>${e.n}</b></td><td style="font-size:13px">${esc(e.short || "всего хватает")}</td></tr>`).join("")}
+      <tr><th>Размер</th><th class="n">Хватает</th><th>Подробно</th></tr>
+      ${b.enough.map(e => `<tr class="tap ${e.n ? "" : "short"}" onclick="blanksSize('${e.width}')"><td><b>${e.width}</b></td>
+        <td class="n"><b>${e.n}</b></td><td style="font-size:13px">${esc(shortText(e))}</td></tr>`).join("")}
     </table></div>
-    <button class="btn main big" style="width:100%;margin:10px 0" onclick="blanksForm()">➕ Добавить / убрать заготовки</button>
-    <details class="card"><summary class="row"><span class="grow title">📦 Остатки заготовок</span><span class="badge">▾</span></summary>
-      <div style="overflow-x:auto;margin-top:8px">${table(b.per, (w, n) => b.sizes[w][n] || "")}</div>
-      ${b.common.length ? `<table style="margin-top:10px">${b.common.map(n => `<tr><td>${esc(n)}</td><td class="n">${b.common_qty[n] || 0}</td></tr>`).join("")}</table>` : ""}
-    </details>`;
+    <div class="muted" style="margin:6px 4px">Нажмите на размер — откроется, каких деталей сколько есть и сколько не хватает.</div>
+    <button class="btn" style="width:100%;margin-top:6px" onclick="blanksAll()">📦 Все остатки заготовок</button>`;
+}
+
+function blanksSize(w){
+  const b = window._prod.blanks, parts = b.sizes[w], e = b.enough.find(x => String(x.width) === String(w));
+  const rows = b.per.map(n => {
+    const k = b.bom[n], have = parts[n] || 0, lack = k ? Math.max(0, k * (e.n + 1) - have) : 0;
+    return `<tr class="${lack ? "short" : ""}"><td>${esc(n)}</td><td class="n">${have}</td><td class="n">${k || "—"}</td><td class="n">${lack || ""}</td></tr>`;
+  }).join("");
+  sheet(`<h3>🪚 Заготовки ${esc(w)}</h3><div class="muted">Хватает на <b>${e.n}</b> кров. «Не хватает» — сколько докупить/нарезать, чтобы собрать ещё одну.</div>
+    <table><tr><th>Деталь</th><th class="n">Есть</th><th class="n">На 1</th><th class="n">Не хват.</th></tr>${rows}</table>
+    <div class="actions"><button class="btn" onclick="closeSheet()">Закрыть</button>
+    <button class="btn main" onclick="blanksForm('${esc(w)}')">➕ Внести</button></div>`);
+}
+
+function blanksAll(){
+  const b = window._prod.blanks, sizes = Object.keys(b.sizes);
+  page("Остатки заготовок", `
+    <div class="card" style="padding:6px 10px;overflow-x:auto"><table class="bt"><tr><th>Деталь</th>${sizes.map(w => `<th class="n">${w}</th>`).join("")}</tr>
+      ${b.per.map(n => `<tr><td>${esc(n)}</td>${sizes.map(w => `<td class="n">${b.sizes[w][n] || 0}</td>`).join("")}</tr>`).join("")}
+      <tr><td><b>Хватает на</b></td>${sizes.map(w => `<td class="n"><b>${(b.enough.find(e => String(e.width) === w) || {}).n ?? 0}</b></td>`).join("")}</tr></table></div>
+    ${b.common.length ? `<h2>Общие</h2><div class="card" style="padding:6px 10px"><table>${b.common.map(n => `<tr><td>${esc(n)}</td><td class="n">${b.common_qty[n] || 0}</td></tr>`).join("")}</table></div>` : ""}
+    <button class="btn main" style="width:100%;margin-top:10px" onclick="blanksForm()">➕ Добавить / убрать заготовки</button>`);
 }
 
 function blanksForm(size){

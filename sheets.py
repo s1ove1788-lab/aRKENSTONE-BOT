@@ -651,27 +651,43 @@ def frames_get() -> dict:
     return res
 
 
-def legs_get() -> dict:
-    """{высота: сколько ножек штучно} из блока «Размер ножки» на листе сваренных каркасов."""
-    values = _frames_ws().get_all_values()
-    res = {}
-    for v in values[_legs_start(values) + 1:]:
-        if v and v[0].strip().isdigit():
-            res[int(v[0])] = _num(v[1]) if len(v) > 1 else 0
-    return res
+def _legs_cells(values: list) -> dict:
+    """Блок «Размер ножки» в любом месте листа: {высота: (строка, столбец количества)} — номера с единицы."""
+    for r, row in enumerate(values):
+        for c, cell in enumerate(row):
+            if cell.strip().lower().startswith("размер нож"):
+                res = {}
+                for rr in range(r + 1, len(values)):
+                    v = values[rr][c].strip() if c < len(values[rr]) else ""
+                    if not v.isdigit():
+                        break
+                    res[int(v)] = (rr + 1, c + 2)
+                return res
+    return {}
 
 
-def legs_add(height: int, delta: int) -> int:
+def _legs_ws(kind: str):
+    """Ножки: сваренные — на листе сваренных каркасов, окрашенные — на листе «Остатки»."""
+    return _stock_ws() if kind == "painted" else _frames_ws()
+
+
+def legs_get(kind: str = "welded") -> dict:
+    """{высота: сколько ножек штучно}."""
+    values = _legs_ws(kind).get_all_values()
+    return {h: _num(_cell(values, r, c - 1)) for h, (r, c) in sorted(_legs_cells(values).items())}
+
+
+def legs_add(height: int, delta: int, kind: str = "welded") -> int:
     """Меняет число ножек высоты height (ниже нуля не уходит). Возвращает новое число."""
-    ws = _frames_ws()
+    ws = _legs_ws(kind)
     values = ws.get_all_values()
-    start = _legs_start(values)
-    for i, v in enumerate(values[start + 1:], start=start + 2):
-        if v and v[0].strip() == str(height):
-            new = max(0, (_num(v[1]) if len(v) > 1 else 0) + delta)
-            ws.update_cell(i, 2, new)
-            return new
-    raise ValueError(f"нет строки для ножек {height}")
+    cell = _legs_cells(values).get(int(height))
+    if not cell:
+        raise ValueError(f"нет строки для ножек {height}")
+    r, c = cell
+    new = max(0, _num(_cell(values, r, c - 1)) + delta)
+    ws.update_cell(r, c, new)
+    return new
 
 
 def frames_add(width: int, delta: int, who: str = "") -> int:
