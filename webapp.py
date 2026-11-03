@@ -215,6 +215,14 @@ def _find(today: date, kind: str, key: str) -> list:
     return [o for o, _ in items if o["order_no"] == key and logic.is_city(o)][:1]
 
 
+def _shipped_today(today: date) -> int:
+    """Сколько кроватей производство уже отметило отгруженными сегодня."""
+    try:
+        return _deps["shipped_done"](today)
+    except Exception:
+        return 0
+
+
 def prod_data(today: date) -> dict:
     orders = sheets.read_orders()
     stock = sheets.latest_stock()
@@ -229,10 +237,7 @@ def prod_data(today: date) -> dict:
         log.exception("Приложение: каркасы")
         frames = []
     total = logic.today_total(orders, today)
-    try:
-        done = _deps["shipped_done"](today)
-    except Exception:
-        done = 0
+    done = _shipped_today(today)
     return {"plan": logic.production_plan(orders, today), "stock": rows, "frames": frames,
             "today": max(0, total - done), "shipped": done}
 
@@ -267,7 +272,7 @@ def manager_data(today: date) -> dict:
         pass
     return {
         "links": links,
-        "today": logic.today_total(orders, today),
+        "today": max(0, logic.today_total(orders, today) - _shipped_today(today)),
         "open": sum(logic.qty(o) for o in open_),
         "city": sum(logic.qty(o) for o in open_ if logic.is_city(o)),
         "devices": [{"code": c, "name": d["name"], "role": d["role"], "label": config.ROLE_LABELS[d["role"]]}
