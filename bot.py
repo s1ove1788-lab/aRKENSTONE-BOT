@@ -446,17 +446,43 @@ def courier(ctx: Ctx, payload: str) -> None:
         return ctx.show("📅 Перенос доставки\n\nНапишите дату, на которую переносим, например:\n1.11\n\n"
                         "Заказ сразу перейдёт на этот день.", [[cb("⬅️ Отмена", f"c:{kind}:{ident}")]])
     if action == "done":
-        marked = sheets.mark_delivered([o["order_no"] for o in orders])
-        try:
-            record_shipments(marked, (users.get(ctx.uid) or {}).get("name") or "курьер", today)
-        except Exception:
-            log.exception("Не смог записать отгрузку в таблицу отгрузок")
-        try:
-            costs.record(marked, today)
-        except Exception:
-            log.exception("Не смог записать стоимость доставки")
+        deliver_orders(orders, (users.get(ctx.uid) or {}).get("name") or "курьер", today)
         return back(ctx, today, "✅ Записано: доставлено")
     return back(ctx, today, "Оставлено в списке")
+
+
+def move_orders(orders: list, day) -> str:
+    """Переносит заказы на другой день (меняет дату в таблице). Возвращает новую дату текстом, как в таблице."""
+    new = f"{day.day:02d}.{ym_watch.MONTHS[day.month - 1]}"
+    updates = []
+    for o in orders:
+        key = logic.key_text(o)
+        cols = {c for c, v in (("ship", o["ship"]), ("delivery", o["delivery"])) if v and v == key}
+        for c in cols or {"delivery" if logic.is_city(o) else "ship"}:
+            updates.append((o["row"], c, new))
+    sheets.set_order_dates(updates)
+    return new
+
+
+def deliver_orders(orders: list, who: str, today) -> list:
+    """«Доставлен»: статус в таблице, запись в «Отгрузки» со списанием остатков, строка в расчёте доставок."""
+    marked = sheets.mark_delivered([o["order_no"] for o in orders])
+    try:
+        record_shipments(marked, who, today)
+    except Exception:
+        log.exception("Не смог записать отгрузку в таблицу отгрузок")
+    try:
+        costs.record(marked, today)
+    except Exception:
+        log.exception("Не смог записать стоимость доставки")
+    return marked
+
+
+def notify_managers(text: str, skip_uid=None) -> None:
+    """Сообщение в MAX всем менеджерам (кроме skip_uid)."""
+    for uid, u in list(users.items()):
+        if u["role"] == "manager" and uid != skip_uid and allowed(uid, "manager"):
+            mx.send({"type": "user", "id": uid}, text)
 
 
 def save_move(ctx: Ctx, name: str, text: str, kind: str, ident: str) -> None:
@@ -482,22 +508,13 @@ def save_move(ctx: Ctx, name: str, text: str, kind: str, ident: str) -> None:
     if day <= today:
         return ctx.show(f"Дата {day:%d.%m} уже прошла или сегодняшняя. Напишите будущую дату, например: "
                         f"{(today + timedelta(days=1)):%d.%m}", cancel)
-    new = f"{day.day:02d}.{ym_watch.MONTHS[day.month - 1]}"
-    updates = []
-    for o in orders:
-        key = logic.key_text(o)
-        cols = {c for c, v in (("ship", o["ship"]), ("delivery", o["delivery"])) if v and v == key}
-        for c in cols or {"delivery" if logic.is_city(o) else "ship"}:
-            updates.append((o["row"], c, new))
-    sheets.set_order_dates(updates)
+    new = move_orders(orders, day)
     pending.pop(ctx.uid, None)
     place = (orders[0].get("address") or "").strip()
     note = f"📅 Курьер {name} перенёс доставку на {new}: " + ", ".join(f"№ {o['order_no']}" for o in orders[:5])
     if place:
         note += f"\n{logic.short(place, 70)}"
-    for uid, u in list(users.items()):
-        if u["role"] == "manager" and uid != ctx.uid and allowed(uid, "manager"):
-            mx.send({"type": "user", "id": uid}, note)
+    notify_managers(note, ctx.uid)
     return back(ctx, today, f"📅 Перенесено на {new}")
 
 
@@ -1115,6 +1132,11 @@ def handle_message(u: dict) -> None:
             text += "\n\nТак будет выглядеть уведомление (последнее отправление):\n" + res["sample"]
         return ctx.show(text, [MENU_BTN])
 
+    if cmd == "/app":  # пустить телефон в приложение: /app КОД роль Имя (только менеджер)
+        if sender_id not in config.MANAGER_IDS:
+            return ctx.show("Команда только для менеджера.", [MENU_BTN])
+        import webapp
+        return ctx.show(webapp.app_command(raw, name), [MENU_BTN])
     if cmd == "/status":  # диагностика без доступа к логам (только менеджер)
         if sender_id not in config.MANAGER_IDS:
             return
@@ -1318,11 +1340,11 @@ def main() -> None:
     if not config.MANAGER_IDS:
         log.warning("MANAGER_IDS пуст: никто не сможет стать менеджером и загружать PDF. "
                     "Напишите боту /id и впишите свой ID в настройки.")
-    try:
-        import alice
-        alice.start()
+    try:  # веб-сервер: приложение для сотрудников + навык Алисы
+        import webapp
+        webapp.start(deliver=deliver_orders, move=move_orders, notify=notify_managers)
     except Exception:
-        log.exception("Не смог запустить навык Алисы")
+        log.exception("Не смог запустить веб-сервер приложения")
     me = mx.get_me()
     if me.status_code in (401, 403):
         sys.exit("MAX не принял токен. Проверьте MAX_BOT_TOKEN.")

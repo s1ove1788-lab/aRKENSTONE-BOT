@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Arkenstone</title>
+<meta name="theme-color" content="#1d2a24">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<style>
+:root{
+  --bg:#f3f1ec; --card:#ffffff; --ink:#1c1f1d; --muted:#6c716d; --line:#e2dfd7;
+  --accent:#1f6b4f; --accent-ink:#ffffff; --warn:#b4531a; --warn-bg:#fbeee4;
+  --ok-bg:#e5f2ec; --bar:#1d2a24; --bar-ink:#e9efe9; --chip:#ece9e1;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#121614; --card:#1b201d; --ink:#e8ebe8; --muted:#97a09a; --line:#2b322e;
+    --accent:#4fb487; --accent-ink:#0d1a13; --warn:#f0965a; --warn-bg:#33231a;
+    --ok-bg:#1d2d25; --bar:#0d110f; --bar-ink:#e9efe9; --chip:#252b27;
+  }
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--ink);
+  font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+header{position:sticky;top:0;z-index:5;background:var(--bar);color:var(--bar-ink);
+  padding:calc(12px + env(safe-area-inset-top)) 16px 12px;display:flex;align-items:center;gap:12px}
+header h1{font-size:18px;margin:0;flex:1;letter-spacing:.2px}
+header .who{font-size:13px;opacity:.75}
+.iconbtn{background:none;border:0;color:inherit;font-size:22px;padding:4px 6px;cursor:pointer}
+main{padding:16px 16px calc(96px + env(safe-area-inset-bottom));max-width:640px;margin:0 auto}
+nav{position:fixed;left:0;right:0;bottom:0;z-index:5;background:var(--card);border-top:1px solid var(--line);
+  display:flex;padding:6px 6px calc(6px + env(safe-area-inset-bottom))}
+nav button{flex:1;background:none;border:0;color:var(--muted);padding:8px 2px;font-size:12px;
+  display:flex;flex-direction:column;align-items:center;gap:2px;border-radius:12px;cursor:pointer}
+nav button span{font-size:22px}
+nav button.on{color:var(--accent);background:var(--chip);font-weight:600}
+h2{font-size:15px;text-transform:uppercase;letter-spacing:.6px;color:var(--muted);margin:22px 4px 10px}
+h2:first-child{margin-top:4px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px 16px;margin-bottom:10px}
+.card.late{border-color:var(--warn);background:var(--warn-bg)}
+.card .top{display:flex;align-items:flex-start;gap:10px;cursor:pointer}
+.card .title{font-weight:600;flex:1;font-size:17px}
+.card .sub{color:var(--muted);font-size:14px;margin-top:2px}
+.badge{background:var(--chip);border-radius:999px;padding:2px 10px;font-size:14px;font-weight:600;white-space:nowrap}
+.late .badge{background:var(--warn);color:#fff}
+.lines{margin:10px 0 0;padding:0;list-style:none}
+.lines li{padding:6px 0;border-top:1px dashed var(--line)}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px}
+.btn{border:0;border-radius:12px;padding:14px 12px;font-size:16px;font-weight:600;cursor:pointer;
+  background:var(--chip);color:var(--ink);text-align:center;text-decoration:none;display:block}
+.btn.main{background:var(--accent);color:var(--accent-ink)}
+.btn.wide{grid-column:1/-1}
+.btn:disabled{opacity:.5}
+.empty{text-align:center;color:var(--muted);padding:28px 10px}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-bottom:6px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:12px;text-align:center}
+.stat b{display:block;font-size:26px}
+.stat small{color:var(--muted);font-size:12px}
+table{width:100%;border-collapse:collapse;font-size:15px}
+td,th{padding:8px 4px;border-top:1px solid var(--line);text-align:left}
+th{color:var(--muted);font-weight:500;font-size:13px;border-top:0}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+tr.short td{color:var(--warn);font-weight:600}
+pre{white-space:pre-wrap;font:inherit;margin:0}
+input,select{width:100%;font:inherit;padding:12px;border-radius:12px;border:1px solid var(--line);
+  background:var(--bg);color:var(--ink);margin-bottom:8px}
+.code{font:700 34px/1.2 ui-monospace,Menlo,Consolas,monospace;letter-spacing:3px;text-align:center;
+  padding:18px;border-radius:16px;background:var(--chip);margin:14px 0;user-select:all}
+.toast{position:fixed;left:50%;bottom:calc(90px + env(safe-area-inset-bottom));transform:translateX(-50%);
+  background:var(--ink);color:var(--bg);padding:12px 18px;border-radius:12px;z-index:9;max-width:90vw;
+  opacity:0;transition:opacity .2s;pointer-events:none}
+.toast.show{opacity:1}
+.row{display:flex;align-items:center;gap:10px}
+.row .grow{flex:1}
+.muted{color:var(--muted);font-size:14px}
+details summary{cursor:pointer;font-weight:600;list-style:none}
+details summary::-webkit-details-marker{display:none}
+.spin{opacity:.6}
+nav[hidden]{display:none}
+.badge:empty{display:none}
+</style>
+</head>
+<body>
+<header>
+  <h1>Arkenstone</h1>
+  <div class="who" id="who"></div>
+  <button class="iconbtn" id="refresh" aria-label="Обновить">⟳</button>
+</header>
+<main id="main"><div class="empty">Загрузка…</div></main>
+<nav id="nav" hidden></nav>
+<div class="toast" id="toast"></div>
+
+<script>
+const TABS = {courier:["🚚","Курьер"], prod:["🏭","Цех"], keeper:["📦","Склад"], manager:["👔","Менеджер"]};
+const ROLES = {courier:"Курьер", prod:"Производство", keeper:"Кладовщик", manager:"Менеджер"};
+let me = null, tab = null, timer = null;
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+function token(){
+  let t = null;
+  try { t = localStorage.getItem("ark_token"); } catch(e) {}
+  if (!t) {
+    const b = new Uint8Array(32); crypto.getRandomValues(b);
+    t = Array.from(b, x => x.toString(16).padStart(2,"0")).join("");
+    try { localStorage.setItem("ark_token", t); } catch(e) {}
+  }
+  return t;
+}
+const TOKEN = token();
+
+async function call(path, body){
+  const r = await fetch(path, {method: body ? "POST" : "GET",
+    headers: {"X-Token": TOKEN, "Content-Type": "application/json"},
+    body: body ? JSON.stringify(body) : undefined});
+  let data = {};
+  try { data = await r.json(); } catch(e) {}
+  if (r.status === 403) { me = null; boot(); throw new Error(data.error || "Нет доступа"); }
+  if (!r.ok) throw new Error(data.error || "Ошибка связи");
+  return data;
+}
+
+function toast(text){
+  const t = $("#toast"); t.textContent = text; t.classList.add("show");
+  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove("show"), 2600);
+}
+
+async function boot(){
+  try {
+    me = await call("/api/me");
+  } catch(e) {
+    $("#main").innerHTML = `<div class="empty">Нет связи с сервером.<br><br><button class="btn" onclick="boot()">Повторить</button></div>`;
+    return;
+  }
+  if (!me.ok) return showCode();
+  $("#who").textContent = (me.name ? me.name + " · " : "") + me.label;
+  const nav = $("#nav");
+  nav.hidden = me.tabs.length < 2;
+  nav.innerHTML = me.tabs.map(k => `<button data-tab="${k}"><span>${TABS[k][0]}</span>${TABS[k][1]}</button>`).join("");
+  nav.querySelectorAll("button").forEach(b => b.onclick = () => open(b.dataset.tab));
+  let saved = null; try { saved = localStorage.getItem("ark_tab"); } catch(e) {}
+  open(me.tabs.includes(saved) ? saved : me.tabs[0]);
+}
+
+function showCode(){
+  $("#nav").hidden = true; $("#who").textContent = "";
+  $("#main").innerHTML = `
+    <div class="card">
+      <div class="title">Добро пожаловать</div>
+      <p class="muted">Это рабочее приложение компании. Отправьте этот код менеджеру — он добавит вас, и откроется ваш экран.</p>
+      <div class="code">${esc(me.code)}</div>
+      <div class="actions">
+        <button class="btn" id="copy">Скопировать</button>
+        <button class="btn" id="share">Отправить</button>
+        <button class="btn main wide" id="check">Проверить доступ</button>
+      </div>
+    </div>`;
+  $("#copy").onclick = async () => { try { await navigator.clipboard.writeText(me.code); toast("Код скопирован"); } catch(e) { toast("Не вышло, перепишите код вручную"); } };
+  $("#share").onclick = async () => {
+    const text = `Мой код для приложения Arkenstone: ${me.code}`;
+    if (navigator.share) { try { await navigator.share({text}); } catch(e) {} }
+    else { try { await navigator.clipboard.writeText(text); toast("Текст скопирован"); } catch(e) {} }
+  };
+  $("#check").onclick = () => { toast("Проверяю…"); boot(); };
+}
+
+function open(k){
+  tab = k; try { localStorage.setItem("ark_tab", k); } catch(e) {}
+  document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === k));
+  load();
+}
+
+async function load(){
+  clearInterval(timer);
+  $("#refresh").classList.add("spin");
+  try {
+    const data = await call("/api/" + tab);
+    ({courier: drawCourier, prod: drawProd, keeper: drawKeeper, manager: drawManager})[tab](data);
+  } catch(e) {
+    if (me) $("#main").innerHTML = `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="load()">Повторить</button></div>`;
+  } finally {
+    $("#refresh").classList.remove("spin");
+    timer = setInterval(() => { if (!document.querySelector(".open-form")) load(); }, 60000);
+  }
+}
+$("#refresh").onclick = () => me && me.ok ? load() : boot();
+document.addEventListener("visibilitychange", () => { if (!document.hidden && me && me.ok) load(); });
+
+/* ------------------------------ курьер */
+function drawCourier(d){
+  const card = (kind, it, inner, sub) => `
+    <div class="card ${it.late ? "late" : ""}" data-kind="${kind}" data-key="${esc(it.key)}">
+      <div class="top" onclick="this.parentNode.querySelector('.body').hidden^=1">
+        <div class="grow"><div class="title">${inner}</div>${sub ? `<div class="sub">${sub}</div>` : ""}</div>
+        <span class="badge">${it.late ? "просрочен" : (it.count ? it.count + " шт." : "")}</span>
+      </div>
+      <div class="body" hidden>
+        ${it.lines ? `<ul class="lines">${it.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>` : ""}
+        <div class="actions">
+          ${it.tel ? `<a class="btn" href="tel:${esc(it.tel)}">📞 Позвонить</a>` : ""}
+          ${it.address && kind === "city" ? `<a class="btn" target="_blank" href="https://yandex.ru/maps/?text=${encodeURIComponent(it.address)}">🗺 Карта</a>` : ""}
+          <button class="btn main wide" onclick="done(this)">✅ Доставлен</button>
+          <button class="btn wide" onclick="moveForm(this)">📅 Перенос</button>
+        </div>
+      </div>
+    </div>`;
+  let h = "";
+  if (!d.ru.length && !d.city.length) h += `<div class="empty">На сегодня (${d.date}) доставок нет 🎉</div>`;
+  if (d.ru.length) h += `<h2>По России · ${d.date}</h2>` + d.ru.map(g => card("ru", g, esc(g.title))).join("");
+  if (d.city.length) h += `<h2>Город · ${d.date}</h2>` + d.city.map(o =>
+    card("city", o, esc(o.address), `${esc(o.item)}${o.phone ? " · " + esc(o.phone) : ""}<br>${esc(o.title)}`)).join("");
+  h += `<h2>Дальше</h2>` + d.ahead.map(a => `
+    <details class="card"><summary class="row"><span class="grow">📅 ${a.label}</span><span class="badge">${a.count} шт.</span></summary>
+    <pre style="margin-top:10px">${esc(a.text.split("\n").slice(1).join("\n").trim())}</pre></details>`).join("");
+  $("#main").innerHTML = h;
+}
+
+async function done(btn){
+  const c = btn.closest(".card");
+  if (!confirm("Отметить как доставленный?")) return;
+  btn.disabled = true;
+  try { const r = await call("/api/courier/done", {kind: c.dataset.kind, key: c.dataset.key}); toast(r.message); }
+  catch(e) { toast(e.message); }
+  load();
+}
+
+function moveForm(btn){
+  const c = btn.closest(".card");
+  const box = btn.parentNode;
+  if (box.querySelector(".open-form")) return;
+  const t = new Date(); t.setDate(t.getDate() + 1);
+  const min = t.toISOString().slice(0,10);
+  box.insertAdjacentHTML("beforeend", `<div class="wide open-form" style="grid-column:1/-1">
+    <input type="date" min="${min}" value="${min}">
+    <div class="actions" style="margin-top:0">
+      <button class="btn" onclick="this.closest('.open-form').remove()">Отмена</button>
+      <button class="btn main" onclick="move(this)">Перенести</button>
+    </div></div>`);
+}
+
+async function move(btn){
+  const c = btn.closest(".card");
+  const date = btn.closest(".open-form").querySelector("input").value;
+  btn.disabled = true;
+  try { const r = await call("/api/courier/move", {kind: c.dataset.kind, key: c.dataset.key, date}); toast(r.message); }
+  catch(e) { toast(e.message); btn.disabled = false; return; }
+  load();
+}
+
+/* ------------------------------ цех */
+function drawProd(d){
+  const stock = d.stock.map(s => {
+    const short = s.have !== null && s.need > s.have;
+    return `<tr class="${short ? "short" : ""}"><td>${esc(s.name)}</td><td class="n">${s.have ?? "—"}</td><td class="n">${s.need || ""}</td></tr>`;
+  }).join("");
+  $("#main").innerHTML = `
+    <div class="stats"><div class="stat"><b>${d.today}</b><small>отгрузить сегодня</small></div>
+      <div class="stat"><b>${d.frames.reduce((a,f) => a + f.n, 0)}</b><small>каркасов</small></div>
+      <div class="stat"><b>${d.stock.reduce((a,s) => a + (s.have || 0), 0)}</b><small>покрашено</small></div></div>
+    <h2>Остатки</h2><div class="card"><table><tr><th>Кровать</th><th class="n">Есть</th><th class="n">Нужно</th></tr>${stock}</table></div>
+    <h2>Сваренные каркасы</h2><div class="card"><table>${d.frames.map(f => `<tr><td>${f.width}</td><td class="n">${f.n}</td></tr>`).join("")}</table></div>
+    <h2>План</h2><div class="card"><pre>${esc(d.plan.split("\n").slice(2).join("\n"))}</pre></div>`;
+}
+
+/* ------------------------------ склад */
+function drawKeeper(d){
+  const list = (title, items) => `<h2>${title}</h2><div class="card">` + (items.length
+    ? `<table>${items.map(i => `<tr class="${i.low ? "short" : ""}"><td>${esc(i.name)}${i.low ? " · заканчивается" : ""}</td><td class="n">${esc(i.qty)} ${esc(i.unit)}</td></tr>`).join("")}</table>`
+    : `<div class="muted">Пока пусто</div>`) + `</div>`;
+  $("#main").innerHTML = list("Сырьё", d.raw) + list("ТМЦ", d.tmc);
+}
+
+/* ------------------------------ менеджер */
+function drawManager(d){
+  $("#main").innerHTML = `
+    <div class="stats"><div class="stat"><b>${d.today}</b><small>отгрузить сегодня</small></div>
+      <div class="stat"><b>${d.open}</b><small>в работе</small></div>
+      <div class="stat"><b>${d.city}</b><small>по городу</small></div></div>
+    <h2>Добавить сотрудника</h2>
+    <div class="card open-form" id="addform">
+      <input id="f-code" placeholder="Код с телефона, например K7QM-2XPA" autocapitalize="characters" autocomplete="off">
+      <input id="f-name" placeholder="Имя">
+      <select id="f-role">${Object.entries(ROLES).map(([k,v]) => `<option value="${k}">${v}</option>`).join("")}</select>
+      <button class="btn main" style="width:100%" onclick="addDevice(this)">Добавить</button>
+    </div>
+    <h2>Сотрудники в приложении</h2>
+    ${d.devices.length ? d.devices.map(x => `
+      <div class="card row"><div class="grow"><div class="title">${esc(x.name || "без имени")}</div>
+      <div class="sub">${esc(x.label)} · ${esc(x.code)}</div></div>
+      ${x.code === me.code ? `<span class="badge">это вы</span>` : `<button class="btn" onclick="removeDevice('${esc(x.code)}','${esc(x.name)}')">Убрать</button>`}</div>`).join("")
+      : `<div class="empty">Пока никого</div>`}`;
+}
+
+async function addDevice(btn){
+  btn.disabled = true;
+  try {
+    await call("/api/manager/device", {code: $("#f-code").value, name: $("#f-name").value, role: $("#f-role").value});
+    toast("Добавлено"); $("#f-code").value = ""; $("#f-name").value = ""; load();
+  } catch(e) { toast(e.message); }
+  btn.disabled = false;
+}
+
+async function removeDevice(code, name){
+  if (!confirm(`Убрать ${name || code} из приложения?`)) return;
+  try { await call("/api/manager/device/remove", {code}); toast("Убрано"); } catch(e) { toast(e.message); }
+  load();
+}
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+boot();
+</script>
+</body>
+</html>
