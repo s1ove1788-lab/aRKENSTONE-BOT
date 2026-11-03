@@ -93,7 +93,7 @@ tr.tap td:last-child::after{content:" ›";color:var(--muted)}
 .stepper input{text-align:center;font-size:24px;font-weight:700;margin:0}
 .stepper .btn{font-size:24px;padding:10px}
 .seg{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px}
-.seg button{flex:1;min-width:64px;border:1px solid var(--line);background:var(--bg);color:var(--ink);
+.seg button{flex:1 1 auto;min-width:64px;border:1px solid var(--line);background:var(--bg);color:var(--ink);
   border-radius:10px;padding:10px 6px;font:inherit;cursor:pointer}
 .seg button.on{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:600}
 label.l{display:block;font-size:13px;color:var(--muted);margin:6px 2px 4px}
@@ -101,6 +101,11 @@ table.dl td{vertical-align:top}
 table.dl td:nth-child(2){white-space:nowrap;font-size:14px}
 table.dl td:first-child{word-break:break-word}
 table.dl .pl{font-weight:600}
+table.ot td{font-size:14px}
+table.ot td:first-child{white-space:nowrap;word-break:normal}
+.seg button{min-width:0;white-space:nowrap}
+table.ot td:nth-child(2){white-space:normal}
+table.ot td:nth-child(3){white-space:nowrap}
 table.dl .ch{color:var(--muted);font-size:13px}
 tr.short .ch{color:inherit}
 .result{white-space:pre-wrap;background:var(--ok-bg);border-radius:12px;padding:12px;margin-top:10px}
@@ -390,7 +395,9 @@ function drawManager(d){
       <div class="stat"><b>${d.city}</b><small>по городу</small></div></div>
     <label class="btn main big" style="margin:10px 0">📄 Загрузить PDF с заказами
       <input type="file" accept="application/pdf,.pdf" hidden onchange="uploadPdf(this)"></label>
-    ${d.links.length ? `<div class="toolbar">${d.links.map(l => `<a class="btn" target="_blank" href="${esc(l.url)}">${esc(l.title)}</a>`).join("")}</div>` : ""}
+    <div class="toolbar"><button class="btn" onclick="ordersPage()">📊 Заказы</button>
+      <button class="btn" onclick="stockPage()">📦 Остатки</button></div>
+    ${d.links.filter(l => !l.hidden).map(l => `<a class="btn" style="margin-top:8px" target="_blank" href="${esc(l.url)}">${esc(l.title)}</a>`).join("")}
     <h2>Добавить сотрудника</h2>
     <div class="card open-form" id="addform">
       <input id="f-code" placeholder="Код с телефона, например K7QM-2XPA" autocapitalize="characters" autocomplete="off">
@@ -404,6 +411,64 @@ function drawManager(d){
       <div class="sub">${esc(x.label)} · ${esc(x.code)}</div></div>
       ${x.code === me.code ? `<span class="badge">это вы</span>` : `<button class="btn" onclick="removeDevice('${esc(x.code)}','${esc(x.name)}')">Убрать</button>`}</div>`).join("")
       : `<div class="empty">Пока никого</div>`}`;
+}
+
+/* ------------------------------ страницы менеджера: заказы и остатки */
+function page(title, html){
+  clearInterval(timer);
+  $("#main").innerHTML = `<div class="open-form"><button class="btn" style="margin-bottom:12px" onclick="load()">← Назад</button>
+    <h2 style="margin-top:0">${title}</h2>${html}</div>`;
+  window.scrollTo(0, 0);
+}
+
+async function ordersPage(filter){
+  page("Заказы в работе", `<div class="muted">Загрузка…</div>`);
+  let d;
+  try { d = window._orders && filter ? window._orders : await call("/api/manager/orders"); } catch(e) { return toast(e.message); }
+  window._orders = d; filter = filter || "all";
+  const rows = d.rows.filter(r => filter === "all" || (filter === "city" ? r.city : filter === "ru" ? !r.city : r.late));
+  const n = rows.reduce((a, r) => a + r.qty, 0);
+  const chips = {all:"Все", city:"Город", ru:"По России", late:"Просрочены"};
+  page("Заказы в работе", `
+    <div class="seg">${Object.entries(chips).map(([k,v]) => `<button class="${k===filter?"on":""}" onclick="ordersPage('${k}')">${v}</button>`).join("")}</div>
+    <div class="muted" style="margin:0 4px 8px">${rows.length} заказ(ов) · ${n} кроватей</div>
+    <div class="card" style="padding:6px 10px">${rows.length ? `<table class="dl ot">
+      <tr><th>Дата</th><th>Куда</th><th>Кровать</th><th class="n">Шт</th></tr>
+      ${rows.map(r => `<tr class="tap ${r.late ? "short" : ""}" onclick="orderView(${d.rows.indexOf(r)})">
+        <td>${esc(r.date)}${r.today ? "<div class='ch'>сегодня</div>" : ""}</td>
+        <td><div class="pl">${esc(r.place)}</div><div class="ch">${esc(r.channel)}</div></td>
+        <td>${esc(r.bed)}</td><td class="n">${r.qty}</td></tr>`).join("")}</table>` : `<div class="muted" style="padding:10px">Нет заказов</div>`}</div>
+    ${d.url ? `<a class="btn" style="margin-top:10px" target="_blank" href="${esc(d.url)}">Открыть в Google Таблице</a>` : ""}`);
+}
+
+function orderView(i){
+  const r = window._orders.rows[i];
+  sheet(`<h3>№ ${esc(r.order_no)}</h3><div class="muted">${esc(r.channel)} · ${esc(r.date)}${r.late ? " · просрочен" : ""}</div>
+    <table><tr><td>Куда</td><td>${esc(r.place)}</td></tr><tr><td>Кровать</td><td>${esc(r.bed)} ×${r.qty}</td></tr>
+    ${r.article ? `<tr><td>Артикул</td><td>${esc(r.article)}</td></tr>` : ""}
+    ${r.phone ? `<tr><td>Телефон</td><td>${esc(r.phone)}</td></tr>` : ""}</table>
+    <div class="actions">${r.phone ? `<a class="btn" href="tel:${esc(r.phone.split(",")[0].replace(/[^\d+]/g, ""))}">📞 Позвонить</a>` : ""}
+    ${r.city && r.place !== "—" ? `<a class="btn" target="_blank" href="https://yandex.ru/maps/?text=${encodeURIComponent(r.place)}">🗺 Карта</a>` : ""}</div>`);
+}
+
+async function stockPage(){
+  page("Остатки", `<div class="muted">Загрузка…</div>`);
+  let d;
+  try { d = await call("/api/prod"); } catch(e) { return toast(e.message); }
+  const rows = d.stock.map(x => {
+    const lack = Math.max(0, x.need - (x.have || 0));
+    return `<tr class="${lack ? "short" : ""}"><td>${esc(x.name)}</td><td class="n">${x.have ?? "—"}</td><td class="n">${x.need || ""}</td><td class="n">${lack || ""}</td></tr>`;
+  }).join("");
+  const sum = (f) => d.stock.reduce((a, x) => a + f(x), 0);
+  page("Остатки", `
+    <div class="stats"><div class="stat"><b>${sum(x => x.have || 0)}</b><small>покрашено</small></div>
+      <div class="stat"><b>${sum(x => x.need)}</b><small>нужно по заказам</small></div>
+      <div class="stat"><b>${sum(x => Math.max(0, x.need - (x.have || 0)))}</b><small>не хватает</small></div></div>
+    <h2>Покрашенные кровати</h2><div class="card" style="padding:6px 10px"><table>
+      <tr><th>Кровать</th><th class="n">Есть</th><th class="n">Нужно</th><th class="n">Не хват.</th></tr>${rows}</table></div>
+    <h2>Сваренные каркасы</h2><div class="card" style="padding:6px 10px"><table>
+      <tr><th>Размер</th><th class="n">Есть</th></tr>${d.frames.map(f => `<tr><td>${f.width}</td><td class="n">${f.n}</td></tr>`).join("")}</table></div>
+    <div class="muted" style="margin:8px 4px">Внести покраску и каркасы — во вкладке «Производство».</div>`);
 }
 
 async function uploadPdf(input){

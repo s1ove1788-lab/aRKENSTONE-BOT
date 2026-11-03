@@ -266,13 +266,31 @@ def keeper_data() -> dict:
     return res
 
 
+def open_orders(today: date) -> dict:
+    """Недоставленные заказы для таблицы в приложении, по дате доставки/отгрузки."""
+    rows = []
+    for o in sheets.read_orders():
+        if o["status"]:
+            continue
+        r = logic.key_range(o, today)
+        city = logic.is_city(o)
+        rows.append({
+            "sort": str(r[0]) if r else "9999", "date": f"{r[1]:%d.%m}" if r else (logic.key_text(o) or "—"),
+            "late": bool(r and r[1] < today), "today": bool(r and r[0] <= today <= r[1]),
+            "city": city, "channel": o["channel"], "bed": logic.item_line(o), "qty": logic.qty(o),
+            "order_no": o["order_no"], "place": (o["address"] if city else (f"Отгрузка №{o['phone']}" if o["phone"] else "")) or "—",
+            "phone": logic.fmt_phone(o["phone"]) if city else "", "article": o["article"],
+        })
+    rows.sort(key=lambda x: (x["sort"], not x["city"], x["channel"], x["place"]))
+    return {"rows": rows, "url": sheets.sheet_url("orders")}
+
+
 def manager_data(today: date) -> dict:
     orders = sheets.read_orders()
     open_ = [o for o in orders if not o["status"]]
     links = []
     try:
-        links.append({"title": "📊 Таблица заказов", "url": sheets.sheet_url("orders")})
-        links.append({"title": "📦 Таблица остатков", "url": sheets.sheet_url("stock")})
+        links.append({"title": "📦 Таблица остатков в Google", "url": sheets.sheet_url("stock"), "hidden": True})
     except Exception:
         log.exception("Приложение: ссылки на таблицы")
     try:
@@ -347,6 +365,8 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         return 200, prod_data(today)
     if path == "/api/keeper" and "keeper" in tabs:
         return 200, keeper_data()
+    if path == "/api/manager/orders" and "manager" in tabs:
+        return 200, open_orders(today)
     if path == "/api/manager" and "manager" in tabs:
         return 200, manager_data(today)
 
