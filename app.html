@@ -334,7 +334,8 @@ function drawProd(d){
     <h2>Покрашенные · нажмите, чтобы внести</h2><div class="card"><table><tr><th>Кровать</th><th class="n">Есть</th><th class="n">Нужно</th></tr>${stock}</table></div>
     <h2>Сваренные каркасы · нажмите, чтобы внести</h2><div class="card"><table>${frames}</table>
       <button class="btn main" style="width:100%;margin-top:10px" onclick="frameForm()">🔩 Внести сваренные каркасы</button></div>
-    <h2>План</h2><div class="card"><pre>${esc(d.plan.split("\n").slice(2).join("\n"))}</pre></div>`;
+    <details class="card" style="margin-top:22px"><summary class="row"><span class="grow title">📋 План производства</span><span class="badge">${(d.plan.match(/Всего: (\d+)/) || [,"0"])[1]} шт. ▾</span></summary>
+      <pre style="margin-top:12px">${esc(d.plan.split("\n").slice(2).join("\n"))}</pre></details>`;
 }
 
 function shippedForm(){
