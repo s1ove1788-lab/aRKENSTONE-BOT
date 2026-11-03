@@ -256,8 +256,28 @@ def prod_data(today: date) -> dict:
         frames = []
     total = logic.today_total(orders, today)
     done = _shipped_today(today)
-    return {"plan": logic.production_plan(orders, today), "stock": rows, "frames": frames,
-            "today": max(0, total - done), "shipped": done}
+    # сколько каркасов сварить: нужно по заказам − уже покрашено − уже сварено (по ширине, оба цвета)
+    fr = {f["width"]: f["n"] for f in frames}
+    weld = []
+    for w in sheets.frame_widths():
+        need_w = sum(x["need"] for x in rows if x["code"].startswith(f"{w}."))
+        have_w = sum(x["have"] or 0 for x in rows if x["code"].startswith(f"{w}."))
+        weld.append({"width": w, "need": need_w, "painted": have_w, "frames": fr.get(w, 0),
+                     "todo": max(0, need_w - have_w - fr.get(w, 0))})
+    return {"plan": logic.production_plan(orders, today), "stock": rows, "frames": frames, "weld": weld,
+            "today": max(0, total - done), "shipped": done, "blanks": blanks_data()}
+
+
+def blanks_data() -> dict:
+    try:
+        b = sheets.blanks_get()
+    except Exception:
+        log.exception("Приложение: лист «%s»", config.BLANKS_TAB)
+        return {"ok": False}
+    enough = {w: logic.blanks_enough(parts) for w, parts in b["sizes"].items()}
+    return {"ok": True, "per": b["per"], "common": b["common"], "bom": logic.BLANKS_BOM,
+            "sizes": {str(w): v for w, v in b["sizes"].items()}, "common_qty": b["common_qty"],
+            "enough": [{"width": w, "n": n, "short": t} for w, (n, t) in enough.items()]}
 
 
 def keeper_data() -> dict:
@@ -333,6 +353,30 @@ def _num(x) -> float:
         return max(0.0, float(str(x or 0).replace(",", ".").replace(" ", "")))
     except ValueError:
         return 0.0
+
+
+def blanks_post(body: dict, who: str) -> tuple:
+    """Добавить (sign=in) или убрать заготовки: {width: 160 или "common", sign, items: [{name, qty}]}."""
+    b = sheets.blanks_get()
+    common = str(body.get("width")) == "common"
+    width = None if common else _int(body.get("width"), 0)
+    names = b["common"] if common else b["per"]
+    if not common and width not in b["sizes"]:
+        return 400, {"error": "Выберите размер"}
+    sign = 1 if body.get("sign") == "in" else -1
+    changes = []
+    for it in body.get("items") or []:
+        n = _int(it.get("qty"), 0)
+        if it.get("name") in names and n > 0:
+            changes.append((width, it["name"], sign * n))
+    if not changes:
+        return 400, {"error": "Впишите количество хотя бы у одной детали"}
+    res = sheets.blanks_add(changes)
+    sheets.blanks_refresh()
+    where = "общие" if common else str(width)
+    lines = [f"{name}: {before} → {after}" for _, name, before, after in res]
+    log.info("Приложение: заготовки %s %s (%s): %s", "приход" if sign > 0 else "расход", where, who, "; ".join(lines))
+    return 200, {"ok": True, "message": f"✅ Заготовки {where}, {'добавлено' if sign > 0 else 'убрано'}:\n" + "\n".join(lines)}
 
 
 def upload_pdf(token: str, filename: str, data: bytes) -> tuple:
@@ -422,6 +466,8 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         with _lock:
             if path == "/api/prod/shipped":
                 return 200, {"ok": True, "message": _deps["shipped"](f"{who} (приложение)")}
+            if path == "/api/prod/blanks":
+                return blanks_post(body, who)
             delta = _int(body.get("delta"), 0)
             if not delta or abs(delta) > 999:
                 return 400, {"error": "Укажите количество"}

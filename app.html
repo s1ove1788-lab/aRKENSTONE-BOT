@@ -102,6 +102,9 @@ table.dl td:nth-child(2){white-space:nowrap;font-size:14px}
 table.dl td:first-child{word-break:break-word}
 table.dl .pl{font-weight:600}
 table.ot td{font-size:14px}
+table.bt td,table.bt th{font-size:13px;padding:6px 4px;white-space:nowrap}
+table.bf td{padding:6px 4px;vertical-align:middle}
+table.bf input{margin:0;padding:10px;text-align:center;font-size:18px}
 table.ot td:first-child{white-space:nowrap;word-break:normal}
 .seg button{min-width:0;white-space:nowrap}
 table.ot td:nth-child(2){white-space:normal}
@@ -240,7 +243,8 @@ async function act(btn, path, body, keepOpen){
   try {
     const r = await call(path, body);
     if (keepOpen) { const box = btn.closest(".sheet"); box.querySelector(".result")?.remove();
-      box.insertAdjacentHTML("beforeend", `<div class="result">${esc(r.message)}</div>`); btn.disabled = false; }
+      box.insertAdjacentHTML("beforeend", `<div class="result">${esc(r.message)}</div>`); btn.disabled = false;
+      box.querySelector(".result").scrollIntoView({behavior: "smooth", block: "end"}); }
     else { closeSheet(); toast(r.message.split("\n")[0]); }
     load();
   } catch(e) { toast(e.message); btn.disabled = false; }
@@ -316,21 +320,104 @@ async function payView(){
 }
 
 /* ------------------------------ производство */
+/* Производство делится на три цеха; выбор запоминается на телефоне */
+const SHOPS = {weld:["🔥","Сварочный цех","сваренные каркасы и что сварить"],
+               paint:["🎨","Малярный цех","окрашенные кровати и чего не хватает"],
+               blanks:["🪚","Заготовочный цех","заготовки и на сколько кроватей хватает"]};
+function shop(k){ try { k ? localStorage.setItem("ark_shop", k) : localStorage.removeItem("ark_shop"); } catch(e) {} drawProd(window._prod); window.scrollTo(0,0); }
+
 function drawProd(d){
   window._prod = d;
-  const stock = d.stock.map((x, i) => {
-    const short = x.have !== null && x.need > x.have;
-    return `<tr class="tap ${short ? "short" : ""}" onclick="stockForm(${i})"><td>${esc(x.name)}</td><td class="n">${x.have ?? "—"}</td><td class="n">${x.need || ""}</td></tr>`;
-  }).join("");
-  const frames = d.frames.map((f, i) => `<tr class="tap" onclick="frameForm(${i})"><td>${f.width}</td><td class="n">${f.n}</td></tr>`).join("");
+  let k = null; try { k = localStorage.getItem("ark_shop"); } catch(e) {}
+  if (!SHOPS[k]) return drawShops(d);
+  const back = `<button class="btn" style="margin-bottom:10px" onclick="shop()">← Цеха</button><h2 style="margin-top:0">${SHOPS[k][0]} ${SHOPS[k][1]}</h2>`;
+  $("#main").innerHTML = back + ({weld: drawWeld, paint: drawPaint, blanks: drawBlanks})[k](d);
+}
+
+function drawShops(d){
   $("#main").innerHTML = `
     ${d.today ? `<button class="btn main big" style="width:100%;margin-bottom:10px" onclick="shippedForm()">✅ Кровати отгружены · ${d.today} шт.</button>`
       : `<div class="card muted" style="text-align:center">${d.shipped ? `Сегодня отгружено ${d.shipped} шт. ✅` : "На сегодня отгрузок нет"}</div>`}
-    <h2>Покрашенные · нажмите, чтобы внести</h2><div class="card"><table><tr><th>Кровать</th><th class="n">Есть</th><th class="n">Нужно</th></tr>${stock}</table></div>
-    <h2>Сваренные каркасы · нажмите, чтобы внести</h2><div class="card"><table>${frames}</table>
-      <button class="btn main" style="width:100%;margin-top:10px" onclick="frameForm()">🔩 Внести сваренные каркасы</button></div>
+    <h2>Выберите цех</h2>
+    ${Object.entries(SHOPS).map(([k, v]) => `<div class="card tap row" onclick="shop('${k}')">
+      <span style="font-size:30px">${v[0]}</span><div class="grow"><div class="title">${v[1]}</div><div class="sub">${v[2]}</div></div><span class="muted">›</span></div>`).join("")}
     <details class="card" style="margin-top:22px"><summary class="row"><span class="grow title">📋 План производства</span><span class="badge">${(d.plan.match(/Всего: (\d+)/) || [,"0"])[1]} шт. ▾</span></summary>
       <pre style="margin-top:12px">${esc(d.plan.split("\n").slice(2).join("\n"))}</pre></details>`;
+}
+
+function drawWeld(d){
+  const todo = d.weld.reduce((a, w) => a + w.todo, 0);
+  const en = Object.fromEntries((d.blanks.enough || []).map(e => [e.width, e.n]));
+  return `
+    <button class="btn main big" style="width:100%;margin-bottom:6px" onclick="frameForm()">🔩 Внести сваренные каркасы</button>
+    <h2>Нужно сварить · ${todo} шт.</h2>
+    <div class="card" style="padding:6px 10px"><table>
+      <tr><th>Размер</th><th class="n">Сварено</th><th class="n">Сварить</th>${d.blanks.ok ? `<th class="n">Загот.</th>` : ""}</tr>
+      ${d.weld.map((w, i) => `<tr class="tap ${w.todo ? "short" : ""}" onclick="frameForm(${i})"><td>${w.width}</td>
+        <td class="n">${w.frames}</td><td class="n">${w.todo || ""}</td>${d.blanks.ok ? `<td class="n">${en[w.width] ?? "—"}</td>` : ""}</tr>`).join("")}
+    </table></div>
+    <div class="muted" style="margin:6px 4px">«Сварить» = нужно по заказам − уже покрашено − уже сварено. «Загот.» — на сколько каркасов хватает заготовок.
+    Сваренный каркас сам списывает заготовки: 1 комплект + 4 подножки + 22 ламели.</div>`;
+}
+
+function drawPaint(d){
+  const rows = d.stock.map((x, i) => {
+    const lack = Math.max(0, x.need - (x.have || 0));
+    return `<tr class="tap ${lack ? "short" : ""}" onclick="stockForm(${i})"><td>${esc(x.name)}</td><td class="n">${x.have ?? "—"}</td><td class="n">${x.need || ""}</td><td class="n">${lack || ""}</td></tr>`;
+  }).join("");
+  const lack = d.stock.reduce((a, x) => a + Math.max(0, x.need - (x.have || 0)), 0);
+  return `
+    <button class="btn main big" style="width:100%;margin-bottom:6px" onclick="stockForm()">🎨 Внести окрашенные кровати</button>
+    <h2>Окрашенные · не хватает ${lack} шт.</h2>
+    <div class="card" style="padding:6px 10px"><table>
+      <tr><th>Кровать</th><th class="n">Есть</th><th class="n">Нужно</th><th class="n">Не хват.</th></tr>${rows}</table></div>
+    <div class="muted" style="margin:6px 4px">Добавленные кровати сами списываются со сваренных каркасов.</div>`;
+}
+
+function drawBlanks(d){
+  const b = d.blanks;
+  if (!b.ok) return `<div class="card muted">Не нашёл лист «Заготовки» в таблице.</div>`;
+  const sizes = Object.keys(b.sizes);
+  const table = (names, get) => `<table class="bt"><tr><th>Деталь</th>${sizes.map(w => `<th class="n">${w}</th>`).join("")}</tr>
+    ${names.map(n => `<tr><td>${esc(n)}</td>${sizes.map(w => `<td class="n">${get(w, n)}</td>`).join("")}</tr>`).join("")}</table>`;
+  return `
+    <h2>На сколько кроватей хватает</h2>
+    <div class="card" style="padding:6px 10px"><table>
+      <tr><th>Размер</th><th class="n">Хватает</th><th>Не хватает</th></tr>
+      ${b.enough.map(e => `<tr class="${e.n ? "" : "short"}"><td>${e.width}</td><td class="n"><b>${e.n}</b></td><td style="font-size:13px">${esc(e.short || "всего хватает")}</td></tr>`).join("")}
+    </table></div>
+    <button class="btn main big" style="width:100%;margin:10px 0" onclick="blanksForm()">➕ Добавить / убрать заготовки</button>
+    <details class="card"><summary class="row"><span class="grow title">📦 Остатки заготовок</span><span class="badge">▾</span></summary>
+      <div style="overflow-x:auto;margin-top:8px">${table(b.per, (w, n) => b.sizes[w][n] || "")}</div>
+      ${b.common.length ? `<table style="margin-top:10px">${b.common.map(n => `<tr><td>${esc(n)}</td><td class="n">${b.common_qty[n] || 0}</td></tr>`).join("")}</table>` : ""}
+    </details>`;
+}
+
+function blanksForm(size){
+  const b = window._prod.blanks;
+  const sizes = Object.fromEntries([...Object.keys(b.sizes).map(w => [w, w]), ["common", "Общие"]]);
+  size = size || Object.keys(b.sizes)[0];
+  const names = size === "common" ? b.common : b.per;
+  const have = n => size === "common" ? (b.common_qty[n] || 0) : (b.sizes[size][n] || 0);
+  sheet(`<h3>🪚 Заготовки</h3><div class="muted">Выберите размер и впишите количество у нужных деталей.</div>
+    <label class="l">Размер</label>${seg("b-size", sizes, size).replace(/onclick="pick\(this\)"/g, 'onclick="blanksForm(this.dataset.k)"')}
+    <table class="bf">${names.map((n, i) => `<tr><td>${esc(n)}${b.bom[n] ? `<div class="ch">на кровать: ${b.bom[n]}</div>` : ""}</td>
+      <td class="n muted">есть ${have(n)}</td>
+      <td style="width:92px"><input class="bq" data-name="${esc(n)}" type="number" inputmode="numeric" min="0" placeholder="0"></td></tr>`).join("")}</table>
+    ${size !== "common" ? `<button class="btn" style="width:100%;margin-top:8px" onclick="blanksKit()">Заполнить комплектом на 1 кровать</button>` : ""}
+    <div class="actions"><button class="btn" onclick="blanksSave(this,'out','${size}')">− Убрать</button>
+      <button class="btn main" onclick="blanksSave(this,'in','${size}')">+ Добавить</button></div>`);
+}
+
+function blanksKit(){
+  const bom = window._prod.blanks.bom;
+  document.querySelectorAll(".bq").forEach(i => { if (bom[i.dataset.name]) i.value = (parseInt(i.value) || 0) + bom[i.dataset.name]; });
+}
+
+async function blanksSave(btn, sign, size){
+  const items = [...document.querySelectorAll(".bq")].map(i => ({name: i.dataset.name, qty: parseInt(i.value) || 0})).filter(i => i.qty > 0);
+  if (!items.length) return toast("Впишите количество хотя бы у одной детали");
+  await act(btn, "/api/prod/blanks", {width: size, sign, items}, true);
 }
 
 function shippedForm(){
@@ -340,11 +427,14 @@ function shippedForm(){
 }
 
 function stockForm(i){
-  const x = window._prod.stock[i];
-  sheet(`<h3>🎨 ${esc(x.name)}</h3><div class="muted">Сейчас покрашено: ${x.have ?? "нет данных"}. Добавленные спишутся со сваренных каркасов.</div>
-    ${stepper("s-n", 1)}
-    <div class="actions"><button class="btn" onclick="act(this,'/api/prod/stock',{code:'${x.code}',delta:-num('s-n')})">− Убрать</button>
-    <button class="btn main" onclick="act(this,'/api/prod/stock',{code:'${x.code}',delta:num('s-n')})">+ Добавить</button></div>`);
+  const st = window._prod.stock;
+  const first = st[i ?? 0];
+  const names = Object.fromEntries(st.map(x => [x.code, `${x.name.replace("/30 ", " ")} · ${x.have ?? 0}`]));
+  sheet(`<h3>🎨 Окрашенные кровати</h3><div class="muted">Выберите кровать и сколько покрасили. Добавленные спишутся со сваренных каркасов.</div>
+    <label class="l">Кровать · сейчас есть</label>${seg("s-code", names, first.code)}
+    <label class="l">Сколько</label>${stepper("s-n", 1)}
+    <div class="actions"><button class="btn" onclick="act(this,'/api/prod/stock',{code:document.getElementById('s-code').dataset.v,delta:-num('s-n')})">− Убрать</button>
+    <button class="btn main" onclick="act(this,'/api/prod/stock',{code:document.getElementById('s-code').dataset.v,delta:num('s-n')})">+ Добавить</button></div>`);
 }
 
 const fw = () => document.getElementById('f-w').dataset.v;

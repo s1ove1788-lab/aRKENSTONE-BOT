@@ -682,11 +682,22 @@ def frames_view(ctx: Ctx, note: str = "") -> None:
 
 
 def frames_apply(items: list, who: str) -> list:
-    """[(ширина, изменение)] -> строки «120: +8 → теперь 10 шт.»."""
+    """[(ширина, изменение)] -> строки «120: +8 → теперь 10 шт.».
+    Сваренные каркасы списывают заготовки по составу кровати (logic.BLANKS_BOM), «убрать» — возвращает их."""
     done = []
     for w, d in items:
         new = sheets.frames_add(w, d, who)
         done.append(f"{w}: {'+' if d > 0 else ''}{d} → теперь {new} шт.")
+        try:
+            res = sheets.blanks_add([(w, name, -k * d) for name, k in logic.BLANKS_BOM.items()])
+            short = [f"{name} (нужно {-k * d}, было {before})" for (_, name, before, _), k
+                     in zip(res, logic.BLANKS_BOM.values()) if d > 0 and before < k * d]
+            done.append(("🪚 Заготовки списаны" if d > 0 else "🪚 Заготовки возвращены") + f" на {abs(d)} каркас(а)")
+            if short:
+                done.append("⚠️ Не хватало заготовок: " + ", ".join(short))
+            sheets.blanks_refresh()
+        except Exception:
+            log.exception("Не смог списать заготовки (есть ли лист «%s»?)", config.BLANKS_TAB)
     return done
 
 

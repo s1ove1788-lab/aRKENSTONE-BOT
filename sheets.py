@@ -657,6 +657,101 @@ def frames_add(width: int, delta: int, who: str = "") -> int:
     return max(0, delta)
 
 
+# ------------------------------------------------------------- заготовки
+# Лист «Заготовки»: сверху строки размеров (120…200) с деталями, справа общие позиции (ноги 25/30/35, уголки) —
+# у них одна объединённая ячейка, число хранится в строке 2. Ниже таблица «На сколько кроватей хватает».
+COMMON_START = ("Ноги 25", "Ноги 30", "Ноги 35")
+
+
+def _blanks_ws():
+    ws = _tabs.get("blanks")
+    if ws is None:
+        ws = get_book().worksheet(config.BLANKS_TAB)  # лист создаёт человек; нет листа — ошибка, функция выключена
+        _tabs["blanks"] = ws
+    return ws
+
+
+def _blanks_layout(values: list) -> dict:
+    header = values[0] if values else []
+    per, common, is_common = {}, {}, False
+    for i, h in enumerate(header[1:], start=1):
+        name = h.replace("(шт.)", "").replace("(шт)", "").strip()
+        if not name:
+            continue
+        if name.startswith(COMMON_START):
+            is_common = True
+        if is_common:
+            common[name + (" (общие)" if name in per else "")] = i
+        else:
+            per[name] = i
+    sizes, bottom, top = {}, {}, True
+    for r, v in enumerate(values[1:], start=2):
+        a = (v[0] if v else "").strip()
+        if a.lower() == "размер":
+            top = False
+            continue
+        if a.isdigit():
+            (sizes if top else bottom)[int(a)] = r
+    return {"per": per, "common": common, "sizes": sizes, "bottom": bottom}
+
+
+def _cell(values: list, r: int, c: int) -> str:
+    return values[r - 1][c].strip() if r - 1 < len(values) and c < len(values[r - 1]) else ""
+
+
+def blanks_get() -> dict:
+    """{'per': [детали], 'common': [общие], 'sizes': {ширина: {деталь: число}}, 'common_qty': {общая: число}}."""
+    values = _blanks_ws().get_all_values()
+    lay = _blanks_layout(values)
+    return {
+        "per": list(lay["per"]), "common": list(lay["common"]),
+        "sizes": {w: {n: _num(_cell(values, r, c)) for n, c in lay["per"].items()} for w, r in sorted(lay["sizes"].items())},
+        "common_qty": {n: _num(_cell(values, 2, c)) for n, c in lay["common"].items()},
+    }
+
+
+def blanks_add(changes: list) -> list:
+    """changes: [(ширина или None для общих, деталь, изменение)]. Ниже нуля не уходит.
+    Возвращает [(ширина, деталь, было, стало)]."""
+    ws = _blanks_ws()
+    values = ws.get_all_values()
+    lay = _blanks_layout(values)
+    cur, res, updates = {}, [], []
+    for w, name, d in changes:
+        if w is None:
+            r, c = 2, lay["common"].get(name)
+        else:
+            r, c = lay["sizes"].get(int(w)), lay["per"].get(name)
+        if r is None or c is None:
+            raise ValueError(f"нет ячейки для «{name}» {w or ''}")
+        before = cur.get((r, c), _num(_cell(values, r, c)))
+        after = max(0, before + int(d))
+        cur[(r, c)] = after
+        res.append((w, name, before, after))
+    for (r, c), v in cur.items():
+        updates.append({"range": f"{_col_letter(c)}{r}", "values": [[v]]})
+    if updates:
+        ws.batch_update(updates, value_input_option="RAW")
+    return res
+
+
+def blanks_refresh() -> dict:
+    """Пересчитывает таблицу «На сколько кроватей хватает» на листе и возвращает {ширина: (хватает, не хватает)}."""
+    ws = _blanks_ws()
+    values = ws.get_all_values()
+    lay = _blanks_layout(values)
+    data = {w: {n: _num(_cell(values, r, c)) for n, c in lay["per"].items()} for w, r in lay["sizes"].items()}
+    res = {w: logic.blanks_enough(parts) for w, parts in sorted(data.items())}
+    updates = []
+    for w, r in lay["bottom"].items():
+        if w in res:
+            n, text = res[w]
+            updates.append({"range": f"B{r}:C{r}", "values": [[n, text or "Всего хватает"]]})
+    if updates:
+        ws.batch_update(updates, value_input_option="RAW")
+    return res
+
+
 # ------------------------------------------------- склад: сырьё и ТМЦ
 INV_HEADERS = ["Название", "Остаток", "Ед.", "Минимум"]
 
