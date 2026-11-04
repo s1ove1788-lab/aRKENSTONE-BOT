@@ -129,6 +129,14 @@ tr.short .ch{color:inherit}
 const TABS = {courier:["🚚","Курьер"], prod:["🏭","Производство"], keeper:["📦","Склад"], manager:["👔","Менеджер"]};
 const ROLES = {courier:"Курьер", prod:"Производство", keeper:"Кладовщик", manager:"Менеджер"};
 let me = null, tab = null, timer = null;
+let nav = 0;          // номер «перехода»: ответ, пришедший после ухода с экрана, выбрасываем
+let onPage = false;   // открыта отдельная страница (Заказы, Остатки, Сотрудники…) — фоновое обновление её не трогает
+/* Ссылка в карты без подъезда, домофона, этажа и квартиры — иначе поиск путается */
+function mapUrl(addr){
+  const clean = String(addr || "").split(",").map(x => x.trim())
+    .filter(x => x && !/(подъезд|домофон|этаж|кв\.|квартир|офис|\bкв\b|под\.|код)/i.test(x)).join(", ");
+  return "https://yandex.ru/maps/?text=" + encodeURIComponent(clean || addr);
+}
 const $ = s => document.querySelector(s);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 
@@ -152,6 +160,7 @@ async function call(path, body){
   try { data = await r.json(); } catch(e) {}
   if (r.status === 403) { me = null; boot(); throw new Error(data.error || "Нет доступа"); }
   if (!r.ok) throw new Error(data.error || "Ошибка связи");
+  if (!data || typeof data !== "object" || data.error) throw new Error((data && data.error) || "Нет связи с сервером, повторите");
   return data;
 }
 
@@ -205,21 +214,34 @@ function open(k){
   load();
 }
 
+const NEED = {courier: "days", prod: "stock", keeper: "raw", manager: "devices"};  // по этому полю узнаём «свой» ответ
+
 async function load(){
   clearInterval(timer);
+  onPage = false; window._pageAgain = null;
+  const my = ++nav, t = tab;
   $("#refresh").classList.add("spin");
   try {
-    const data = await call("/api/" + tab);
-    ({courier: drawCourier, prod: drawProd, keeper: drawKeeper, manager: drawManager})[tab](data);
+    const data = await call("/api/" + t);
+    if (my !== nav || t !== tab) return;  // пока ждали, человек уже открыл другой экран
+    if (!(NEED[t] in data)) throw new Error("Не получилось загрузить, повторите");
+    ({courier: drawCourier, prod: drawProd, keeper: drawKeeper, manager: drawManager})[t](data);
   } catch(e) {
-    if (me) $("#main").innerHTML = `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="load()">Повторить</button></div>`;
+    if (me && my === nav) $("#main").innerHTML = `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="load()">Повторить</button></div>`;
   } finally {
-    $("#refresh").classList.remove("spin");
-    timer = setInterval(() => { if (!document.querySelector(".open-form, .sheet-bg")) load(); }, 60000);
+    if (my === nav) {
+      $("#refresh").classList.remove("spin");
+      timer = setInterval(quietRefresh, 60000);
+    }
   }
 }
-$("#refresh").onclick = () => me && me.ok ? load() : boot();
-document.addEventListener("visibilitychange", () => { if (!document.hidden && me && me.ok) load(); });
+/* Фоновое обновление: не трогаем открытую страницу, окошко или форму, в которую что-то вводят */
+function quietRefresh(){
+  if (onPage || document.querySelector(".open-form, .sheet-bg")) return;
+  load();
+}
+$("#refresh").onclick = () => me && me.ok ? (onPage && window._pageAgain ? window._pageAgain() : load()) : boot();
+document.addEventListener("visibilitychange", () => { if (!document.hidden && me && me.ok) quietRefresh(); });
 
 /* ------------------------------ окно-форма снизу */
 function sheet(html){
@@ -281,7 +303,7 @@ function deliveryView(di, ri){
     <div class="muted" style="margin-top:8px">Заказ${r.orders.length > 1 ? "ы" : ""}: ${r.orders.map(esc).join(", ")}${r.phone ? `<br>Телефон: ${esc(r.phone)}` : ""}</div>
     <div class="actions">
       ${r.tel ? `<a class="btn" href="tel:${esc(r.tel)}">📞 Позвонить</a>` : ""}
-      ${r.address ? `<a class="btn" target="_blank" href="https://yandex.ru/maps/?text=${encodeURIComponent(r.address)}">🗺 Карта</a>` : ""}
+      ${r.address ? `<a class="btn" target="_blank" href="${esc(mapUrl(r.address))}">🗺 Карта</a>` : ""}
       ${day.today ? `<button class="btn main wide" onclick="doneCur(this)">✅ Доставлен</button>
       <div class="wide" style="grid-column:1/-1"><label class="l">Перенести на дату</label>
         <input id="mv-date" type="date" min="${min}" value="${min}">
@@ -566,17 +588,21 @@ function staffPage(){
 }
 
 /* ------------------------------ страницы менеджера: заказы и остатки */
-function page(title, html){
+function page(title, html, again){
   clearInterval(timer);
+  onPage = true;
+  if (again) window._pageAgain = again;  // ⟳ на странице обновляет саму страницу
   $("#main").innerHTML = `<div class="open-form"><button class="btn" style="margin-bottom:12px" onclick="load()">← Назад</button>
     <h2 style="margin-top:0">${title}</h2>${html}</div>`;
   window.scrollTo(0, 0);
 }
 
 async function ordersPage(filter){
-  page("Заказы в работе", `<div class="muted">Загрузка…</div>`);
+  const my = ++nav;
+  if (!filter) page("Заказы в работе", `<div class="muted">Загрузка…</div>`, () => ordersPage());
   let d;
   try { d = window._orders && filter ? window._orders : await call("/api/manager/orders"); } catch(e) { return toast(e.message); }
+  if (my !== nav) return;
   window._orders = d; filter = filter || "all";
   const rows = d.rows.filter(r => filter === "all" || (filter === "city" ? r.city : filter === "ru" ? !r.city : r.late));
   const n = rows.reduce((a, r) => a + r.qty, 0);
@@ -600,13 +626,15 @@ function orderView(i){
     ${r.article ? `<tr><td>Артикул</td><td>${esc(r.article)}</td></tr>` : ""}
     ${r.phone ? `<tr><td>Телефон</td><td>${esc(r.phone)}</td></tr>` : ""}</table>
     <div class="actions">${r.phone ? `<a class="btn" href="tel:${esc(r.phone.split(",")[0].replace(/[^\d+]/g, ""))}">📞 Позвонить</a>` : ""}
-    ${r.city && r.place !== "—" ? `<a class="btn" target="_blank" href="https://yandex.ru/maps/?text=${encodeURIComponent(r.place)}">🗺 Карта</a>` : ""}</div>`);
+    ${r.city && r.place !== "—" ? `<a class="btn" target="_blank" href="${esc(mapUrl(r.place))}">🗺 Карта</a>` : ""}</div>`);
 }
 
 async function stockPage(){
-  page("Остатки", `<div class="muted">Загрузка…</div>`);
+  const my = ++nav;
+  page("Остатки", `<div class="muted">Загрузка…</div>`, stockPage);
   let d;
   try { d = await call("/api/prod"); } catch(e) { return toast(e.message); }
+  if (my !== nav) return;
   const rows = d.stock.map(x => {
     const lack = Math.max(0, x.need - (x.have || 0));
     return `<tr class="${lack ? "short" : ""}"><td>${esc(x.name)}</td><td class="n">${x.have ?? "—"}</td><td class="n">${x.need || ""}</td><td class="n">${lack || ""}</td></tr>`;
