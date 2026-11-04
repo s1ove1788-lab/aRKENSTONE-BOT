@@ -56,7 +56,7 @@ MARKET_HEADERS = ["ID заказа", "Впервые замечен", "Камп�
 SHIP_HEADERS = ["Дата и время", "Дата отгрузки", "Код", "Размер", "Цвет", "Кол-во",
                 "Остаток до", "Остаток после", "Кто внёс", "Номер заказа", "Ножки", "Канал"]
 
-CACHE_TTL = 5  # секунд: чтобы не дёргать Google при каждом нажатии кнопки
+CACHE_TTL = 15  # секунд: чтобы не дёргать Google при каждом нажатии кнопки
 READ_TTL = 20  # секунд: сколько помним прочитанный лист (Google разрешает ~60 чтений в минуту на всех)
 _book = None
 
@@ -70,20 +70,23 @@ class _CachedSheet:
     Приложение, бот и Алиса читают одни и те же листы — так вместо десятков чтений в минуту выходит несколько.
     Если Google ответил «лимит исчерпан» (429), отдаём последнее прочитанное, чтобы экран не падал."""
 
-    def __init__(self, ws):
+    def __init__(self, ws, ttl: float = READ_TTL):
         self._ws = ws
+        self._ttl = ttl
         self._vals = None
         self._t = 0.0
 
-    def get_all_values(self, *a, **kw):
+    def get_all_values(self, *a, fresh: bool = False, **kw):
+        """fresh=True — прочитать из Google прямо сейчас. Так читают перед записью «было + изменение»,
+        чтобы не затереть то, что человек только что поправил руками в таблице."""
         if a or kw:
             return self._ws.get_all_values(*a, **kw)
-        if self._vals is not None and time.time() - self._t < READ_TTL:
+        if not fresh and self._vals is not None and time.time() - self._t < self._ttl:
             return [list(r) for r in self._vals]
         try:
             self._vals = self._ws.get_all_values()
         except gspread.exceptions.APIError as e:
-            if self._vals is not None and "429" in str(e):
+            if self._vals is not None and "429" in str(e) and not fresh:
                 log.warning("Google: лимит чтений, беру лист «%s» из памяти", self._ws.title)
                 return [list(r) for r in self._vals]
             raise
@@ -110,7 +113,10 @@ class _Tabs(dict):
     """Запомненные листы; каждый сразу оборачивается в _CachedSheet."""
 
     def __setitem__(self, key, ws):
-        super().__setitem__(key, ws if isinstance(ws, _CachedSheet) else _CachedSheet(ws))
+        # заказы не держим в памяти: их правит менеджер, а бот пишет в строки по номерам — нужна свежая таблица
+        if not isinstance(ws, _CachedSheet):
+            ws = _CachedSheet(ws, 0 if key == "orders" else READ_TTL)
+        super().__setitem__(key, ws)
 
 
 _tabs: dict = _Tabs()
@@ -616,7 +622,7 @@ def add_stock(code: str, qty: int, who: str = "") -> None:
     """Меняет число в таблице остатков прямо в ячейке (новые строки не добавляются)."""
     width, color = code.split(".")
     ws = _stock_ws()
-    values = ws.get_all_values()
+    values = ws.get_all_values(fresh=True)
     cols, rows = _stock_layout(values)
     row = rows.get(width)
     if row is None:  # такого размера в таблице ещё нет — добавляем строку
@@ -625,9 +631,10 @@ def add_stock(code: str, qty: int, who: str = "") -> None:
     ws.update_cell(row, cols.get(color, 2 if color == "04" else 3), int(qty))
 
 
-def latest_stock() -> dict:
-    """{'120.04': (5, '')} — текущие числа из таблицы остатков. Пустая ячейка = нет данных."""
-    values = _stock_ws().get_all_values()
+def latest_stock(fresh: bool = False) -> dict:
+    """{'120.04': (5, '')} — текущие числа из таблицы остатков. Пустая ячейка = нет данных.
+    fresh=True — перед записью нового остатка (иначе можно затереть ручную правку)."""
+    values = _stock_ws().get_all_values(fresh=fresh)
     cols, rows = _stock_layout(values)
     res = {}
     for width, r in rows.items():
@@ -757,7 +764,7 @@ def legs_get(kind: str = "welded") -> dict:
 def legs_add(height: int, delta: int, kind: str = "welded", color: str = "") -> int:
     """Меняет число ножек высоты height (и цвета, если блок по цветам). Ниже нуля не уходит. Возвращает новое число."""
     ws = _legs_ws(kind)
-    values = ws.get_all_values()
+    values = ws.get_all_values(fresh=True)
     cell = _legs_cells(values).get(int(height))
     if not cell:
         raise ValueError(f"нет строки для ножек {height}")
@@ -773,7 +780,7 @@ def legs_add(height: int, delta: int, kind: str = "welded", color: str = "") -> 
 def frames_add(width: int, delta: int, who: str = "") -> int:
     """Меняет число каркасов размера width прямо в ячейке (минус — убрать, ниже нуля не уходит). Возвращает новое число."""
     ws = _frames_ws()
-    values = ws.get_all_values()
+    values = ws.get_all_values(fresh=True)
     col = _frames_col(values)
     for i, v in enumerate(values[1:], start=2):
         if v and v[0].strip() == str(width):
@@ -842,7 +849,7 @@ def blanks_add(changes: list) -> list:
     """changes: [(ширина или None для общих, деталь, изменение)]. Ниже нуля не уходит.
     Возвращает [(ширина, деталь, было, стало)]."""
     ws = _blanks_ws()
-    values = ws.get_all_values()
+    values = ws.get_all_values(fresh=True)
     lay = _blanks_layout(values)
     cur, res, updates = {}, [], []
     for w, name, d in changes:
@@ -861,6 +868,38 @@ def blanks_add(changes: list) -> list:
     if updates:
         ws.batch_update(updates, value_input_option="RAW")
     return res
+
+
+BLANKS_MERGE = (("Изголовье", "Изголовье правое", "Изголовье левое"), ("Ноги", "Ноги правая", "Ноги левая"))
+
+
+def blanks_merge() -> list:
+    """Разовая переделка листа «Заготовки»: правое + левое -> одна колонка (изголовье, ноги).
+    Остатки складываются, лишняя колонка удаляется только в верхней таблице (нижняя «На сколько хватает» не трогается).
+    Если колонки уже объединены — ничего не делает. Возвращает, что объединено."""
+    ws = _blanks_ws()
+    done = []
+    for new, a, b in BLANKS_MERGE:
+        values = ws.get_all_values(fresh=True)
+        lay = _blanks_layout(values)
+        if a not in lay["per"] or b not in lay["per"] or not lay["sizes"]:
+            continue
+        ca, cb = lay["per"][a], lay["per"][b]
+        keep, drop = min(ca, cb), max(ca, cb)
+        updates = [{"range": f"{_col_letter(keep)}1", "values": [[f"{new} (шт.)"]]}]
+        for w, r in lay["sizes"].items():
+            updates.append({"range": f"{_col_letter(keep)}{r}",
+                            "values": [[_num(_cell(values, r, ca)) + _num(_cell(values, r, cb))]]})
+        ws.batch_update(updates, value_input_option="RAW")
+        get_book().batch_update({"requests": [{"deleteRange": {
+            "range": {"sheetId": ws.id, "startRowIndex": 0, "endRowIndex": max(lay["sizes"].values()),
+                      "startColumnIndex": drop, "endColumnIndex": drop + 1},
+            "shiftDimension": "COLUMNS"}}]})
+        ws.forget()
+        done.append(f"«{a}» + «{b}» → «{new}»")
+    if done:
+        blanks_refresh()
+    return done
 
 
 def blanks_refresh() -> dict:
@@ -911,9 +950,9 @@ def _fnum(x) -> float:
         return 0.0
 
 
-def inv_get(kind: str) -> list:
+def inv_get(kind: str, fresh: bool = False) -> list:
     """[{'row', 'name', 'qty', 'unit', 'min'}] — позиции склада из таблицы."""
-    values = _inv_ws(kind).get_all_values()
+    values = _inv_ws(kind).get_all_values(fresh=fresh)
     cols = _inv_cols(values[0] if values else [])
     res = []
     for i, v in enumerate(values[1:], start=2):
@@ -1044,7 +1083,7 @@ def sort_orders() -> int:
     """Упорядочивает таблицу заказов по дате доставки (а не по времени добавления). Внутри одной даты порядок сохраняется.
     Пишет в таблицу только если порядок изменился. Возвращает число строк, если пересортировала, иначе 0."""
     ws = orders_ws()
-    values = ws.get_all_values()
+    values = ws.get_all_values(fresh=True)
     if len(values) < 3:
         return 0
     lay = _set_layout(values[0])
@@ -1065,6 +1104,9 @@ def sort_orders() -> int:
         if qi is not None and v[qi].strip().isdigit():
             v[qi] = int(v[qi])  # «Количество» остаётся числом
         out.append(v)
+    if ws.get_all_values(fresh=True) != values:
+        log.info("Сортировка заказов отложена: таблицу только что поменяли, попробую в следующий раз")
+        return 0
     ws.update(range_name=f"A2:{_col_letter(len(out[0]) - 1)}{len(out) + 1}", values=out, value_input_option="RAW")
     _colored.clear()
     _invalidate()

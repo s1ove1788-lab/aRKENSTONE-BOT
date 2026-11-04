@@ -335,7 +335,7 @@ def return_apply(text: str, kind: str, who: str) -> tuple:
         log.exception("Не смог записать возврат в таблицу возвратов")
         return False, ["⚠️ Не получилось записать возврат в таблицу, попробуйте ещё раз."]
     try:
-        stock = sheets.latest_stock()
+        stock = sheets.latest_stock(fresh=True)
         for it in items:
             if "error" in it:
                 continue
@@ -636,8 +636,9 @@ def inv_create(kind: str, name: str, unit: str = "", minimum: float = 0.0) -> st
 def inv_apply(kind: str, parsed: list, sign: int, skip_uid=None) -> tuple:
     """Приход (sign=1) или расход (sign=-1) по [(позиция, число)]. Возвращает (строки «записано», предупреждения)."""
     done, low = [], []
+    now = {i["row"]: i["qty"] for i in sheets.inv_get(kind, fresh=True)}  # свежие числа: вдруг поправили руками
     for item, n in parsed:
-        new = max(0.0, item["qty"] + sign * n)
+        new = max(0.0, now.get(item["row"], item["qty"]) + sign * n)
         sheets.inv_set(kind, item["row"], new)
         item["qty"] = new
         done.append(f"{item['name']}: {'+' if sign > 0 else '−'}{logic.fmt_qty(n)} → {logic.fmt_qty(new)} {item['unit']}".rstrip())
@@ -712,7 +713,7 @@ def save_frames(ctx: Ctx, name: str, text: str) -> None:
 
 def stock_change(code: str, delta: int, who: str) -> str:
     """Покрашенные каркасы: прибавить delta (минус — убрать). Прибавка списывает столько же сваренных каркасов."""
-    before = (sheets.latest_stock().get(code) or (0, ""))[0]
+    before = (sheets.latest_stock(fresh=True).get(code) or (0, ""))[0]
     after = max(0, before + delta)
     sheets.add_stock(code, after, who)
     extra = ""
@@ -743,7 +744,7 @@ def record_shipments(marked: list, who: str, today) -> None:
     """Курьер отметил «доставлен» -> каждая кровать попадает в таблицу «Отгрузки», остаток списывается (если он внесён)."""
     if not marked:
         return
-    stock = sheets.latest_stock()
+    stock = sheets.latest_stock(fresh=True)
     for o in marked:
         code = logic.order_code(o)
         if not code:
@@ -1414,6 +1415,15 @@ def main() -> None:
     except Exception:
         log.exception("Не смог загрузить пользователей из таблицы. Проверьте SHEET_ID, "
                       "ключ Google и доступ сервисного аккаунта к таблице")
+    try:  # разовая переделка листа «Заготовки»: одно изголовье и одни ноги вместо правых/левых
+        merged = sheets.blanks_merge()
+        if merged:
+            broadcast_managers("🪚 Лист «Заготовки» обновлён: " + "; ".join(merged) +
+                               ". Остатки правых и левых сложены.")
+    except Exception:
+        log.exception("Не смог объединить колонки на листе «Заготовки»")
+        broadcast_managers("⚠️ Не получилось объединить колонки изголовья и ног на листе «Заготовки». "
+                           "Сделайте вручную: одна колонка «Изголовье (шт.)» и одна «Ноги (шт.)».")
     last_reload = time.time()
     _now = datetime.now(ZoneInfo(config.TIMEZONE))
     daily = {"date": str(_now.date()) if _now.hour >= config.DAILY_HOUR else ""}  # сегодняшнее утро уже прошло — не дублируем
