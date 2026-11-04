@@ -358,7 +358,7 @@ function drawWeld(d){
     </table></div>
     ${legsBlock(d.legs, "welded", "Сваренные ножки · штучно", "🦵 Внести сваренные ножки")}
     <div class="muted" style="margin:6px 4px">«Сварить» = нужно по заказам − уже покрашено − уже сварено. «Загот.» — на сколько каркасов хватает заготовок.
-    Сваренный каркас сам списывает заготовки: 1 комплект + 4 подножки + 22 ламели.</div>`;
+    Сваренный каркас сам списывает заготовки: ${Object.entries(d.blanks.bom || {}).map(([n, k]) => `${n.toLowerCase()} ×${k}`).join(", ")}.</div>`;
 }
 
 function legsForm(i, kind){
@@ -543,19 +543,26 @@ function drawManager(d){
     <div class="toolbar"><button class="btn" onclick="ordersPage()">📊 Заказы</button>
       <button class="btn" onclick="stockPage()">📦 Остатки</button></div>
     ${d.links.filter(l => !l.hidden).map(l => `<a class="btn" style="margin-top:8px" target="_blank" href="${esc(l.url)}">${esc(l.title)}</a>`).join("")}
-    <h2>Добавить сотрудника</h2>
+    <button class="btn" style="width:100%;margin-top:8px" onclick="staffPage()">👥 Сотрудники · ${d.devices.length}</button>`;
+  window._mgr = d;
+}
+
+function staffPage(){
+  const d = window._mgr;
+  page("Сотрудники", `
     <div class="card open-form" id="addform">
+      <div class="title" style="margin-bottom:8px">Добавить сотрудника</div>
       <input id="f-code" placeholder="Код с телефона, например K7QM-2XPA" autocapitalize="characters" autocomplete="off">
       <input id="f-name" placeholder="Имя">
       <select id="f-role">${Object.entries(ROLES).map(([k,v]) => `<option value="${k}">${v}</option>`).join("")}</select>
       <button class="btn main" style="width:100%" onclick="addDevice(this)">Добавить</button>
     </div>
-    <h2>Сотрудники в приложении</h2>
-    ${d.devices.length ? d.devices.map(x => `
-      <div class="card row"><div class="grow"><div class="title">${esc(x.name || "без имени")}</div>
-      <div class="sub">${esc(x.label)} · ${esc(x.code)}</div></div>
-      ${x.code === me.code ? `<span class="badge">это вы</span>` : `<button class="btn" onclick="removeDevice('${esc(x.code)}','${esc(x.name)}')">Убрать</button>`}</div>`).join("")
-      : `<div class="empty">Пока никого</div>`}`;
+    <h2>В приложении · ${d.devices.length}</h2>
+    ${d.devices.length ? `<div class="card" style="padding:6px 10px"><table>
+      <tr><th>Имя</th><th>Роль</th><th></th></tr>
+      ${d.devices.map(x => `<tr><td><b>${esc(x.name || "без имени")}</b><div class="ch">${esc(x.code)}</div></td><td>${esc(x.label)}</td>
+        <td class="n">${x.code === me.code ? `<span class="badge">это вы</span>` : `<button class="btn" style="padding:8px 12px" onclick="removeDevice('${esc(x.code)}','${esc(x.name)}')">Убрать</button>`}</td></tr>`).join("")}
+    </table></div>` : `<div class="empty">Пока никого</div>`}`);
 }
 
 /* ------------------------------ страницы менеджера: заказы и остатки */
@@ -634,15 +641,15 @@ async function addDevice(btn){
   btn.disabled = true;
   try {
     await call("/api/manager/device", {code: $("#f-code").value, name: $("#f-name").value, role: $("#f-role").value});
-    toast("Добавлено"); $("#f-code").value = ""; $("#f-name").value = ""; load();
+    toast("Добавлено"); window._mgr = await call("/api/manager"); staffPage();
   } catch(e) { toast(e.message); }
   btn.disabled = false;
 }
 
 async function removeDevice(code, name){
   if (!confirm(`Убрать ${name || code} из приложения?`)) return;
-  try { await call("/api/manager/device/remove", {code}); toast("Убрано"); } catch(e) { toast(e.message); }
-  load();
+  try { await call("/api/manager/device/remove", {code}); toast("Убрано"); window._mgr = await call("/api/manager"); staffPage(); }
+  catch(e) { toast(e.message); }
 }
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
