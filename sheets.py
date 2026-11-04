@@ -1071,16 +1071,29 @@ def set_shipment_cell(row: int, value: str) -> None:
     _invalidate()
 
 
-def _ship_sort_key(ship: str, delivery: str, today):
-    """Ключ сортировки: дата доставки (для диапазона — последний день), затем дата отгрузки; непонятное — в конец."""
+def _status_group(status: str) -> int:
+    """Порядок групп в таблице: 0 — доставлен (сверху), 1 — в работе, 2 — отмена или возврат (внизу)."""
+    st = (status or "").strip().lower().replace("ё", "е")
+    if st.startswith("доставлен"):
+        return 0
+    if "отмен" in st or "возврат" in st:
+        return 2
+    return 1
+
+
+def _ship_sort_key(ship: str, delivery: str, today, status: str = ""):
+    """Ключ сортировки: группа по статусу, затем дата отгрузки (для диапазона — первый день), затем дата доставки.
+    Нет даты отгрузки — берём дату доставки; непонятное — в конец своей группы."""
     from datetime import date
-    d = logic.parse_range(delivery, today)
     r = logic.parse_range(ship, today)
-    return (d[1] if d else date.max, d[0] if d else date.max, r[1] if r else date.max)
+    d = logic.parse_range(delivery, today)
+    first = r[0] if r else (d[0] if d else date.max)
+    return (_status_group(status), first, d[1] if d else date.max)
 
 
 def sort_orders() -> int:
-    """Упорядочивает таблицу заказов по дате доставки (а не по времени добавления). Внутри одной даты порядок сохраняется.
+    """Упорядочивает таблицу заказов: сверху доставленные, потом в работе, внизу отмены и возвраты;
+    внутри каждой группы — по дате отгрузки. Внутри одной даты порядок сохраняется.
     Пишет в таблицу только если порядок изменился. Возвращает число строк, если пересортировала, иначе 0."""
     ws = orders_ws()
     values = ws.get_all_values(fresh=True)
@@ -1094,7 +1107,9 @@ def sort_orders() -> int:
     body = [v[:max(width, len(v))] for v in body]
     filled = [v for v in body if any(x.strip() for x in v)]
     today = datetime.now(ZoneInfo(config.TIMEZONE)).date()
-    ordered = sorted(filled, key=lambda v: _ship_sort_key(v[lay["ship"]], v[lay["delivery"]] if "delivery" in lay else "", today))
+    st = lay.get("status")
+    ordered = sorted(filled, key=lambda v: _ship_sort_key(v[lay["ship"]], v[lay["delivery"]] if "delivery" in lay else "", today,
+                                                          v[st] if st is not None else ""))
     if ordered == filled:
         return 0
     qi = lay.get("qty")
