@@ -57,8 +57,63 @@ SHIP_HEADERS = ["Дата и время", "Дата отгрузки", "Код",
                 "Остаток до", "Остаток после", "Кто внёс", "Номер заказа", "Ножки", "Канал"]
 
 CACHE_TTL = 5  # секунд: чтобы не дёргать Google при каждом нажатии кнопки
+READ_TTL = 20  # секунд: сколько помним прочитанный лист (Google разрешает ~60 чтений в минуту на всех)
 _book = None
-_tabs: dict = {}
+
+# Методы листа, которые только читают и не сбрасывают запомненное содержимое
+_READS = {"get_all_values", "get_all_records", "row_values", "col_values", "find", "findall", "get", "get_values",
+          "acell", "cell", "range"}
+
+
+class _CachedSheet:
+    """Обёртка над листом Google: get_all_values() помнит результат READ_TTL секунд, любая запись его сбрасывает.
+    Приложение, бот и Алиса читают одни и те же листы — так вместо десятков чтений в минуту выходит несколько.
+    Если Google ответил «лимит исчерпан» (429), отдаём последнее прочитанное, чтобы экран не падал."""
+
+    def __init__(self, ws):
+        self._ws = ws
+        self._vals = None
+        self._t = 0.0
+
+    def get_all_values(self, *a, **kw):
+        if a or kw:
+            return self._ws.get_all_values(*a, **kw)
+        if self._vals is not None and time.time() - self._t < READ_TTL:
+            return [list(r) for r in self._vals]
+        try:
+            self._vals = self._ws.get_all_values()
+        except gspread.exceptions.APIError as e:
+            if self._vals is not None and "429" in str(e):
+                log.warning("Google: лимит чтений, беру лист «%s» из памяти", self._ws.title)
+                return [list(r) for r in self._vals]
+            raise
+        self._t = time.time()
+        return [list(r) for r in self._vals]
+
+    def forget(self):
+        self._vals = None
+
+    def __getattr__(self, name):
+        attr = getattr(self._ws, name)
+        if not callable(attr) or name in _READS:
+            return attr
+
+        def write(*a, **kw):  # запись: сначала делаем, потом забываем старое содержимое
+            try:
+                return attr(*a, **kw)
+            finally:
+                self._vals = None
+        return write
+
+
+class _Tabs(dict):
+    """Запомненные листы; каждый сразу оборачивается в _CachedSheet."""
+
+    def __setitem__(self, key, ws):
+        super().__setitem__(key, ws if isinstance(ws, _CachedSheet) else _CachedSheet(ws))
+
+
+_tabs: dict = _Tabs()
 _cache = {"t": 0.0, "rows": None}
 
 
@@ -107,6 +162,7 @@ def orders_ws():
         ws = book.worksheet(config.SHEET_TAB) if config.SHEET_TAB else book.sheet1
         _ensure_header(ws, HEADERS)
         _tabs["orders"] = ws
+        ws = _tabs["orders"]
     return ws
 
 
@@ -120,6 +176,7 @@ def _tab(title: str, headers: list):
             ws = book.add_worksheet(title=title, rows=200, cols=max(len(headers), 4))
         _ensure_header(ws, headers)
         _tabs[title] = ws
+        ws = _tabs[title]
     return ws
 
 
@@ -537,6 +594,7 @@ def _stock_ws():
                       [[w, 0, 0] for w in sorted({int(c.split(".")[0]) for c in config.STOCK_CODES})],
                       range_name="A1", value_input_option="USER_ENTERED")
         _tabs["stock"] = ws
+        ws = _tabs["stock"]
     return ws
 
 
@@ -608,6 +666,7 @@ def _frames_ws():
             ws = book.add_worksheet(title=config.FRAMES_TAB, rows=50, cols=2)
             ws.append_row(FRAMES_HEADERS, value_input_option="RAW")
         _tabs["frames"] = ws
+        ws = _tabs["frames"]
     values = ws.get_all_values()
     have = {v[0].strip() for v in values[1:] if v and v[0].strip()}
     missing = [w for w in frame_widths() if str(w) not in have]
@@ -736,6 +795,7 @@ def _blanks_ws():
     if ws is None:
         ws = get_book().worksheet(config.BLANKS_TAB)  # лист создаёт человек; нет листа — ошибка, функция выключена
         _tabs["blanks"] = ws
+        ws = _tabs["blanks"]
     return ws
 
 

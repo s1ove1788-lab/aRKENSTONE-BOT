@@ -579,9 +579,13 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0].rstrip("/")
         try:
             code, data = api(method, path, self.headers.get("X-Token") or "", body)
-        except Exception:
-            log.exception("Приложение: ошибка в %s", path)
-            code, data = 500, {"error": "Не получилось открыть таблицу, попробуйте ещё раз"}
+        except Exception as e:
+            if "429" in str(e):  # Google: слишком много чтений за минуту — подождать и повторить
+                log.warning("Приложение: лимит Google в %s", path)
+                code, data = 503, {"error": "Таблица Google перегружена, повторите через минуту"}
+            else:
+                log.exception("Приложение: ошибка в %s", path)
+                code, data = 500, {"error": "Не получилось открыть таблицу, попробуйте ещё раз"}
         self._json(code, data)
 
     def do_GET(self):
