@@ -301,6 +301,9 @@ def ship_plan(orders: list, today: date) -> Counter:
         st = o["status"].lower()
         if st and not st.startswith("доставлен"):  # «Отмена» и т.п. не считаем
             continue
+        m = re.match(r"доставлен\s+(\d{1,2})\.(\d{1,2})", st)
+        if m and (int(m.group(1)), int(m.group(2))) != (today.day, today.month):
+            continue  # доставили раньше (например, вчера вечером) — сегодня с производства уже не уходит
         r = key_range(o, today)
         if r and r[0] <= today <= r[1]:
             code = order_code(o)
