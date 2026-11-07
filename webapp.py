@@ -142,15 +142,29 @@ def remove_device(code: str) -> bool:
 # телефоны спрашивают «есть новое?» каждые несколько секунд, и если бы каждый раз читать таблицу,
 # Google быстро упёрся бы в лимит. В таблицу только дописываем новые сообщения.
 CHAT_TAB = "Чат"
-CHAT_HEADERS = ["Время", "Код", "Имя", "Роль", "Сообщение"]
+CHAT_HEADERS = ["Время", "Код", "Имя", "Роль", "Сообщение", "Изменено"]
 CHAT_KEEP = 500        # сколько последних сообщений держим в памяти и отдаём телефону
 CHAT_MAX_LEN = 1000    # длина одного сообщения
-_chat = {"loaded": False, "msgs": [], "epoch": str(int(time.time()))}
+# rev — номер последнего изменения в чате. Телефон присылает свой rev и получает только то,
+# что появилось или поменялось после него (новые и отредактированные сообщения).
+_chat = {"loaded": False, "msgs": [], "rev": 0, "epoch": str(int(time.time()))}
 _chat_lock = threading.Lock()
 
 
 def _chat_ws():
+    if CHAT_TAB not in sheets._tabs:  # у листа, созданного раньше, всего 5 столбцов — добавим место под «Изменено»
+        try:
+            ws = sheets.get_book().worksheet(CHAT_TAB)
+            if ws.col_count < len(CHAT_HEADERS):
+                ws.add_cols(len(CHAT_HEADERS) - ws.col_count)
+        except Exception:
+            pass
     return sheets._tab(CHAT_TAB, CHAT_HEADERS)
+
+
+def _chat_bump(m: dict) -> None:
+    _chat["rev"] += 1
+    m["rev"] = _chat["rev"]
 
 
 def _chat_load() -> None:
@@ -159,39 +173,77 @@ def _chat_load() -> None:
     labels = {v.lower(): k for k, v in config.ROLE_LABELS.items()}
     msgs = []
     for i, v in enumerate(_chat_ws().get_all_values()[1:], start=2):
-        v = list(v) + [""] * 5
+        v = list(v) + [""] * 6
         text = v[4].strip()
         if not text:
             continue
         msgs.append({"id": i, "t": v[0].strip(), "code": norm_code(v[1]), "name": v[2].strip() or "сотрудник",
-                     "role": labels.get(v[3].strip().lower(), ""), "text": text})
-    _chat.update(loaded=True, msgs=msgs[-CHAT_KEEP:])
+                     "role": labels.get(v[3].strip().lower(), ""), "text": text, "edited": v[5].strip()})
+    msgs = msgs[-CHAT_KEEP:]
+    for m in msgs:
+        _chat_bump(m)
+    _chat.update(loaded=True, msgs=msgs)
 
 
-def chat_list(after: int, code: str) -> dict:
+def chat_list(since: int, code: str) -> dict:
     with _chat_lock:
         _chat_load()
-        msgs = [m for m in _chat["msgs"] if m["id"] > after]
-    return {"epoch": _chat["epoch"],
+        msgs = [m for m in _chat["msgs"] if m["rev"] > since]
+        rev = _chat["rev"]
+    return {"epoch": _chat["epoch"], "rev": rev,
             "msgs": [{"id": m["id"], "t": m["t"], "name": m["name"], "role": m["role"],
-                      "label": config.ROLE_LABELS.get(m["role"], ""), "text": m["text"], "mine": m["code"] == code}
+                      "label": config.ROLE_LABELS.get(m["role"], ""), "text": m["text"],
+                      "edited": bool(m.get("edited")), "mine": m["code"] == code}
                      for m in msgs]}
 
 
-def chat_send(text: str, me: dict, code: str) -> dict:
+def _clean(text: str) -> str:
     text = re.sub(r"\n{3,}", "\n\n", (text or "").replace("\r", "")).strip()[:CHAT_MAX_LEN]
     if not text:
         raise ValueError("Пустое сообщение")
+    return text
+
+
+def chat_send(text: str, me: dict, code: str) -> dict:
+    text = _clean(text)
     now = datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m.%Y %H:%M")
     name = me["name"] or "сотрудник"
     with _chat_lock:
         _chat_load()
         # RAW: таблица сохраняет текст как есть, «=2+2» или «+7…» не превратятся в формулу
-        _chat_ws().append_row([now, code, name, config.ROLE_LABELS[me["role"]], text], value_input_option="RAW")
-        new_id = (_chat["msgs"][-1]["id"] + 1) if _chat["msgs"] else 2
-        _chat["msgs"].append({"id": new_id, "t": now, "code": code, "name": name, "role": me["role"], "text": text})
+        res = _chat_ws().append_row([now, code, name, config.ROLE_LABELS[me["role"]], text, ""],
+                                    value_input_option="RAW")
+        # номер строки, куда легло сообщение, — по нему потом находим сообщение для правки
+        hit = re.search(r"!A(\d+)", str(((res or {}).get("updates") or {}).get("updatedRange") or ""))
+        new_id = int(hit.group(1)) if hit else ((_chat["msgs"][-1]["id"] + 1) if _chat["msgs"] else 2)
+        m = {"id": new_id, "t": now, "code": code, "name": name, "role": me["role"], "text": text, "edited": ""}
+        _chat_bump(m)
+        _chat["msgs"].append(m)
         del _chat["msgs"][:-CHAT_KEEP]
     return {"ok": True, "id": new_id}
+
+
+def chat_edit(msg_id: int, text: str, code: str) -> dict:
+    """Правка своего сообщения. Чужие сообщения менять нельзя."""
+    text = _clean(text)
+    with _chat_lock:
+        _chat_load()
+        m = next((x for x in _chat["msgs"] if x["id"] == msg_id), None)
+        if not m:
+            raise ValueError("Сообщение слишком старое или удалено")
+        if m["code"] != code:
+            raise PermissionError("Можно менять только свои сообщения")
+        if m["text"] == text:
+            return {"ok": True}
+        ws = _chat_ws()
+        row = ws.row_values(msg_id) + [""] * 6
+        if norm_code(row[1]) != code or row[0].strip() != m["t"]:  # строки в таблице сдвинули вручную — не трогаем чужую
+            raise ValueError("В таблице чата поменялись строки, правка не сохранена")
+        now = datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m.%Y %H:%M")
+        ws.update(values=[[text, now]], range_name=f"E{msg_id}:F{msg_id}", value_input_option="RAW")
+        m.update(text=text, edited=now)
+        _chat_bump(m)
+    return {"ok": True}
 
 
 def _parse_role(text: str):
@@ -478,7 +530,14 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
     today = now_date()
 
     if path == "/api/chat":
-        return 200, chat_list(_int(body.get("after"), 0), code)
+        return 200, chat_list(_int(body.get("since"), 0), code)
+    if method == "POST" and path == "/api/chat/edit":
+        try:
+            return 200, chat_edit(_int(body.get("id"), 0), str(body.get("text") or ""), code)
+        except PermissionError as e:
+            return 400, {"error": str(e)}
+        except ValueError as e:
+            return 400, {"error": str(e)}
     if method == "POST" and path == "/api/chat/send":
         try:
             return 200, chat_send(str(body.get("text") or ""), me, code)

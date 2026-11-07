@@ -136,10 +136,29 @@ body.chat main{padding-bottom:calc(150px + env(safe-area-inset-bottom))}
 .composer textarea{flex:1;font:inherit;padding:11px 14px;border-radius:20px;border:1px solid var(--line);
   background:var(--card);color:var(--ink);resize:none;max-height:120px;min-height:44px;line-height:1.35}
 .msg a{color:var(--accent)}
-.composer textarea:focus{outline:none;border-color:var(--accent)}
+.composer textarea:focus,.sheet textarea:focus{outline:none;border-color:var(--accent)}
 .composer button{width:46px;height:46px;border-radius:50%;border:0;background:var(--accent);color:var(--accent-ink);
   font-size:20px;cursor:pointer;flex:none}
 .composer button:disabled{opacity:.5}
+.msg.mine{cursor:pointer}
+.msg.mine:active{filter:brightness(.95)}
+.msg .tm i{font-style:normal;margin-right:4px}
+.msg.big{background:none;border-color:transparent}
+.msg.big .txt{font-size:42px;line-height:1.15}
+.composer button.emo{background:var(--chip);color:var(--ink);font-size:22px}
+.composer button.emo.on{background:var(--accent);color:var(--accent-ink)}
+.emoji-panel{max-width:640px;margin:0 auto 8px;background:var(--card);border:1px solid var(--line);border-radius:16px;overflow:hidden}
+.emoji-panel[hidden]{display:none}
+.emoji-tabs{display:flex;border-bottom:1px solid var(--line)}
+.emoji-tabs button{flex:1;background:none;border:0;font-size:20px;padding:8px 0;cursor:pointer;border-radius:0;width:auto;height:auto;color:inherit}
+.emoji-tabs button.on{background:var(--chip);box-shadow:inset 0 -2px 0 var(--accent)}
+.emoji-grid{display:grid;grid-template-columns:repeat(8,1fr);height:190px;overflow-y:auto;padding:4px}
+.emoji-grid button{background:none;border:0;font-size:26px;padding:6px 0;cursor:pointer;border-radius:10px;width:auto;height:auto;color:inherit}
+.emoji-grid button:active{background:var(--chip)}
+.emoji-grid .none{grid-column:1/-1;text-align:center;color:var(--muted);font-size:14px;padding:30px 10px}
+body.chat.emoji main{padding-bottom:calc(400px + env(safe-area-inset-bottom))}
+.sheet textarea{width:100%;font:inherit;padding:12px;border-radius:12px;border:1px solid var(--line);
+  background:var(--bg);color:var(--ink);min-height:110px;resize:vertical;margin-bottom:8px}
 </style>
 </head>
 <body>
@@ -240,6 +259,7 @@ function open(k){
   tab = k; try { localStorage.setItem("ark_tab", k); } catch(e) {}
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === k));
   document.body.classList.toggle("chat", k === "chat");
+  document.body.classList.remove("emoji");
   document.querySelectorAll(".composer").forEach(e => e.remove());
   if (k === "chat") return chatOpen();
   load();
@@ -715,7 +735,7 @@ async function removeDevice(code, name){
 /* ------------------------------ чат
    Все сообщения храним здесь (chat.msgs) и раз в несколько секунд спрашиваем у сервера только новые.
    Открыт чат — проверяем каждые 3 сек, иначе раз в 20 сек, чтобы показать число непрочитанных на вкладке. */
-const chat = {msgs: [], last: 0, epoch: "", busy: false, timer: null, sending: false};
+const chat = {msgs: [], rev: 0, last: 0, epoch: "", busy: false, timer: null, sending: false};
 function chatSeen(v){
   try { if (v !== undefined) localStorage.setItem("ark_chat_seen", String(v)); return +localStorage.getItem("ark_chat_seen") || 0; }
   catch(e) { return v || 0; }
@@ -726,13 +746,20 @@ async function chatPoll(){
   if (!chat.busy && !document.hidden) {
     chat.busy = true;
     try {
-      const d = await call("/api/chat?after=" + (chat.epoch ? chat.last : 0));
-      if (d.epoch !== chat.epoch) { chat.msgs = []; chat.last = 0; chat.epoch = d.epoch; }  // сервер перезапустился — берём всё заново
-      const fresh = d.msgs.filter(m => m.id > chat.last);
-      if (fresh.length) {
-        chat.msgs = chat.msgs.concat(fresh).slice(-500);
-        chat.last = chat.msgs[chat.msgs.length - 1].id;
-        if (tab === "chat") chatDraw(fresh);
+      let since = chat.rev;
+      const d = await call("/api/chat?since=" + (chat.epoch ? since : 0));
+      if (d.epoch !== chat.epoch) { chat.msgs = []; chat.rev = 0; chat.epoch = d.epoch; }  // сервер перезапустился — берём всё заново
+      // приходят и новые, и отредактированные сообщения: новые дописываем, изменённые заменяем
+      const added = [], changed = [];
+      for (const m of d.msgs) {
+        const i = chat.msgs.findIndex(x => x.id === m.id);
+        if (i >= 0) { chat.msgs[i] = m; changed.push(m); } else added.push(m);
+      }
+      chat.rev = Math.max(chat.rev, d.rev || 0);
+      if (added.length || changed.length) {
+        chat.msgs = chat.msgs.concat(added).sort((a, b) => a.id - b.id).slice(-500);
+        chat.last = chat.msgs.length ? chat.msgs[chat.msgs.length - 1].id : 0;
+        if (tab === "chat") chatDraw(changed.length ? null : added, !!changed.length);
       } else if (tab === "chat" && !document.querySelector(".chat-list")) chatDraw();
     } catch(e) {
       if (tab === "chat" && !document.querySelector(".chat-list")) $("#main").innerHTML = `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="chatOpen()">Повторить</button></div>`;
@@ -751,7 +778,12 @@ function chatOpen(){
   clearInterval(timer); ++nav; onPage = false; window._pageAgain = null;
   $("#main").innerHTML = chat.msgs.length ? "" : `<div class="empty">Загрузка…</div>`;
   if (chat.msgs.length) chatDraw();
-  document.body.insertAdjacentHTML("beforeend", `<div class="composer"><div class="in">
+  document.body.classList.remove("emoji");
+  document.body.insertAdjacentHTML("beforeend", `<div class="composer">
+    <div class="emoji-panel" id="emoji" hidden><div class="emoji-tabs">${EMOJI.map((g, i) =>
+      `<button data-g="${i}" onclick="emojiTab(${i})">${g[0]}</button>`).join("")}</div><div class="emoji-grid" id="emoji-grid"></div></div>
+    <div class="in">
+    <button class="emo" id="chat-emo" aria-label="Эмодзи" onclick="emojiToggle()">😊</button>
     <textarea id="chat-in" rows="1" maxlength="1000" placeholder="Сообщение для всех…" enterkeyhint="send"></textarea>
     <button id="chat-go" aria-label="Отправить">➤</button></div></div>`);
   const ta = $("#chat-in");
@@ -762,6 +794,7 @@ function chatOpen(){
     if (e.key === "Enter" && !e.shiftKey && !("ontouchstart" in window)) { e.preventDefault(); chatSend(); }
   };
   $("#chat-go").onclick = chatSend;
+  ta.onfocus = () => { if ("ontouchstart" in window && !$("#emoji").hidden) emojiToggle(); };
   chatPoll();
 }
 function grow(ta){ ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight + 2, 120) + "px"; }
@@ -778,14 +811,20 @@ function msgHtml(m, prev){
   const cont = prev && pday === day && prev.name === m.name && prev.mine === m.mine;
   const linked = esc(m.text).replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>')
     .replace(/(\+?[78][\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2})/g, m2 => `<a href="tel:${m2.replace(/[^\d+]/g, "")}">${m2}</a>`);
+  const big = onlyEmoji(m.text);
   return (day !== pday ? `<div class="chat-day">${esc(day)}</div>` : "") +
-    `<div class="msg${m.mine ? " mine" : ""}${cont ? " cont" : ""}">
+    `<div class="msg${m.mine ? " mine" : ""}${cont ? " cont" : ""}${big ? " big" : ""}" data-id="${m.id}"${m.mine ? ` onclick="editMsg(${m.id})"` : ""}>
       ${m.mine ? "" : `<div class="who">${esc(m.name)} <small>· ${esc(m.label)}</small></div>`}
-      <div class="txt">${linked}</div><div class="tm">${esc((m.t || "").slice(11, 16))}</div></div>`;
+      <div class="txt">${linked}</div><div class="tm">${m.edited ? "<i>изменено</i>" : ""}${esc((m.t || "").slice(11, 16))}</div></div>`;
 }
-function chatDraw(fresh){
+function chatDraw(fresh, keepScroll){
   const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 120;
   let list = document.querySelector(".chat-list");
+  if (keepScroll && list) {  // кто-то отредактировал сообщение — перерисовываем, не прыгая по ленте
+    const y = window.scrollY;
+    list.innerHTML = chat.msgs.map((m, i) => msgHtml(m, chat.msgs[i - 1])).join("");
+    return window.scrollTo(0, atBottom ? document.body.scrollHeight : y);
+  }
   if (!list || !fresh) {
     $("#main").innerHTML = chat.msgs.length ? `<div class="chat-list"></div>`
       : `<div class="chat-list"></div><div class="empty" id="chat-empty">Здесь пока тихо.<br>Напишите первое сообщение — его увидят все сотрудники.</div>`;
@@ -799,6 +838,69 @@ function chatDraw(fresh){
   if (atBottom || fresh.some(m => m.mine)) window.scrollTo(0, document.body.scrollHeight);
   else toast("Новое сообщение ↓");
 }
+/* сообщение только из 1–3 эмодзи показываем крупно, без «пузыря» */
+function onlyEmoji(t){
+  const s = String(t || "").replace(/\s/g, "");
+  if (!s || s.length > 24) return false;
+  try { return /^(?:\p{Extended_Pictographic}|\p{Emoji_Component}|\u200d|\ufe0f)+$/u.test(s) && [...new Intl.Segmenter().segment(s)].length <= 3; }
+  catch(e) { return false; }
+}
+
+/* ------------------------------ правка своего сообщения */
+function editMsg(id){
+  const m = chat.msgs.find(x => x.id === id); if (!m || !m.mine) return;
+  sheet(`<h3>Изменить сообщение</h3><div class="muted">У всех появится пометка «изменено»</div>
+    <textarea id="edit-in" maxlength="1000">${esc(m.text)}</textarea>
+    <div class="actions"><button class="btn" onclick="closeSheet()">Отмена</button>
+      <button class="btn main" id="edit-go">Сохранить</button>
+      <button class="btn wide" id="edit-copy">📋 Скопировать текст</button></div>`);
+  const ta = $("#edit-in");
+  if (!("ontouchstart" in window)) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+  $("#edit-copy").onclick = async () => { try { await navigator.clipboard.writeText(m.text); toast("Скопировано"); } catch(e) { toast("Не вышло скопировать"); } };
+  $("#edit-go").onclick = async () => {
+    const text = ta.value.trim(), btn = $("#edit-go");
+    if (!text) return toast("Сообщение не может быть пустым");
+    if (text === m.text) return closeSheet();
+    btn.disabled = true;
+    try { await call("/api/chat/edit", {id, text}); closeSheet(); toast("Сохранено"); chat.busy ? setTimeout(chatPoll, 400) : chatPoll(); }
+    catch(e) { toast(e.message); btn.disabled = false; }
+  };
+}
+
+/* ------------------------------ эмодзи */
+const EMOJI = [
+  ["🕘", ""],  // недавние — заполняются сами
+  ["😀", "😀 😃 😄 😁 😆 😅 🤣 😂 🙂 😉 😊 😇 🥰 😍 🤩 😘 😋 😛 😜 🤪 😎 🤓 🧐 🤔 🤨 😐 😑 😶 🙄 😏 😬 😮‍💨 🤥 😌 😔 😪 😴 😷 🤒 🤕 🤢 🥵 🥶 😵 🤯 🥳 😕 😟 🙁 😮 😯 😲 😳 🥺 😦 😧 😨 😰 😥 😢 😭 😱 😖 😣 😞 😓 😩 😫 🥱 😤 😡 😠 🤬 😈 💀 💩 🤡 👻 🤖"],
+  ["👍", "👍 👎 👌 🤌 ✌️ 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ ✋ 🤚 🖐️ 🖖 👋 👏 🙌 👐 🤲 🤝 🙏 ✍️ 💪 🦾 👀 🫡 🤷 🤷‍♂️ 🙋‍♂️ 🙅‍♂️ 🙆‍♂️ 🤦‍♂️ 💁‍♂️ 🏃 🚶 👷 🧑‍🔧 🧑‍🏭 🧑‍💼"],
+  ["❤️", "❤️ 🧡 💛 💚 💙 💜 🖤 🤍 🤎 💔 ❣️ 💕 💞 💓 💗 💖 💘 💝 🔥 ✨ ⭐ 🌟 💯 💥 💫 🎉 🎊 🎁 🏆 🥇 🎯 ☀️ 🌧️ ❄️ ⛄ 🌈 ☕ 🍕 🍔 🍺 🎂"],
+  ["🚚", "🚚 🚛 🚐 🚗 🛻 🛞 ⛽ 🗺️ 📍 🏠 🏢 🏭 🛏️ 🛋️ 🪑 📦 🪵 🔩 🔧 🔨 🪛 🪚 ⚙️ 🧰 🎨 🖌️ 🧱 📏 📐 ✂️ 🔥 💡 🔋 📱 📞 ☎️ 💬 📝 📄 📊 📈 📉 🗓️ ⏰ ⏳ 💰 💵 💳 🧾 🔑 🔒"],
+  ["✅", "✅ ☑️ ✔️ ❌ ❎ ⛔ 🚫 ⚠️ ❗ ❓ ‼️ ⁉️ 💤 🆗 🆕 🆘 🔴 🟠 🟡 🟢 🔵 🟣 ⚫ ⚪ 🟥 🟩 ⬆️ ⬇️ ➡️ ⬅️ 🔄 🔁 ➕ ➖ ✖️ ➗ 1️⃣ 2️⃣ 3️⃣ 4️⃣ 5️⃣ 🔟 #️⃣"],
+];
+function emojiRecent(add){
+  let r = []; try { r = JSON.parse(localStorage.getItem("ark_emoji") || "[]"); } catch(e) {}
+  if (add) { r = [add, ...r.filter(x => x !== add)].slice(0, 32); try { localStorage.setItem("ark_emoji", JSON.stringify(r)); } catch(e) {} }
+  return r;
+}
+function emojiToggle(){
+  const p = $("#emoji"), open = p.hidden;
+  p.hidden = !open; $("#chat-emo").classList.toggle("on", open); document.body.classList.toggle("emoji", open);
+  if (open) { if ("ontouchstart" in window) $("#chat-in").blur(); emojiTab(emojiRecent().length ? 0 : 1); window.scrollTo(0, document.body.scrollHeight); }
+}
+function emojiTab(i){
+  document.querySelectorAll(".emoji-tabs button").forEach(b => b.classList.toggle("on", +b.dataset.g === i));
+  const list = i === 0 ? emojiRecent() : EMOJI[i][1].split(" ");
+  $("#emoji-grid").innerHTML = list.length ? list.map(e => `<button onclick="emojiPut(this.textContent)">${e}</button>`).join("")
+    : `<div class="none">Здесь появятся эмодзи, которые вы отправляете чаще всего</div>`;
+  $("#emoji-grid").scrollTop = 0;
+}
+function emojiPut(e){
+  const ta = $("#chat-in"), a = ta.selectionStart ?? ta.value.length, b = ta.selectionEnd ?? a;
+  ta.value = ta.value.slice(0, a) + e + ta.value.slice(b);
+  const pos = a + e.length; ta.setSelectionRange(pos, pos);
+  emojiRecent(e); ta.oninput();
+  if (!("ontouchstart" in window)) ta.focus();  // на телефоне не открываем клавиатуру поверх панели
+}
+
 async function chatSend(){
   const ta = $("#chat-in"), btn = $("#chat-go"), text = ta.value.trim();
   if (!text || chat.sending) return;
@@ -808,7 +910,7 @@ async function chatSend(){
     ta.value = ""; grow(ta); try { localStorage.removeItem("ark_chat_draft"); } catch(e) {}
     if (chat.busy) setTimeout(chatPoll, 400); else await chatPoll();
   } catch(e) { toast(e.message); }
-  finally { chat.sending = false; btn.disabled = false; ta.focus(); }
+  finally { chat.sending = false; btn.disabled = false; if (!("ontouchstart" in window) || $("#emoji").hidden) ta.focus(); }
 }
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
