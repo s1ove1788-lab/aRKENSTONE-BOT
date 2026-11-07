@@ -1064,7 +1064,7 @@ function drawTech(d){
   window._tech = d;
   const [t1, t2] = dayTitle(d.day), last = d.day >= d.today;
   const m = fromIso(d.day);
-  $("#main").innerHTML = `
+  $("#main").innerHTML = techBookCard(d.book) + `
     <button class="btn main big" style="width:100%;margin-bottom:12px" onclick="techStaffPage()">👥 Сотрудники цеха · ${d.workers.length}</button>
     <h2>Часы за день</h2>
     <div class="card open-form">
@@ -1087,6 +1087,41 @@ function drawTech(d){
       <button class="btn" onclick="techSendPage()">📤 Отправить директору</button></div>
     <button class="btn" style="width:100%;margin-top:8px" onclick="bonusPage()">🎁 Премия на согласование</button>
     <p class="muted" style="text-align:center">За ${MONTHS1[m.getMonth()].toLowerCase()}: ${hh(d.month_hours)} ч${d.month_beds ? ` · ${d.month_beds} кроватей` : ""}</p>`;
+}
+/* Отдельная таблица табеля. Пока табель в общей таблице с заказами — администратор видит предупреждение и перенос */
+function techBookCard(b){
+  if (!b) return "";
+  if (b.separate) return `<div class="muted" style="margin:0 4px 10px">🔒 Табель в отдельной таблице${b.url ? ` · <a href="${esc(b.url)}" target="_blank">открыть</a>` : ""}</div>`;
+  if (!b.admin) return "";
+  return `<div class="card late"><div class="title" style="font-size:16px">Табель лежит в общей таблице с заказами</div>
+    <div class="sub" style="color:inherit">Листы с часами, премиями и суммами может открыть любой, у кого есть ссылка на таблицу заказов.</div>
+    <button class="btn main" style="width:100%;margin-top:10px" onclick="techBookForm()">🔒 Перенести в отдельную таблицу</button></div>`;
+}
+function techBookForm(){
+  const b = (window._tech || {}).book || {};
+  sheet(`<h3>🔒 Отдельная таблица табеля</h3>
+    <div class="muted">Перенесу работников, часы, премии, отчёты и ставки. Из общей таблицы эти листы уберу, в приложении всё останется как было.</div>
+    <label class="l">Способ 1. Бот сам создаст таблицу и откроет её этим почтам Google</label>
+    <input id="tb-mail" type="email" placeholder="ваша@gmail.com, почта тех. директора" autocomplete="email">
+    <button class="btn main" style="width:100%" onclick="techBookGo(this,'create')">Создать и перенести</button>
+    <label class="l" style="margin-top:16px">Способ 2. Своя пустая таблица</label>
+    <div class="muted" style="margin-bottom:8px">Создайте пустую Google Таблицу, нажмите «Настройки доступа» и добавьте редактором
+      ${b.bot ? `<b style="user-select:all;word-break:break-all">${esc(b.bot)}</b>` : "почту бота"}. Затем вставьте сюда ссылку на таблицу.</div>
+    <input id="tb-link" placeholder="https://docs.google.com/spreadsheets/d/…" autocomplete="off">
+    <button class="btn" style="width:100%" onclick="techBookGo(this,'connect')">Подключить и перенести</button>`);
+}
+async function techBookGo(btn, how){
+  const body = how === "create" ? {emails: $("#tb-mail").value} : {link: $("#tb-link").value};
+  if (!(body.emails || body.link || "").trim()) return toast(how === "create" ? "Впишите почту" : "Вставьте ссылку");
+  if (!confirm("Перенести табель в отдельную таблицу? Из общей таблицы листы табеля будут убраны.")) return;
+  btn.disabled = true; const t = btn.textContent; btn.textContent = "Переношу…";
+  try {
+    const r = await call("/api/tech/book/" + how, body);
+    closeSheet();
+    const n = Object.values(r.moved || {}).reduce((a, x) => a + x, 0);
+    toast(`✅ Табель перенесён (${n} строк)`);
+    load();
+  } catch(e) { toast(e.message); btn.disabled = false; btn.textContent = t; }
 }
 function techDirty(){
   const d = window._tech; if (!d) return false;

@@ -864,9 +864,169 @@ DEFAULT_RATE = 625      # ₽ за час, пока ген. директор н�
 DEFAULT_BED_RATE = 300  # ₽ маляру за покрашенную кровать
 
 
+# ------------------------------------------------------------ отдельная таблица табеля
+# Табель, работники, премии, отчёты с суммами и ставки — в своей Google Таблице, которую видят только
+# администратор и тех. директор. Пока её не подключили — листы живут в общей таблице, как раньше.
+# Код таблицы: переменная TABEL_SHEET_ID на Bothost или «tabel_sheet_id» на листе «Настройки» (ставит перенос).
+RATES_TAB = "Ставки"
+RATES_HEADERS = ["Ключ", "Значение"]
+TABEL_BOOK_TABS = [(WORKERS_TAB, WORKERS_HEADERS), (TABEL_TAB, TABEL_HEADERS), (BONUS_TAB, BONUS_HEADERS),
+                   (REPORTS_TAB, REPORTS_HEADERS)]
+_tb = {"id": "", "book": None, "tabs": {}}
+_tb_lock = threading.Lock()
+
+
+def tabel_book_id() -> str:
+    import os
+    return os.getenv("TABEL_SHEET_ID", "").strip() or sheets.get_setting("tabel_sheet_id")
+
+
+def tabel_book_url() -> str:
+    sid = tabel_book_id()
+    return f"https://docs.google.com/spreadsheets/d/{sid}/edit" if sid else ""
+
+
+def _tt(title: str, headers: list):
+    """Лист табеля: из отдельной таблицы, если она подключена, иначе из общей."""
+    sid = tabel_book_id()
+    if not sid:
+        return sheets._tab(title, headers)
+    with _tb_lock:
+        if _tb["id"] != sid:
+            _tb.update(id=sid, book=None, tabs={})
+        ws = _tb["tabs"].get(title)
+        if ws is None:
+            import gspread
+            if _tb["book"] is None:
+                _tb["book"] = sheets.get_client().open_by_key(sid)
+            try:
+                raw = _tb["book"].worksheet(title)
+            except gspread.WorksheetNotFound:
+                raw = _tb["book"].add_worksheet(title=title, rows=200, cols=max(len(headers), 4))
+            sheets._ensure_header(raw, headers)
+            # свой кэш, не общий: фоновое пакетное чтение общей таблицы ищет листы по названию в ней
+            ws = _tb["tabs"][title] = sheets._CachedSheet(raw)
+    return ws
+
+
+def _get_rate_raw(key: str) -> str:
+    if not tabel_book_id():
+        return sheets.get_setting(key)
+    for v in _tt(RATES_TAB, RATES_HEADERS).get_all_values()[1:]:
+        if v and v[0].strip() == key:
+            return v[1].strip() if len(v) > 1 else ""
+    return ""
+
+
+def _set_rate_raw(key: str, value: str) -> None:
+    if not tabel_book_id():
+        return sheets.set_setting(key, value)
+    ws = _tt(RATES_TAB, RATES_HEADERS)
+    rows = ws.get_all_values(fresh=True)
+    for i, v in enumerate(rows[1:], start=2):
+        if v and v[0].strip() == key:
+            ws.update(values=[[value]], range_name=f"B{i}", value_input_option="RAW")
+            return
+    ws.append_row([key, value], value_input_option="RAW")
+
+
+def bot_email() -> str:
+    try:
+        import costs
+        return costs.bot_email()
+    except Exception:
+        return ""
+
+
+def tabel_move(sid: str, who: str) -> dict:
+    """Переносит листы табеля и ставки из общей таблицы в отдельную (sid).
+    Порядок: копируем → перечитываем и сверяем → включаем новую таблицу → только потом убираем листы из общей.
+    Если что-то пошло не так до включения, общая таблица остаётся нетронутой."""
+    import gspread
+    if tabel_book_id():
+        raise ValueError("Табель уже в отдельной таблице")
+    try:
+        new = sheets.get_client().open_by_key(sid)
+    except gspread.exceptions.APIError as e:
+        if "403" in str(e) or "404" in str(e) or "PERMISSION" in str(e).upper():
+            raise ValueError(f"У бота нет доступа к таблице. Добавьте {bot_email() or 'почту бота'} редактором и повторите")
+        raise
+    except gspread.SpreadsheetNotFound:
+        raise ValueError(f"Таблица не найдена или у бота нет доступа. Добавьте {bot_email() or 'почту бота'} редактором")
+    have = {w.title: w for w in new.worksheets()}
+    for title, _ in TABEL_BOOK_TABS + [(RATES_TAB, RATES_HEADERS)]:
+        if title in have and len([r for r in have[title].get_all_values() if any(c.strip() for c in r)]) > 1:
+            raise ValueError(f"В новой таблице уже есть лист «{title}» с данными. Нужна пустая таблица")
+    book = sheets.get_book()
+    moved, old_sheets = {}, []
+    for title, headers in TABEL_BOOK_TABS:
+        try:
+            old = sheets._find_ws(book, title)
+            vals = old.get_all_values()
+            old_sheets.append(old)
+        except gspread.WorksheetNotFound:
+            vals = []
+        vals = vals if vals and any(c.strip() for c in vals[0]) else [headers]
+        width = max(len(r) for r in vals)
+        vals = [list(r) + [""] * (width - len(r)) for r in vals]
+        ws = have.get(title) or new.add_worksheet(title=title, rows=max(200, len(vals) + 50), cols=max(width, 4))
+        if ws.row_count < len(vals):
+            ws.add_rows(len(vals) - ws.row_count + 50)
+        if ws.col_count < width:
+            ws.add_cols(width - ws.col_count)
+        ws.update(values=vals, range_name="A1", value_input_option="RAW")
+        back = ws.get_all_values()
+        strip = lambda rows: [[c for c in r] for r in rows if any(c.strip() for c in r)]
+        if [r[:width] + [""] * (width - len(r[:width])) for r in strip(back)] != strip(vals):
+            raise ValueError(f"Лист «{title}» скопировался не полностью, перенос остановлен. Общая таблица не тронута")
+        moved[title] = len(vals) - 1
+    rates = [[k, sheets.get_setting(k, max_age=0)] for k in ("hour_rate", "bed_rate")]
+    rws = have.get(RATES_TAB) or new.add_worksheet(title=RATES_TAB, rows=20, cols=2)
+    rws.update(values=[RATES_HEADERS] + [r for r in rates if r[1]], range_name="A1", value_input_option="RAW")
+    # пустой «Лист1», который Google создаёт сам, убираем, если он пустой
+    for w in new.worksheets():
+        if w.title not in moved and w.title != RATES_TAB and not any(any(c.strip() for c in r) for r in w.get_all_values()):
+            try:
+                new.del_worksheet(w)
+            except Exception:
+                pass
+    # включаем новую таблицу, затем убираем листы и ставки из общей
+    sheets.set_setting("tabel_sheet_id", sid)
+    with _tb_lock:
+        _tb.update(id="", book=None, tabs={})
+    for old in old_sheets:
+        try:
+            book.del_worksheet(old)
+        except Exception:
+            log.exception("Табель: не смог убрать лист «%s» из общей таблицы", old.title)
+        sheets._tabs.pop(old.title, None)
+        sheets._ws_map["t"] = 0.0
+    for k, v in rates:
+        if v:
+            sheets.set_setting(k, "")
+    log.info("Табель перенесён в отдельную таблицу (%s): %s", who, moved)
+    return {"ok": True, "url": tabel_book_url(), "moved": moved}
+
+
+def tabel_create(emails: list, who: str) -> dict:
+    """Бот сам создаёт таблицу, открывает её указанным почтам (редакторы) и переносит туда табель."""
+    emails = [e.strip() for e in emails if re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", e.strip())]
+    if not emails:
+        raise ValueError("Впишите почту Google, которой открыть таблицу")
+    try:
+        book = sheets.get_client().create("Табель цеха — Arkenstone")
+    except Exception as e:
+        log.warning("Табель: бот не смог создать таблицу: %s", e)
+        raise ValueError("Google не дал боту создать таблицу. Создайте пустую таблицу сами и подключите её "
+                         "вторым способом")
+    for e in emails:
+        book.share(e, perm_type="user", role="writer", notify=True)
+    return tabel_move(book.id, who)
+
+
 def _rate(key: str, default: float) -> float:
     try:
-        r = float(str(sheets.get_setting(key) or "").replace(",", ".").strip() or default)
+        r = float(str(_get_rate_raw(key) or "").replace(",", ".").strip() or default)
         return r if 0 <= r < 100000 else default
     except (TypeError, ValueError):
         return default
@@ -962,7 +1122,7 @@ def _hours(x):
 
 def workers(include_fired: bool = False) -> list:
     out = []
-    for i, v in enumerate(sheets._tab(WORKERS_TAB, WORKERS_HEADERS).get_all_values()[1:], start=2):
+    for i, v in enumerate(_tt(WORKERS_TAB, WORKERS_HEADERS).get_all_values()[1:], start=2):
         v = list(v) + [""] * 6
         if not v[0].strip() or not v[1].strip():
             continue
@@ -979,7 +1139,7 @@ def worker_add(name: str, area: str, who: str) -> None:
         raise ValueError("Впишите имя")
     if any(w["name"].lower() == name.lower() for w in workers()):
         raise ValueError("Такой сотрудник уже есть")
-    sheets._tab(WORKERS_TAB, WORKERS_HEADERS).append_row(
+    _tt(WORKERS_TAB, WORKERS_HEADERS).append_row(
         [secrets.token_hex(3), name, area, _stamp(), who, ""], value_input_option="RAW")
 
 
@@ -988,7 +1148,7 @@ def worker_fire(wid: str) -> None:
     w = next((x for x in workers() if x["id"] == wid), None)
     if not w:
         raise ValueError("Сотрудник не найден")
-    sheets._tab(WORKERS_TAB, WORKERS_HEADERS).update(values=[[FIRED]], range_name=f"F{w['row']}",
+    _tt(WORKERS_TAB, WORKERS_HEADERS).update(values=[[FIRED]], range_name=f"F{w['row']}",
                                                      value_input_option="RAW")
 
 
@@ -1008,7 +1168,7 @@ def _beds(x):
 
 def _tabel() -> list:
     out = []
-    for i, v in enumerate(sheets._tab(TABEL_TAB, TABEL_HEADERS).get_all_values()[1:], start=2):
+    for i, v in enumerate(_tt(TABEL_TAB, TABEL_HEADERS).get_all_values()[1:], start=2):
         v = list(v) + [""] * 7
         try:
             day = _d(v[0])
@@ -1053,7 +1213,7 @@ def tech_day_save(day: date, hours: dict, who: str, beds: dict = None) -> int:
     for wid in set(hours or {}) | set(beds):
         if wid in known:
             clean[wid] = (_hours((hours or {}).get(wid)), _beds(beds.get(wid)) if is_painter(known[wid]["area"]) else None)
-    ws = sheets._tab(TABEL_TAB, TABEL_HEADERS)
+    ws = _tt(TABEL_TAB, TABEL_HEADERS)
     if ws.col_count < len(TABEL_HEADERS):  # старый лист без колонки «Кровати»
         ws.add_cols(len(TABEL_HEADERS) - ws.col_count)
     have = {r["id"]: r for r in _tabel() if r["day"] == day}
@@ -1107,7 +1267,7 @@ def report_send(d1: date, d2: date, who: str) -> dict:
     if not summ["people"]:
         raise ValueError("За этот период в табеле нет часов")
     with_pay(summ, hour_rate(), bed_rate())  # ставки запоминаются в отчёте: поменяют — старые не пересчитаются
-    sheets._tab(REPORTS_TAB, REPORTS_HEADERS).append_row(
+    _tt(REPORTS_TAB, REPORTS_HEADERS).append_row(
         [_stamp(), who, _d(summ["from"]).strftime("%d.%m.%Y"), _d(summ["to"]).strftime("%d.%m.%Y"), summ["total"],
          json.dumps(summ, ensure_ascii=False), summ["rate"], summ["pay"]], value_input_option="RAW")
     a, b = _d(summ["from"]), _d(summ["to"])
@@ -1127,7 +1287,7 @@ def report_send(d1: date, d2: date, who: str) -> dict:
 
 def reports() -> list:
     out = []
-    for i, v in enumerate(sheets._tab(REPORTS_TAB, REPORTS_HEADERS).get_all_values()[1:], start=2):
+    for i, v in enumerate(_tt(REPORTS_TAB, REPORTS_HEADERS).get_all_values()[1:], start=2):
         v = list(v) + [""] * 6
         try:
             data = json.loads(v[5])
@@ -1149,7 +1309,7 @@ def reports() -> list:
 
 # ------------------------------------------------------------ премии (тех. директор → ген. директор)
 def _bonus_ws():
-    return sheets._tab(BONUS_TAB, BONUS_HEADERS)
+    return _tt(BONUS_TAB, BONUS_HEADERS)
 
 
 def bonuses() -> list:
@@ -1327,7 +1487,21 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
     if "tech" in tabs and path.startswith("/api/tech"):
         try:
             if path == "/api/tech":
-                return 200, tech_data(_d(body.get("day")) if body.get("day") else today)
+                data = tech_data(_d(body.get("day")) if body.get("day") else today)
+                data["book"] = {"separate": bool(tabel_book_id()), "url": tabel_book_url(), "admin": is_admin,
+                                "bot": bot_email() if is_admin and not tabel_book_id() else ""}
+                return 200, data
+            if method == "POST" and path in ("/api/tech/book/create", "/api/tech/book/connect"):
+                if not is_admin:
+                    return 403, {"error": "Перенести табель может только администратор"}
+                with _lock:
+                    if path.endswith("create"):
+                        return 200, tabel_create(str(body.get("emails") or "").replace(";", ",").split(","), who)
+                    m = re.search(r"/d/([A-Za-z0-9_-]{20,})", str(body.get("link") or "")) \
+                        or re.fullmatch(r"\s*([A-Za-z0-9_-]{20,})\s*", str(body.get("link") or ""))
+                    if not m:
+                        return 400, {"error": "Не нашёл в ссылке код таблицы. Вставьте ссылку целиком"}
+                    return 200, tabel_move(m.group(1), who)
             if path == "/api/tech/workers":
                 return 200, {"workers": workers()}
             if path == "/api/tech/summary":
@@ -1371,7 +1545,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         if not 0 < r < 100000:
             return 400, {"error": "Ставка должна быть больше нуля"}
         with _lock:
-            sheets.set_setting(key, f"{r:g}")
+            _set_rate_raw(key, f"{r:g}")
         return 200, {"ok": True, "rate": r}
     if method == "POST" and path == "/api/reports/bonus" and me["role"] in ("gendir", "admin"):
         try:
