@@ -8,18 +8,28 @@
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon-192.png">
 <link rel="apple-touch-icon" href="/icon-192.png">
+<script>try { const t = localStorage.getItem("ark_theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch(e) {}</script>
 <style>
 :root{
   --bg:#f3f1ec; --card:#ffffff; --ink:#1c1f1d; --muted:#6c716d; --line:#e2dfd7;
   --accent:#1f6b4f; --accent-ink:#ffffff; --warn:#b4531a; --warn-bg:#fbeee4;
   --ok-bg:#e5f2ec; --bar:#1d2a24; --bar-ink:#e9efe9; --chip:#ece9e1;
 }
+/* Тема: «как в телефоне» (по умолчанию) или выбранная в приложении — атрибут data-theme на <html> */
+:root{color-scheme:light}
 @media (prefers-color-scheme: dark){
-  :root{
+  :root:not([data-theme="light"]){
     --bg:#121614; --card:#1b201d; --ink:#e8ebe8; --muted:#97a09a; --line:#2b322e;
     --accent:#4fb487; --accent-ink:#0d1a13; --warn:#f0965a; --warn-bg:#33231a;
     --ok-bg:#1d2d25; --bar:#0d110f; --bar-ink:#e9efe9; --chip:#252b27;
+    color-scheme:dark;
   }
+}
+:root[data-theme="dark"]{
+    --bg:#121614; --card:#1b201d; --ink:#e8ebe8; --muted:#97a09a; --line:#2b322e;
+    --accent:#4fb487; --accent-ink:#0d1a13; --warn:#f0965a; --warn-bg:#33231a;
+    --ok-bg:#1d2d25; --bar:#0d110f; --bar-ink:#e9efe9; --chip:#252b27;
+    color-scheme:dark;
 }
 *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
 html,body{margin:0;background:var(--bg);color:var(--ink);
@@ -140,7 +150,8 @@ tr.short .ch{color:inherit}
   font-weight:800;font-size:18px;line-height:1.1;flex:none;position:relative}
 .plate small{font-size:10px;font-weight:600;opacity:.75;letter-spacing:.2px}
 .plate.black{background:#262626;color:#f3f3f3;box-shadow:inset 0 0 0 1px rgba(255,255,255,.22)}
-@media (prefers-color-scheme: dark){ .ob-sw button.on{background:#3a433e} .plate.black{background:#0b0d0c} }
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) .ob-sw button.on{background:#3a433e} :root:not([data-theme="light"]) .plate.black{background:#0b0d0c} }
+:root[data-theme="dark"] .ob-sw button.on{background:#3a433e} :root[data-theme="dark"] .plate.black{background:#0b0d0c}
 .plate.white{background:#ffffff;color:#262626;border:1px solid #d8d4cc}
 .plate.none{background:var(--chip);color:var(--muted)}
 .plate i{position:absolute;right:-6px;top:-6px;background:var(--accent);color:var(--accent-ink);font-style:normal;font-size:11px;
@@ -265,6 +276,7 @@ body.chat.emoji main{padding-bottom:calc(400px + env(safe-area-inset-bottom))}
 <header>
   <h1>Arkenstone</h1>
   <div class="who" id="who"></div>
+  <button class="iconbtn" id="theme" aria-label="Тема" onclick="themeForm()" style="display:flex;align-items:center"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor"/></svg></button>
   <button class="iconbtn" id="refresh" aria-label="Обновить">⟳</button>
 </header>
 <main id="main"><div class="empty">Загрузка…</div></main>
@@ -420,6 +432,20 @@ function quietRefresh(){
 }
 $("#refresh").onclick = () => !(me && me.ok) ? boot() : tab === "chat" ? chatOpen() : (onPage && window._pageAgain ? window._pageAgain() : load());
 document.addEventListener("visibilitychange", () => { if (!document.hidden && me && me.ok) quietRefresh(); });
+
+/* ------------------------------ тема: как в телефоне / светлая / тёмная (запоминается на этом телефоне) */
+function themeSet(t){
+  try { t === "auto" ? localStorage.removeItem("ark_theme") : localStorage.setItem("ark_theme", t); } catch(e) {}
+  if (t === "auto") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = t;
+  document.querySelectorAll("#th-seg button").forEach(b => b.classList.toggle("on", b.dataset.k === t));
+}
+function themeForm(){
+  let t = "auto"; try { t = localStorage.getItem("ark_theme") || "auto"; } catch(e) {}
+  sheet(`<h3>Тема приложения</h3><div class="muted">Выбор запоминается на этом телефоне.</div>
+    <div class="seg" id="th-seg">${Object.entries({auto: "Как в телефоне", light: "Светлая", dark: "Тёмная"}).map(([k, v]) =>
+      `<button data-k="${k}" class="${k === t ? "on" : ""}" onclick="themeSet('${k}')">${v}</button>`).join("")}</div>
+    <button class="btn" style="width:100%" onclick="closeSheet()">Готово</button>`);
+}
 
 /* ------------------------------ окно-форма снизу */
 function sheet(html){
