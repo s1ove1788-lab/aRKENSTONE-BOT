@@ -717,6 +717,59 @@ def _fcm_send_all(ev: dict) -> None:
             pass
 
 
+# ------------------------------------------------------------ обновления APK
+# Новая версия приложения — это новый выпуск (Release) на GitHub, его собирает сборщик из ветки android.
+# Сервер узнаёт о нём сам: приложение спрашивает /app/version и предлагает «Обновить», а раз в 30 минут
+# сервер проверяет GitHub и, если вышла новая версия, присылает всем уведомление.
+APP_REPO = "s1ove1788-lab/aRKENSTONE-BOT"
+_app_ver = {"t": 0.0, "data": None}
+
+
+def app_version(force: bool = False):
+    """{"code": 6, "version": "1.6", "url": "...apk", "notes": "..."} или None, если GitHub недоступен."""
+    import os
+    if not force and _app_ver["data"] and time.time() - _app_ver["t"] < 600:
+        return _app_ver["data"]
+    import requests
+    repo = os.getenv("APP_REPO", APP_REPO)
+    try:
+        r = requests.get(f"https://api.github.com/repos/{repo}/releases/latest", timeout=15,
+                         headers={"Accept": "application/vnd.github+json", "User-Agent": "arkenstone-bot"})
+        r.raise_for_status()
+        j = r.json()
+        hit = re.fullmatch(r"app-v1\.(\d+)", j.get("tag_name") or "")
+        apk = next((a for a in j.get("assets") or [] if a.get("name", "").endswith(".apk")), None)
+        if hit and apk:
+            body = (j.get("body") or "").strip()
+            notes = body.split("Что нового:", 1)[1] if "Что нового:" in body else ""  # пишет сборщик из описания изменения
+            _app_ver["data"] = {"code": int(hit.group(1)), "version": f"1.{hit.group(1)}",
+                                "url": apk["browser_download_url"], "notes": notes.strip()[:600]}
+            _app_ver["t"] = time.time()
+    except Exception as e:
+        log.warning("Обновления: не смог узнать версию на GitHub: %s", e)
+        _app_ver["t"] = time.time() - 480  # повторим через пару минут
+    return _app_ver["data"]
+
+
+def _update_watch() -> None:
+    """Раз в 30 минут: вышла новая версия — уведомление всем. Какую уже объявляли, помним в «Настройках»."""
+    time.sleep(90)  # дать боту спокойно запуститься
+    while True:
+        try:
+            v = app_version(force=True)
+            if v:
+                last = _int(sheets.get_setting("app_version_announced", max_age=0), 0)
+                if v["code"] > last:
+                    if last:  # при самом первом запуске только запоминаем, без уведомления
+                        push_safe("update", f"⬆️ Новая версия Arkenstone {v['version']}",
+                                  (v["notes"] or "Откройте приложение и нажмите «Обновить»")[:300], _codes(), "")
+                        log.info("Обновления: разослал уведомление о версии %s", v["version"])
+                    sheets.set_setting("app_version_announced", str(v["code"]))
+        except Exception:
+            log.exception("Обновления: проверка версии")
+        time.sleep(1800)
+
+
 # ------------------------------------------------------------ табель цеха (тех. директор)
 # «Работники цеха» — люди, которым ведут учёт часов. Им не нужно приложение: тех. директор заводит их вручную.
 # «Табель» — по строке на человека и день: сколько часов отработал.
@@ -1223,6 +1276,9 @@ class Handler(BaseHTTPRequestHandler):
             return self._api("GET", dict(parse_qsl(urlsplit(self.path).query)))
         if path == "/sw.js":
             return self._send(200, SW_JS, "text/javascript; charset=utf-8", "no-cache")
+        if path == "/app/version":
+            v = app_version()
+            return self._json(200, v or {"code": 0})
         if path.startswith("/chat-photo/"):
             name = path.rsplit("/", 1)[-1]
             if not re.fullmatch(r"[A-Za-z0-9_-]{20,40}\.(jpg|png|webp)", name):
@@ -1304,6 +1360,7 @@ def start(**hooks) -> None:
     srv = ThreadingHTTPServer(("0.0.0.0", config.ALICE_PORT), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     log.info("Приложение для сотрудников: слушаю порт %d", config.ALICE_PORT)
+    threading.Thread(target=_update_watch, daemon=True).start()
     try:
         d = photo_dir()
         if str(d).startswith("/app/shared"):

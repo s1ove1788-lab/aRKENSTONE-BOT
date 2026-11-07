@@ -120,6 +120,15 @@ nav .dot{position:absolute;top:2px;left:calc(50% + 8px);background:var(--warn);c
 nav .dot:empty{display:none}
 body.chat main{padding-bottom:calc(150px + env(safe-area-inset-bottom))}
 .chat-list{display:flex;flex-direction:column;gap:4px}
+.updbar{position:sticky;top:calc(56px + env(safe-area-inset-top));z-index:4;background:var(--accent);color:var(--accent-ink);
+  padding:10px 16px;display:flex;align-items:center;gap:10px;font-size:14px}
+.updbar .grow{flex:1;min-width:0}
+.updbar b{display:block;font-size:15px}
+.updbar small{display:block;opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.updbar button,.updbar a{background:var(--accent-ink);color:var(--accent);border:0;border-radius:10px;padding:9px 14px;
+  font:inherit;font-weight:700;cursor:pointer;text-decoration:none;white-space:nowrap}
+.updbar button:disabled{opacity:.7}
+.updbar .x{background:none;color:inherit;padding:4px 6px;font-size:20px;font-weight:400}
 .chat-note{text-align:center;color:var(--muted);font-size:12px;margin:0 0 6px}
 .chat-note:empty{display:none}
 .chat-note a{color:var(--accent)}
@@ -277,6 +286,7 @@ async function boot(){
   open(me.tabs.includes(want) ? want : me.tabs.includes(saved) ? saved : me.tabs[0]);
   chatPoll();
   nativeSetup();
+  checkUpdate();
 }
 
 function showCode(){
@@ -1015,6 +1025,39 @@ async function chatMute(ev){
   try { window._push = await call("/api/push/register", {chat: !window._push.chat}); chatNote(); toast(window._push.chat ? "🔔 Включено" : "🔕 Выключено"); }
   catch(e) { toast(e.message); }
 }
+
+/* ------------------------------ обновление APK
+   APK 1.6+ умеет сам скачать и поставить новую версию (ArkNative.update). Старые APK без этого умения
+   получают полоску со ссылкой — новую версию один раз ставят из браузера. */
+async function checkUpdate(){
+  const N = window.ArkNative; if (!N || document.querySelector(".updbar")) return;
+  let cur = 0; try { cur = N.versionCode ? +N.versionCode() : 0; } catch(e) {}
+  let v; try { v = await (await fetch("/app/version", {cache: "no-store"})).json(); } catch(e) { return; }
+  if (!v || !v.code || (cur && v.code <= cur)) return;
+  let skipped = 0; try { skipped = +sessionStorage.getItem("ark_upd_skip") || 0; } catch(e) {}
+  if (skipped === v.code) return;
+  const inApp = !!N.update;
+  $("header").insertAdjacentHTML("afterend", `<div class="updbar" id="updbar"><div class="grow">
+      <b>⬆️ Новая версия ${esc(v.version)}</b><small id="upd-note">${esc(v.notes || (inApp ? "Нажмите «Обновить», установка займёт минуту" : "Скачайте и установите поверх текущей"))}</small></div>
+      ${inApp ? `<button id="upd-go">Обновить</button>` : `<a href="${esc(v.url)}">Скачать</a>`}
+      <button class="x" aria-label="Позже" onclick="updLater(${v.code})">×</button></div>`);
+  if (inApp) $("#upd-go").onclick = () => {
+    $("#upd-go").disabled = true; $("#upd-go").textContent = "0%"; $("#upd-note").textContent = "Скачиваю…";
+    try { N.update(v.url); } catch(e) { updFail("Не получилось начать загрузку"); }
+  };
+}
+function updLater(code){ try { sessionStorage.setItem("ark_upd_skip", code); } catch(e) {} const b = $("#updbar"); if (b) b.remove(); }
+function updFail(msg){
+  const go = $("#upd-go"); if (go) { go.disabled = false; go.textContent = "Повторить"; }
+  const n = $("#upd-note"); if (n) n.textContent = msg; toast(msg);
+}
+window.onUpdateProgress = p => { const go = $("#upd-go"); if (go) go.textContent = p + "%"; };
+window.onUpdateReady = () => {
+  const n = $("#upd-note"); if (n) n.textContent = "Нажмите «Установить» в окне Android";
+  const go = $("#upd-go"); if (go) { go.disabled = false; go.textContent = "Установить"; go.onclick = () => { try { window.ArkNative.installUpdate(); } catch(e) {} }; }
+};
+window.onUpdateError = msg => updFail(msg || "Не получилось скачать, проверьте интернет");
+window.onUpdatePermission = () => { const n = $("#upd-note"); if (n) n.textContent = "Разрешите установку для Arkenstone и вернитесь назад"; };
 
 /* ------------------------------ чат
    Все сообщения храним здесь (chat.msgs) и раз в несколько секунд спрашиваем у сервера только новые.
