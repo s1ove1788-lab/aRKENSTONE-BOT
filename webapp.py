@@ -699,11 +699,9 @@ def _fcm_send_all(ev: dict) -> None:
     data = {"id": str(ev["id"]), "kind": ev["kind"], "title": ev["title"], "body": ev["body"], "tab": ev["tab"]}
     dead = []
     for code, tok in targets:
-        msg = {"message": {"token": tok, "data": data,
-                           "notification": {"title": ev["title"], "body": ev["body"]},
-                           "android": {"priority": "HIGH", "notification": {
-                               "channel_id": ev["kind"] if ev["kind"] in ("orders", "chat", "reports") else "chat",
-                               "tag": f"{ev['kind']}-{ev['id']}", "icon": "ic_notify"}}}}
+        # Только данные, без блока notification: показывает уведомление само приложение. Так оно помнит,
+        # что уже показало, и запасная проверка раз в 15 минут не покажет то же самое второй раз.
+        msg = {"message": {"token": tok, "data": data, "android": {"priority": "HIGH", "ttl": "86400s"}}}
         try:
             r = requests.post(url, json=msg, headers=auth, timeout=15)
             if r.status_code in (400, 404) and ("UNREGISTERED" in r.text or "INVALID_ARGUMENT" in r.text and "token" in r.text):
