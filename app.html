@@ -136,6 +136,19 @@ body.chat main{padding-bottom:calc(150px + env(safe-area-inset-bottom))}
 .composer textarea{flex:1;font:inherit;padding:11px 14px;border-radius:20px;border:1px solid var(--line);
   background:var(--card);color:var(--ink);resize:none;max-height:120px;min-height:44px;line-height:1.35}
 .msg a{color:var(--accent)}
+nav.many button{font-size:10.5px}
+.hrs{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--line)}
+.hrs:first-of-type{border-top:0}
+.hrs .grow{flex:1;min-width:0}
+.hrs .grow b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.hrs input{width:78px;margin:0;text-align:center;font-size:20px;font-weight:700;padding:9px 4px}
+.hrs input.has{border-color:var(--accent);background:var(--ok-bg)}
+.daybar{display:grid;grid-template-columns:52px 1fr 52px;gap:8px;align-items:center;margin-bottom:10px}
+.daybar .btn{padding:12px 0;font-size:20px}
+.daybar .d{text-align:center;font-weight:700;font-size:17px}
+.daybar .d small{display:block;font-weight:400;color:var(--muted);font-size:13px}
+.quick{display:flex;gap:6px;margin:4px 0 8px;flex-wrap:wrap}
+.quick button{flex:1;border:1px solid var(--line);background:var(--bg);color:var(--ink);border-radius:10px;padding:9px 2px;font:inherit;font-size:13px;cursor:pointer;white-space:nowrap}
 .composer textarea:focus,.sheet textarea:focus{outline:none;border-color:var(--accent)}
 .composer button{width:46px;height:46px;border-radius:50%;border:0;background:var(--accent);color:var(--accent-ink);
   font-size:20px;cursor:pointer;flex:none}
@@ -172,8 +185,11 @@ body.chat.emoji main{padding-bottom:calc(400px + env(safe-area-inset-bottom))}
 <div class="toast" id="toast"></div>
 
 <script>
-const TABS = {courier:["🚚","Курьер"], prod:["🏭","Производство"], keeper:["📦","Склад"], manager:["👔","Менеджер"], chat:["💬","Чат"]};
-const ROLES = {courier:"Курьер", prod:"Производство", keeper:"Кладовщик", manager:"Менеджер"};
+const TABS = {courier:["🚚","Курьер"], prod:["🏭","Производство"], keeper:["📦","Склад"], manager:["👔","Менеджер"],
+  tech:["⏱","Табель"], reports:["📑","Отчёты"], chat:["💬","Чат"]};
+const SHORT = {prod: "Цех"};  // когда вкладок много, длинные названия не влезают
+const ROLES = {courier:"Курьер", prod:"Производство", keeper:"Кладовщик", manager:"Менеджер",
+  techdir:"Тех. директор", gendir:"Ген. директор"};
 let me = null, tab = null, timer = null;
 let nav = 0;          // номер «перехода»: ответ, пришедший после ухода с экрана, выбрасываем
 let onPage = false;   // открыта отдельная страница (Заказы, Остатки, Сотрудники…) — фоновое обновление её не трогает
@@ -226,7 +242,8 @@ async function boot(){
   $("#who").textContent = (me.name ? me.name + " · " : "") + me.label;
   const nav = $("#nav");
   nav.hidden = me.tabs.length < 2;
-  nav.innerHTML = me.tabs.map(k => `<button data-tab="${k}"><span>${TABS[k][0]}</span>${TABS[k][1]}${k === "chat" ? `<b class="dot" id="chatdot"></b>` : ""}</button>`).join("");
+  const many = me.tabs.length > 5; nav.classList.toggle("many", many);
+  nav.innerHTML = me.tabs.map(k => `<button data-tab="${k}"><span>${TABS[k][0]}</span>${many && SHORT[k] || TABS[k][1]}${k === "chat" ? `<b class="dot" id="chatdot"></b>` : ""}</button>`).join("");
   nav.querySelectorAll("button").forEach(b => b.onclick = () => open(b.dataset.tab));
   let saved = null; try { saved = localStorage.getItem("ark_tab"); } catch(e) {}
   open(me.tabs.includes(saved) ? saved : me.tabs[0]);
@@ -265,7 +282,7 @@ function open(k){
   load();
 }
 
-const NEED = {courier: "days", prod: "stock", keeper: "raw", manager: "devices"};  // по этому полю узнаём «свой» ответ
+const NEED = {courier: "days", prod: "stock", keeper: "raw", manager: "devices", tech: "workers", reports: "reports"};  // по этому полю узнаём «свой» ответ
 
 async function load(){
   clearInterval(timer);
@@ -273,10 +290,10 @@ async function load(){
   const my = ++nav, t = tab;
   $("#refresh").classList.add("spin");
   try {
-    const data = await call("/api/" + t);
+    const data = await call(t === "tech" ? "/api/tech?day=" + techDay() : "/api/" + t);
     if (my !== nav || t !== tab) return;  // пока ждали, человек уже открыл другой экран
     if (!(NEED[t] in data)) throw new Error("Не получилось загрузить, повторите");
-    ({courier: drawCourier, prod: drawProd, keeper: drawKeeper, manager: drawManager})[t](data);
+    ({courier: drawCourier, prod: drawProd, keeper: drawKeeper, manager: drawManager, tech: drawTech, reports: drawReports})[t](data);
   } catch(e) {
     if (me && my === nav) $("#main").innerHTML = `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="load()">Повторить</button></div>`;
   } finally {
@@ -730,6 +747,195 @@ async function removeDevice(code, name){
   if (!confirm(`Убрать ${name || code} из приложения?`)) return;
   try { await call("/api/manager/device/remove", {code}); toast("Убрано"); window._mgr = await call("/api/manager"); staffPage(); }
   catch(e) { toast(e.message); }
+}
+
+/* ------------------------------ табель (тех. директор) */
+const pad = n => String(n).padStart(2, "0");
+const iso = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const fromIso = s => { const [y, m, d] = s.split("-").map(Number); return new Date(y, m - 1, d); };
+const MONTHS = ["января","февраля","марта","апреля","мая","июня","июля","августа","сентября","октября","ноября","декабря"];
+const MONTHS1 = ["Январь","Февраль","Март","Апрель","Май","Июнь","Июль","Август","Сентябрь","Октябрь","Ноябрь","Декабрь"];
+const hh = h => String(Math.round((+h || 0) * 100) / 100).replace(".", ",");
+function techDay(v){
+  if (v) window._techDay = v;
+  return window._techDay || iso(new Date());
+}
+function dayTitle(s){
+  const d = fromIso(s), t = new Date(); t.setHours(0,0,0,0);
+  const diff = Math.round((t - d) / 864e5);
+  const w = d.toLocaleDateString("ru-RU", {weekday: "long"});
+  return [`${d.getDate()} ${MONTHS[d.getMonth()]}`, diff === 0 ? "сегодня" : diff === 1 ? "вчера" : w];
+}
+function fmtPeriod(a, b){
+  const x = fromIso(a), y = fromIso(b);
+  if (a === b) return `${x.getDate()} ${MONTHS[x.getMonth()]} ${x.getFullYear()}`;
+  if (x.getMonth() === y.getMonth() && x.getFullYear() === y.getFullYear())
+    return `${x.getDate()}–${y.getDate()} ${MONTHS[x.getMonth()]} ${x.getFullYear()}`;
+  return `${x.getDate()} ${MONTHS[x.getMonth()]} – ${y.getDate()} ${MONTHS[y.getMonth()]} ${y.getFullYear()}`;
+}
+function drawTech(d){
+  window._tech = d;
+  const [t1, t2] = dayTitle(d.day), last = d.day >= d.today;
+  const m = fromIso(d.day);
+  $("#main").innerHTML = `
+    <button class="btn main big" style="width:100%;margin-bottom:12px" onclick="techStaffPage()">👥 Сотрудники цеха · ${d.workers.length}</button>
+    <h2>Часы за день</h2>
+    <div class="card open-form">
+      <div class="daybar"><button class="btn" onclick="techGo(-1)">‹</button>
+        <div class="d">${esc(t1)}<small>${esc(t2)} · внесено ${d.filled} из ${d.workers.length}</small></div>
+        <button class="btn" onclick="techGo(1)" ${last ? "disabled" : ""}>›</button></div>
+      ${d.workers.length ? `
+      <div class="quick"><button onclick="techFill(8)">Всем 8 ч</button><button onclick="techFill(10)">Всем 10 ч</button>
+        <button onclick="techFill(12)">Всем 12 ч</button><button onclick="techFill('')">Очистить</button></div>
+      ${d.workers.map(w => `<div class="hrs"><div class="grow"><b>${esc(w.name)}</b>${w.area ? `<div class="muted">${esc(w.area)}</div>` : ""}</div>
+        <input type="text" inputmode="decimal" placeholder="—" data-id="${esc(w.id)}" value="${w.hours ? hh(w.hours) : ""}"
+          class="${w.hours ? "has" : ""}" oninput="this.classList.toggle('has', !!this.value.trim())"></div>`).join("")}
+      <p class="muted" style="margin:8px 2px">Пусто — не работал. Можно дробно: 7,5</p>
+      <button class="btn main" style="width:100%" onclick="techSave(this)">💾 Сохранить день</button>`
+      : `<div class="empty">Сначала добавьте сотрудников цеха кнопкой выше</div>`}
+    </div>
+    <div class="toolbar" style="margin-top:12px"><button class="btn" onclick="techMonthPage('${iso(new Date(m.getFullYear(), m.getMonth(), 1))}')">📅 Итоги месяца</button>
+      <button class="btn" onclick="techSendPage()">📤 Отправить директору</button></div>
+    <p class="muted" style="text-align:center">За ${MONTHS1[m.getMonth()].toLowerCase()}: ${hh(d.month_hours)} ч</p>`;
+}
+function techDirty(){
+  const d = window._tech; if (!d) return false;
+  return [...document.querySelectorAll(".hrs input")].some(i => {
+    const w = d.workers.find(x => x.id === i.dataset.id);
+    return (i.value.trim().replace(",", ".") || "") !== (w && w.hours ? String(w.hours) : "");
+  });
+}
+function techGo(step){
+  if (techDirty() && !confirm("Часы за этот день не сохранены. Перейти без сохранения?")) return;
+  const d = fromIso(techDay()); d.setDate(d.getDate() + step);
+  if (iso(d) > iso(new Date())) return;
+  techDay(iso(d)); load();
+}
+function techFill(v){ document.querySelectorAll(".hrs input").forEach(i => { i.value = v; i.oninput(); }); }
+async function techSave(btn){
+  const hours = {};
+  for (const i of document.querySelectorAll(".hrs input")) {
+    const v = i.value.trim().replace(",", ".");
+    if (v && !(+v >= 0 && +v <= 24)) { i.focus(); return toast("Часы — число от 0 до 24"); }
+    hours[i.dataset.id] = v;
+  }
+  btn.disabled = true;
+  try { await call("/api/tech/day", {day: techDay(), hours}); toast("✅ Сохранено"); load(); }
+  catch(e) { toast(e.message); btn.disabled = false; }
+}
+async function techStaffPage(){
+  if (techDirty() && !confirm("Часы за день не сохранены. Уйти без сохранения?")) return;
+  let list = (window._tech || {}).workers || [];
+  page("Сотрудники цеха", `
+    <div class="card open-form">
+      <div class="title" style="margin-bottom:8px">Добавить сотрудника</div>
+      <input id="w-name" placeholder="Имя и фамилия" autocomplete="off">
+      <input id="w-area" placeholder="Участок или должность (необязательно): покраска, сварка…" autocomplete="off">
+      <button class="btn main" style="width:100%" onclick="techAddWorker(this)">Добавить</button>
+    </div>
+    <h2>В табеле · ${list.length}</h2>
+    ${list.length ? `<div class="card" style="padding:6px 10px"><table>
+      ${list.map(w => `<tr><td><b>${esc(w.name)}</b>${w.area ? `<div class="ch">${esc(w.area)}</div>` : ""}</td>
+        <td class="n"><button class="btn" style="padding:8px 12px" onclick="techFire('${esc(w.id)}','${esc(w.name)}')">Убрать</button></td></tr>`).join("")}
+    </table></div>
+    <p class="muted">Убранный сотрудник пропадает из списка, но его часы за прошлые дни остаются в итогах и отчётах.</p>`
+    : `<div class="empty">Пока никого. Добавьте всех, кому нужно считать часы.</div>`}`, techStaffPage);
+  window._pageAgain = async () => { try { window._tech = await call("/api/tech?day=" + techDay()); } catch(e) {} techStaffPage(); };
+}
+async function techAddWorker(btn){
+  const name = $("#w-name").value.trim(), area = $("#w-area").value.trim();
+  if (!name) return toast("Впишите имя");
+  btn.disabled = true;
+  try { await call("/api/tech/worker", {name, area}); toast("Добавлен"); window._tech = await call("/api/tech?day=" + techDay()); techStaffPage(); }
+  catch(e) { toast(e.message); btn.disabled = false; }
+}
+async function techFire(id, name){
+  if (!confirm(`Убрать ${name} из табеля? Часы за прошлые дни сохранятся.`)) return;
+  try { await call("/api/tech/worker/remove", {id}); toast("Убран"); window._tech = await call("/api/tech?day=" + techDay()); techStaffPage(); }
+  catch(e) { toast(e.message); }
+}
+function summaryTable(s, open){
+  if (!s.people.length) return `<div class="empty">За этот период часов нет</div>`;
+  return `<div class="stats" style="grid-template-columns:1fr 1fr"><div class="stat"><b>${hh(s.total)}</b><small>часов всего</small></div>
+      <div class="stat"><b>${s.people.length}</b><small>человек</small></div></div>
+    <div class="card" style="padding:6px 10px"><table>
+      <tr><th>Сотрудник</th><th class="n">Дней</th><th class="n">Часов</th></tr>
+      ${s.people.map((p, i) => `<tr class="tap" onclick="document.getElementById('bd${i}').hidden ^= 1"><td><b>${esc(p.name)}</b>${p.area ? `<div class="ch">${esc(p.area)}</div>` : ""}</td>
+        <td class="n">${p.days}</td><td class="n"><b>${hh(p.hours)}</b></td></tr>
+        <tr id="bd${i}" ${open ? "" : "hidden"}><td colspan="3" class="muted" style="border-top:0;padding-top:0">
+          ${Object.entries(p.by_day).map(([d, h]) => `${d}: ${hh(h)} ч`).join(" · ")}</td></tr>`).join("")}
+    </table></div><p class="muted">Нажмите на сотрудника, чтобы увидеть часы по дням.</p>`;
+}
+async function techMonthPage(first){
+  const d = fromIso(first), a = iso(new Date(d.getFullYear(), d.getMonth(), 1)), b = iso(new Date(d.getFullYear(), d.getMonth() + 1, 0));
+  const prev = iso(new Date(d.getFullYear(), d.getMonth() - 1, 1)), next = iso(new Date(d.getFullYear(), d.getMonth() + 1, 1));
+  const head = `<div class="daybar"><button class="btn" onclick="techMonthPage('${prev}')">‹</button>
+    <div class="d">${MONTHS1[d.getMonth()]} ${d.getFullYear()}</div>
+    <button class="btn" onclick="techMonthPage('${next}')" ${next > iso(new Date()) ? "disabled" : ""}>›</button></div>`;
+  page("Итоги месяца", head + `<div class="empty">Считаю…</div>`, () => techMonthPage(first));
+  try { const s = await call(`/api/tech/summary?from=${a}&to=${b}`); if (onPage) page("Итоги месяца", head + summaryTable(s), () => techMonthPage(first)); }
+  catch(e) { toast(e.message); }
+}
+function periodOf(k){
+  const t = new Date(), y = t.getFullYear(), m = t.getMonth();
+  return {month: [new Date(y, m, 1), t], prev: [new Date(y, m - 1, 1), new Date(y, m, 0)],
+          h1: [new Date(y, m, 1), new Date(y, m, Math.min(15, t.getDate()))],
+          h2p: [new Date(y, m - 1, 16), new Date(y, m, 0)]}[k].map(iso);
+}
+async function techSendPage(){
+  if (techDirty() && !confirm("Часы за день не сохранены. Уйти без сохранения?")) return;
+  const [a, b] = periodOf(window._sendK || "prev");
+  page("Отправить директору", `
+    <div class="open-form">
+    ${seg("per", {month: "Этот месяц", prev: "Прошлый месяц", h1: "1–15 число", h2p: "16–конец прошлого"}, window._sendK || "prev")}
+    <div class="toolbar"><div><label class="l">С</label><input type="date" id="p-from" value="${a}" max="${iso(new Date())}"></div>
+      <div><label class="l">По</label><input type="date" id="p-to" value="${b}" max="${iso(new Date())}"></div></div>
+    <div id="p-sum"><div class="empty">Считаю…</div></div>
+    <button class="btn main big" style="width:100%;margin-top:8px" id="p-send" onclick="techSend(this)" disabled>📤 Отправить ген. директору</button>
+    <p class="muted">Директор увидит итог в своей вкладке «Отчёты». Если потом поправите табель — отправьте период ещё раз.</p>
+    <h2>Уже отправлено</h2><div id="p-sent" class="muted">…</div></div>`);
+  document.querySelectorAll("#per button").forEach(btn => btn.addEventListener("click", () => {
+    window._sendK = btn.dataset.k; const [x, y] = periodOf(btn.dataset.k);
+    $("#p-from").value = x; $("#p-to").value = y; techPreview();
+  }));
+  $("#p-from").onchange = $("#p-to").onchange = () => { document.querySelectorAll("#per button").forEach(x => x.classList.remove("on")); techPreview(); };
+  techPreview();
+  try {
+    const r = await call("/api/tech/sent");
+    $("#p-sent").innerHTML = r.reports.length ? `<div class="card" style="padding:6px 10px"><table>${r.reports.map(x =>
+      `<tr><td>${esc(fmtPeriod(x.from, x.to))}<div class="ch">${esc(x.sent)}</div></td><td class="n"><b>${hh(x.total)} ч</b></td></tr>`).join("")}</table></div>` : "Пока ничего";
+  } catch(e) { $("#p-sent").textContent = ""; }
+}
+async function techPreview(){
+  const a = $("#p-from").value, b = $("#p-to").value, box = $("#p-sum"), btn = $("#p-send");
+  btn.disabled = true; box.innerHTML = `<div class="empty">Считаю…</div>`;
+  try {
+    const s = await call(`/api/tech/summary?from=${a}&to=${b}`);
+    if (!$("#p-sum")) return;
+    box.innerHTML = `<h2>${esc(fmtPeriod(s.from, s.to))}</h2>` + summaryTable(s);
+    btn.disabled = !s.people.length;
+  } catch(e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+async function techSend(btn){
+  const a = $("#p-from").value, b = $("#p-to").value;
+  if (!confirm(`Отправить ген. директору табель за ${fmtPeriod(a <= b ? a : b, a <= b ? b : a)}?`)) return;
+  btn.disabled = true;
+  try { const r = await call("/api/tech/send", {from: a, to: b}); toast(`✅ Отправлено: ${hh(r.total)} ч`); techSendPage(); }
+  catch(e) { toast(e.message); btn.disabled = false; }
+}
+
+/* ------------------------------ отчёты табеля (ген. директор) */
+function drawReports(d){
+  window._reports = d.reports;
+  $("#main").innerHTML = `<h2>Табель цеха от тех. директора</h2>` + (d.reports.length ? d.reports.map((r, i) => `
+    <div class="card tap" onclick="reportPage(${i})"><div class="top">
+      <div class="title">${esc(fmtPeriod(r.from, r.to))}</div><span class="badge">${hh(r.total)} ч</span></div>
+      <div class="sub">${r.people.length} чел. · отправил ${esc(r.who || "—")}, ${esc(r.sent)}</div></div>`).join("")
+    : `<div class="empty">Пока ничего не присылали.<br>Отчёт появится здесь, когда тех. директор нажмёт «Отправить директору».</div>`);
+}
+function reportPage(i){
+  const r = window._reports[i];
+  page(esc(fmtPeriod(r.from, r.to)), `<p class="muted">Отправил ${esc(r.who || "—")}, ${esc(r.sent)}</p>` + summaryTable(r));
 }
 
 /* ------------------------------ чат

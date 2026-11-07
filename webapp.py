@@ -31,7 +31,11 @@ log = logging.getLogger("orders-bot")
 
 APP_TAB = "Приложение"
 APP_HEADERS = ["Код", "Имя", "Роль", "Добавлен", "Кто добавил"]
-ROLE_WORDS = {"менеджер": "manager", "курьер": "courier", "производство": "prod", "цех": "prod",
+# Роли приложения: те же, что в MAX, плюс директора (их в MAX нет, поэтому список свой)
+ROLE_LABELS = {**config.ROLE_LABELS, "techdir": "Тех. директор", "gendir": "Ген. директор"}
+ROLE_WORDS = {"техдиректор": "techdir", "тех.директор": "techdir", "технический": "techdir",
+              "гендиректор": "gendir", "ген.директор": "gendir", "генеральный": "gendir", "директор": "gendir",
+              "менеджер": "manager", "курьер": "courier", "производство": "prod", "цех": "prod",
               "кладовщик": "keeper", "склад": "keeper"}
 HERE = Path(__file__).resolve().parent
 STATIC = {  # что отдаём браузеру как есть
@@ -104,7 +108,7 @@ def _app_ws():
 def devices(force: bool = False) -> dict:
     """{КОД: {"name", "role", "row"}} — кого пустили в приложение."""
     if force or time.time() - _devices["t"] > 30:
-        labels = {v.lower(): k for k, v in config.ROLE_LABELS.items()}
+        labels = {v.lower(): k for k, v in ROLE_LABELS.items()}
         data = {}
         for i, v in enumerate(_app_ws().get_all_values()[1:], start=2):
             code = norm_code(v[0] if v else "")
@@ -118,7 +122,7 @@ def devices(force: bool = False) -> dict:
 
 def add_device(code: str, role: str, name: str, who: str) -> None:
     ws = _app_ws()
-    row = [code, name, config.ROLE_LABELS[role], datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m.%Y %H:%M"), who]
+    row = [code, name, ROLE_LABELS[role], datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m.%Y %H:%M"), who]
     have = devices(force=True)
     if code in have:
         r = have[code]["row"]
@@ -170,7 +174,7 @@ def _chat_bump(m: dict) -> None:
 def _chat_load() -> None:
     if _chat["loaded"]:
         return
-    labels = {v.lower(): k for k, v in config.ROLE_LABELS.items()}
+    labels = {v.lower(): k for k, v in ROLE_LABELS.items()}
     msgs = []
     for i, v in enumerate(_chat_ws().get_all_values()[1:], start=2):
         v = list(v) + [""] * 6
@@ -192,7 +196,7 @@ def chat_list(since: int, code: str) -> dict:
         rev = _chat["rev"]
     return {"epoch": _chat["epoch"], "rev": rev,
             "msgs": [{"id": m["id"], "t": m["t"], "name": m["name"], "role": m["role"],
-                      "label": config.ROLE_LABELS.get(m["role"], ""), "text": m["text"],
+                      "label": ROLE_LABELS.get(m["role"], ""), "text": m["text"],
                       "edited": bool(m.get("edited")), "mine": m["code"] == code}
                      for m in msgs]}
 
@@ -211,7 +215,7 @@ def chat_send(text: str, me: dict, code: str) -> dict:
     with _chat_lock:
         _chat_load()
         # RAW: таблица сохраняет текст как есть, «=2+2» или «+7…» не превратятся в формулу
-        res = _chat_ws().append_row([now, code, name, config.ROLE_LABELS[me["role"]], text, ""],
+        res = _chat_ws().append_row([now, code, name, ROLE_LABELS[me["role"]], text, ""],
                                     value_input_option="RAW")
         # номер строки, куда легло сообщение, — по нему потом находим сообщение для правки
         hit = re.search(r"!A(\d+)", str(((res or {}).get("updates") or {}).get("updatedRange") or ""))
@@ -249,23 +253,23 @@ def chat_edit(msg_id: int, text: str, code: str) -> dict:
 def _parse_role(text: str):
     t = (text or "").strip().lower()
     for word, key in ROLE_WORDS.items():
-        if t.startswith(word[:4]):
+        if t.startswith(word[:4]) or t.replace(" ", "") == word:
             return key
-    return t if t in config.ROLE_LABELS else None
+    return t if t in ROLE_LABELS else None
 
 
 def app_command(raw: str, who: str) -> str:
     """Команда менеджера в MAX: /app КОД роль Имя · /app — список · /app удалить КОД."""
     parts = raw.split()[1:]
     usage = ("📱 Приложение для сотрудников\n\nДобавить телефон:\n/app КОД роль Имя\n"
-             "например: /app K7QM-2XPA курьер Иван\n\nРоли: менеджер, курьер, производство, кладовщик\n"
+             "например: /app K7QM-2XPA курьер Иван\n\nРоли: менеджер, курьер, производство, кладовщик, техдиректор, гендиректор\n"
              "Убрать: /app удалить КОД")
     try:
         if not parts:
             have = devices(force=True)
             if not have:
                 return usage + "\n\nПока никого не добавлено."
-            lines = [f"• {c} — {d['name'] or 'без имени'}, {config.ROLE_LABELS[d['role']]}" for c, d in have.items()]
+            lines = [f"• {c} — {d['name'] or 'без имени'}, {ROLE_LABELS[d['role']]}" for c, d in have.items()]
             return usage + "\n\nСейчас в приложении:\n" + "\n".join(lines)
         if parts[0].lower().startswith("удал") and len(parts) > 1:
             code = norm_code(parts[1])
@@ -278,7 +282,7 @@ def app_command(raw: str, who: str) -> str:
             return "Не понял. " + usage
         name = " ".join(parts[2:])[:40]
         add_device(code, role, name, who)
-        return f"✅ {code} добавлен: {name or 'без имени'}, {config.ROLE_LABELS[role]}.\nПусть нажмёт «Проверить» в приложении."
+        return f"✅ {code} добавлен: {name or 'без имени'}, {ROLE_LABELS[role]}.\nПусть нажмёт «Проверить» в приложении."
     except Exception:
         log.exception("Приложение: команда /app")
         return "⚠️ Не получилось записать в таблицу, попробуйте ещё раз."
@@ -449,14 +453,188 @@ def manager_data(today: date, pay: bool = False) -> dict:
         "today": max(0, logic.today_total(orders, today) - _shipped_today(today)),
         "open": sum(logic.qty(o) for o in open_),
         "city": sum(logic.qty(o) for o in open_ if logic.is_city(o)),
-        "devices": [{"code": c, "name": d["name"], "role": d["role"], "label": config.ROLE_LABELS[d["role"]]}
+        "devices": [{"code": c, "name": d["name"], "role": d["role"], "label": ROLE_LABELS[d["role"]]}
                     for c, d in devices(force=True).items()],
     }
 
 
+# ------------------------------------------------------------ табель цеха (тех. директор)
+# «Работники цеха» — люди, которым ведут учёт часов. Им не нужно приложение: тех. директор заводит их вручную.
+# «Табель» — по строке на человека и день: сколько часов отработал.
+# «Отчёты табеля» — итоги за период, которые тех. директор отправил ген. директору (снимок на момент отправки).
+WORKERS_TAB = "Работники цеха"
+WORKERS_HEADERS = ["ID", "Имя", "Участок", "Добавлен", "Кто добавил", "Статус"]
+TABEL_TAB = "Табель"
+TABEL_HEADERS = ["Дата", "ID", "Имя", "Часы", "Кто внёс", "Изменено"]
+REPORTS_TAB = "Отчёты табеля"
+REPORTS_HEADERS = ["Отправлено", "Кто отправил", "С", "По", "Всего часов", "Данные"]
+FIRED = "Уволен"
+
+
+def _stamp() -> str:
+    return datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m.%Y %H:%M")
+
+
+def _d(x) -> date:
+    """«2026-11-07» или «07.11.2026» -> дата."""
+    x = str(x or "").strip()
+    for fmt in ("%Y-%m-%d", "%d.%m.%Y"):
+        try:
+            return datetime.strptime(x, fmt).date()
+        except ValueError:
+            pass
+    raise ValueError("Не понял дату")
+
+
+def _hours(x):
+    """Часы из ячейки или из поля ввода: «8», «7,5» -> 8 / 7.5; пусто или 0 -> None."""
+    try:
+        h = round(float(str(x).replace(",", ".").strip()), 2)
+    except (TypeError, ValueError):
+        return None
+    if h <= 0:
+        return None
+    if h > 24:
+        raise ValueError("В сутках не больше 24 часов")
+    return int(h) if h == int(h) else h
+
+
+def workers(include_fired: bool = False) -> list:
+    out = []
+    for i, v in enumerate(sheets._tab(WORKERS_TAB, WORKERS_HEADERS).get_all_values()[1:], start=2):
+        v = list(v) + [""] * 6
+        if not v[0].strip() or not v[1].strip():
+            continue
+        fired = v[5].strip().lower() == FIRED.lower()
+        if fired and not include_fired:
+            continue
+        out.append({"id": v[0].strip(), "name": v[1].strip(), "area": v[2].strip(), "row": i, "fired": fired})
+    return sorted(out, key=lambda w: (w["area"].lower(), w["name"].lower()))
+
+
+def worker_add(name: str, area: str, who: str) -> None:
+    name, area = name.strip()[:40], area.strip()[:30]
+    if not name:
+        raise ValueError("Впишите имя")
+    if any(w["name"].lower() == name.lower() for w in workers()):
+        raise ValueError("Такой сотрудник уже есть")
+    sheets._tab(WORKERS_TAB, WORKERS_HEADERS).append_row(
+        [secrets.token_hex(3), name, area, _stamp(), who, ""], value_input_option="RAW")
+
+
+def worker_fire(wid: str) -> None:
+    """Не удаляем строку: часы за прошлые дни должны остаться в отчётах. Просто прячем из списка."""
+    w = next((x for x in workers() if x["id"] == wid), None)
+    if not w:
+        raise ValueError("Сотрудник не найден")
+    sheets._tab(WORKERS_TAB, WORKERS_HEADERS).update(values=[[FIRED]], range_name=f"F{w['row']}",
+                                                     value_input_option="RAW")
+
+
+def _tabel() -> list:
+    out = []
+    for i, v in enumerate(sheets._tab(TABEL_TAB, TABEL_HEADERS).get_all_values()[1:], start=2):
+        v = list(v) + [""] * 6
+        try:
+            day = _d(v[0])
+        except ValueError:
+            continue
+        try:
+            h = _hours(v[3])
+        except ValueError:
+            h = None
+        out.append({"row": i, "day": day, "id": v[1].strip(), "name": v[2].strip(), "hours": h})
+    return out
+
+
+def tech_data(day: date) -> dict:
+    ws_list = workers()
+    rows = _tabel()
+    got = {r["id"]: r["hours"] for r in rows if r["day"] == day}
+    month = [r for r in rows if r["day"].year == day.year and r["day"].month == day.month and r["hours"]]
+    return {"day": day.isoformat(), "today": now_date().isoformat(),
+            "workers": [{"id": w["id"], "name": w["name"], "area": w["area"], "hours": got.get(w["id"])} for w in ws_list],
+            "filled": sum(1 for w in ws_list if got.get(w["id"])),
+            "month_hours": round(sum(r["hours"] for r in month), 2)}
+
+
+def tech_day_save(day: date, hours: dict, who: str) -> int:
+    """Записывает часы за день: {ID: часы}. Пусто или 0 — «не работал» (часы в строке стираются)."""
+    if day > now_date():
+        raise ValueError("Нельзя заполнить табель на будущее")
+    if day < now_date() - timedelta(days=400):
+        raise ValueError("Слишком старая дата")
+    known = {w["id"]: w for w in workers(include_fired=True)}
+    clean = {}
+    for wid, h in (hours or {}).items():
+        if wid in known:
+            clean[wid] = _hours(h)
+    ws = sheets._tab(TABEL_TAB, TABEL_HEADERS)
+    have = {r["id"]: r for r in _tabel() if r["day"] == day}
+    now, ds, ups, new = _stamp(), day.strftime("%d.%m.%Y"), [], []
+    for wid, h in clean.items():
+        r = have.get(wid)
+        if r:
+            if r["hours"] != h:
+                ups.append({"range": f"C{r['row']}:F{r['row']}", "values": [[known[wid]["name"], "" if h is None else h, who, now]]})
+        elif h is not None:
+            new.append([ds, wid, known[wid]["name"], h, who, now])
+    if ups:
+        ws.batch_update(ups, value_input_option="RAW")
+    if new:
+        ws.append_rows(new, value_input_option="RAW")
+    return len(ups) + len(new)
+
+
+def period_summary(d1: date, d2: date) -> dict:
+    if d2 < d1:
+        d1, d2 = d2, d1
+    if (d2 - d1).days > 92:
+        raise ValueError("Период не больше трёх месяцев")
+    known = {w["id"]: w for w in workers(include_fired=True)}
+    per = {}
+    for r in _tabel():
+        if r["hours"] and d1 <= r["day"] <= d2:
+            w = known.get(r["id"]) or {"name": r["name"] or "?", "area": ""}
+            p = per.setdefault(r["id"], {"name": w["name"], "area": w["area"], "hours": 0, "days": 0, "by_day": {}})
+            p["hours"] = round(p["hours"] + r["hours"], 2)
+            p["days"] += 1
+            p["by_day"][r["day"].strftime("%d.%m")] = r["hours"]
+    people = sorted(per.values(), key=lambda p: (p["area"].lower(), p["name"].lower()))
+    for p in people:
+        p["by_day"] = dict(sorted(p["by_day"].items(), key=lambda kv: kv[0][3:] + kv[0][:2]))
+    return {"from": d1.isoformat(), "to": d2.isoformat(), "total": round(sum(p["hours"] for p in people), 2),
+            "people": people}
+
+
+def report_send(d1: date, d2: date, who: str) -> dict:
+    summ = period_summary(d1, d2)
+    if not summ["people"]:
+        raise ValueError("За этот период в табеле нет часов")
+    sheets._tab(REPORTS_TAB, REPORTS_HEADERS).append_row(
+        [_stamp(), who, _d(summ["from"]).strftime("%d.%m.%Y"), _d(summ["to"]).strftime("%d.%m.%Y"), summ["total"],
+         json.dumps(summ, ensure_ascii=False)], value_input_option="RAW")
+    return summ
+
+
+def reports() -> list:
+    out = []
+    for i, v in enumerate(sheets._tab(REPORTS_TAB, REPORTS_HEADERS).get_all_values()[1:], start=2):
+        v = list(v) + [""] * 6
+        try:
+            data = json.loads(v[5])
+        except ValueError:
+            continue
+        data.update(id=i, sent=v[0].strip(), who=v[1].strip())
+        out.append(data)
+    return out[::-1][:60]
+
+
 # --------------------------------------------------------------- запросы
 ROLE_TABS = {"manager": ["courier", "prod", "keeper", "manager", "chat"], "courier": ["courier", "chat"],
-             "prod": ["prod", "chat"], "keeper": ["keeper", "chat"]}
+             "prod": ["prod", "chat"], "keeper": ["keeper", "chat"],
+             "techdir": ["tech", "prod", "keeper", "chat"],
+             "gendir": ["courier", "prod", "keeper", "manager", "reports", "chat"]}
 
 
 def _int(x, default: int) -> int:
@@ -521,7 +699,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         if not me:
             return 200, {"code": code, "ok": False}
         return 200, {"code": code, "ok": True, "name": me["name"], "role": me["role"],
-                     "label": config.ROLE_LABELS[me["role"]], "tabs": ROLE_TABS[me["role"]]}
+                     "label": ROLE_LABELS[me["role"]], "tabs": ROLE_TABS[me["role"]]}
     if not me:
         return 403, {"error": "Телефон не добавлен", "code": code}
     tabs = ROLE_TABS[me["role"]]
@@ -543,6 +721,35 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
             return 200, chat_send(str(body.get("text") or ""), me, code)
         except ValueError as e:
             return 400, {"error": str(e)}
+
+    if "tech" in tabs and path.startswith("/api/tech"):
+        try:
+            if path == "/api/tech":
+                return 200, tech_data(_d(body.get("day")) if body.get("day") else today)
+            if path == "/api/tech/workers":
+                return 200, {"workers": workers()}
+            if path == "/api/tech/summary":
+                return 200, period_summary(_d(body.get("from")), _d(body.get("to")))
+            if path == "/api/tech/sent":
+                return 200, {"reports": [r for r in reports() if r.get("who") == who][:20]}
+            if method == "POST":
+                with _lock:
+                    if path == "/api/tech/day":
+                        n = tech_day_save(_d(body.get("day")), body.get("hours") or {}, who)
+                        return 200, {"ok": True, "changed": n}
+                    if path == "/api/tech/worker":
+                        worker_add(str(body.get("name") or ""), str(body.get("area") or ""), who)
+                        return 200, {"ok": True}
+                    if path == "/api/tech/worker/remove":
+                        worker_fire(str(body.get("id") or ""))
+                        return 200, {"ok": True}
+                    if path == "/api/tech/send":
+                        summ = report_send(_d(body.get("from")), _d(body.get("to")), who)
+                        return 200, {"ok": True, "total": summ["total"]}
+        except ValueError as e:
+            return 400, {"error": str(e)}
+    if path == "/api/reports" and "reports" in tabs:
+        return 200, {"reports": reports()}
 
     if path == "/api/courier" and "courier" in tabs:
         return 200, courier_data(today, pay)
@@ -660,7 +867,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         new_code, role = norm_code(body.get("code")), body.get("role")
         if not new_code:
             return 400, {"error": "Код должен быть из 8 знаков, как на экране телефона: K7QM-2XPA"}
-        if role not in config.ROLE_LABELS:
+        if role not in ROLE_LABELS:
             return 400, {"error": "Выберите роль"}
         with _lock:
             add_device(new_code, role, str(body.get("name") or "").strip()[:40], who)
