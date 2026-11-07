@@ -931,11 +931,20 @@ def _set_rate_raw(key: str, value: str) -> None:
 
 
 def bot_email() -> str:
+    """Почта служебного аккаунта бота: её добавляют редактором в таблицу. Берём прямо из ключа Google."""
     try:
-        import costs
-        return costs.bot_email()
+        raw = config.CREDS_JSON
+        if raw:
+            if not raw.startswith("{"):
+                raw = base64.b64decode(raw).decode("utf-8")
+            return json.loads(raw).get("client_email", "")
+        return json.loads(Path(config.CREDS_FILE).read_text(encoding="utf-8")).get("client_email", "")
     except Exception:
-        return ""
+        try:
+            import costs
+            return costs.bot_email()
+        except Exception:
+            return ""
 
 
 def tabel_move(sid: str, who: str) -> dict:
@@ -945,14 +954,16 @@ def tabel_move(sid: str, who: str) -> dict:
     import gspread
     if tabel_book_id():
         raise ValueError("Табель уже в отдельной таблице")
+    no_access = (f"У бота нет доступа к этой таблице. Откройте её, нажмите «Настройки доступа» и добавьте "
+                 f"{bot_email() or 'почту бота'} с ролью «Редактор», затем нажмите «Подключить» ещё раз")
     try:
         new = sheets.get_client().open_by_key(sid)
+    except (PermissionError, gspread.SpreadsheetNotFound):  # gspread так сообщает «нет доступа» / «не найдена»
+        raise ValueError(no_access)
     except gspread.exceptions.APIError as e:
         if "403" in str(e) or "404" in str(e) or "PERMISSION" in str(e).upper():
-            raise ValueError(f"У бота нет доступа к таблице. Добавьте {bot_email() or 'почту бота'} редактором и повторите")
+            raise ValueError(no_access)
         raise
-    except gspread.SpreadsheetNotFound:
-        raise ValueError(f"Таблица не найдена или у бота нет доступа. Добавьте {bot_email() or 'почту бота'} редактором")
     have = {w.title: w for w in new.worksheets()}
     for title, _ in TABEL_BOOK_TABS + [(RATES_TAB, RATES_HEADERS)]:
         if title in have and len([r for r in have[title].get_all_values() if any(c.strip() for c in r)]) > 1:

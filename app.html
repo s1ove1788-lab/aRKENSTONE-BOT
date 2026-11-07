@@ -1099,20 +1099,28 @@ function techBookCard(b){
 }
 function techBookForm(){
   const b = (window._tech || {}).book || {};
+  // бот сам таблицу создать не может: у служебного аккаунта Google нет места на Диске — таблицу создаёт человек
   sheet(`<h3>🔒 Отдельная таблица табеля</h3>
     <div class="muted">Перенесу работников, часы, премии, отчёты и ставки. Из общей таблицы эти листы уберу, в приложении всё останется как было.</div>
-    <label class="l">Способ 1. Бот сам создаст таблицу и откроет её этим почтам Google</label>
-    <input id="tb-mail" type="email" placeholder="ваша@gmail.com, почта тех. директора" autocomplete="email">
-    <button class="btn main" style="width:100%" onclick="techBookGo(this,'create')">Создать и перенести</button>
-    <label class="l" style="margin-top:16px">Способ 2. Своя пустая таблица</label>
-    <div class="muted" style="margin-bottom:8px">Создайте пустую Google Таблицу, нажмите «Настройки доступа» и добавьте редактором
-      ${b.bot ? `<b style="user-select:all;word-break:break-all">${esc(b.bot)}</b>` : "почту бота"}. Затем вставьте сюда ссылку на таблицу.</div>
+    <ol style="margin:0 0 10px;padding-left:20px;line-height:1.5">
+      <li>Создайте пустую Google Таблицу.</li>
+      <li>Нажмите «Настройки доступа» и добавьте почту бота с ролью <b>«Редактор»</b>:</li></ol>
+    ${b.bot ? `<div class="code" style="font-size:14px;letter-spacing:0;padding:12px;margin:0 0 8px;word-break:break-all">${esc(b.bot)}</div>
+      <button class="btn" style="width:100%;margin-bottom:12px" onclick="copyBot(this)">📋 Скопировать почту бота</button>`
+      : `<div class="muted">Почту бота не удалось узнать, проверьте ключ Google на Bothost.</div>`}
+    <ol start="3" style="margin:0 0 8px;padding-left:20px;line-height:1.5"><li>Скопируйте ссылку на таблицу и вставьте сюда:</li></ol>
     <input id="tb-link" placeholder="https://docs.google.com/spreadsheets/d/…" autocomplete="off">
-    <button class="btn" style="width:100%" onclick="techBookGo(this,'connect')">Подключить и перенести</button>`);
+    <button class="btn main" style="width:100%" onclick="techBookGo(this,'connect')">Подключить и перенести</button>`);
+}
+async function copyBot(btn){
+  const t = (window._tech || {}).book.bot;
+  try { await navigator.clipboard.writeText(t); toast("Почта бота скопирована"); }
+  catch(e) { const r = document.createRange(); r.selectNodeContents(btn.previousElementSibling);
+    getSelection().removeAllRanges(); getSelection().addRange(r); toast("Выделил — скопируйте вручную"); }
 }
 async function techBookGo(btn, how){
-  const body = how === "create" ? {emails: $("#tb-mail").value} : {link: $("#tb-link").value};
-  if (!(body.emails || body.link || "").trim()) return toast(how === "create" ? "Впишите почту" : "Вставьте ссылку");
+  const body = {link: $("#tb-link").value};
+  if (!body.link.trim()) return toast("Вставьте ссылку на таблицу");
   if (!confirm("Перенести табель в отдельную таблицу? Из общей таблицы листы табеля будут убраны.")) return;
   btn.disabled = true; const t = btn.textContent; btn.textContent = "Переношу…";
   try {
