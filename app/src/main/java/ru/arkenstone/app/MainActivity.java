@@ -7,6 +7,7 @@ import android.graphics.Bitmap;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.View;
+import android.webkit.JavascriptInterface;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceError;
@@ -15,6 +16,12 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.Toast;
+
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.os.Build;
+
+import com.google.firebase.messaging.FirebaseMessaging;
 
 /**
  * Приложение Arkenstone: окно браузера, которое открывает экран сотрудников с сервера бота.
@@ -27,6 +34,8 @@ public class MainActivity extends Activity {
     private String appUrl;
     private String appHost;
     private ValueCallback<Uri[]> fileCallback;
+    /** Приложение сейчас на экране — уведомления чата не показываем, сообщения и так видно. */
+    static volatile boolean visible;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -69,11 +78,18 @@ public class MainActivity extends Activity {
             public boolean onShowFileChooser(WebView view, ValueCallback<Uri[]> callback, FileChooserParams params) {
                 if (fileCallback != null) fileCallback.onReceiveValue(null);
                 fileCallback = callback;
+                // Что выбирать, решает страница: PDF с заказами или фото для чата
+                String type = "*/*", title = "Выберите файл";
+                for (String t : params.getAcceptTypes()) {
+                    if (t == null) continue;
+                    if (t.startsWith("image")) { type = "image/*"; title = "Выберите фото"; break; }
+                    if (t.contains("pdf")) { type = "application/pdf"; title = "Выберите PDF"; }
+                }
                 Intent pick = new Intent(Intent.ACTION_GET_CONTENT);
                 pick.addCategory(Intent.CATEGORY_OPENABLE);
-                pick.setType("application/pdf");
+                pick.setType(type);
                 try {
-                    startActivityForResult(Intent.createChooser(pick, "Выберите PDF"), PICK_FILE);
+                    startActivityForResult(Intent.createChooser(pick, title), PICK_FILE);
                 } catch (ActivityNotFoundException e) {
                     fileCallback = null;
                     Toast.makeText(MainActivity.this, "Нет приложения для выбора файлов", Toast.LENGTH_LONG).show();
@@ -83,8 +99,71 @@ public class MainActivity extends Activity {
             }
         });
 
+        web.addJavascriptInterface(new Bridge(), "ArkNative");
+
         if (state != null) web.restoreState(state);
-        else web.loadUrl(appUrl);
+        else web.loadUrl(withTab(getIntent()));
+
+        setupNotifications();
+    }
+
+    /** Нажали на уведомление: открываем нужную вкладку (чат, отчёты…). */
+    private String withTab(Intent i) {
+        String tab = i == null ? null : i.getStringExtra("tab");
+        return tab == null || tab.isEmpty() ? appUrl : appUrl + "#tab=" + tab;
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        String tab = intent.getStringExtra("tab");
+        if (tab != null && !tab.isEmpty() && tab.matches("[a-z]+")) {
+            web.evaluateJavascript("window.openTab && openTab('" + tab + "')", null);
+        }
+    }
+
+    private void setupNotifications() {
+        Notifier.channels(this);
+        if (Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS}, 7);
+        }
+        try {
+            InboxWorker.schedule(this);
+        } catch (Exception ignored) {
+        }
+        try {  // Firebase есть, только если при сборке был google-services.json
+            FirebaseMessaging.getInstance().getToken().addOnSuccessListener(t -> {
+                if (t == null || t.equals(Prefs.fcm(this))) return;
+                Prefs.setFcm(this, t);
+                PushService.register(this, t);
+                web.evaluateJavascript("window.onFcmToken && onFcmToken('" + t.replaceAll("[^A-Za-z0-9:_-]", "") + "')", null);
+            });
+        } catch (Exception ignored) {
+            // Firebase не настроен — работает проверка раз в 15 минут
+        }
+    }
+
+    /** То, что экран приложения может попросить у телефона. */
+    private class Bridge {
+        @JavascriptInterface
+        public void setDevice(String token, String server) {
+            if (token == null || !token.matches("[A-Za-z0-9_-]{32,128}")) return;
+            if (server == null || !server.startsWith("https://")) return;
+            boolean first = Prefs.cursor(MainActivity.this) == 0;
+            Prefs.setDevice(MainActivity.this, token, server.endsWith("/") ? server : server + "/");
+            if (first) InboxWorker.runNow(MainActivity.this);  // запомнить, с какого места ждать уведомления
+        }
+
+        @JavascriptInterface
+        public String fcmToken() {
+            return Prefs.fcm(MainActivity.this);
+        }
+
+        @JavascriptInterface
+        public boolean notificationsAllowed() {
+            return androidx.core.app.NotificationManagerCompat.from(MainActivity.this).areNotificationsEnabled();
+        }
     }
 
     /** Свои страницы открываем внутри, звонки и карты — в приложениях телефона. */
@@ -148,11 +227,13 @@ public class MainActivity extends Activity {
     @Override
     protected void onResume() {
         super.onResume();
+        visible = true;
         web.onResume();
     }
 
     @Override
     protected void onPause() {
+        visible = false;
         web.onPause();
         super.onPause();
     }

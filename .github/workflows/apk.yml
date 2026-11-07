@@ -1,10 +1,11 @@
 # Собирает APK приложения Arkenstone и выкладывает его в «Releases» репозитория.
 # Запускается сам при каждом изменении ветки android, или вручную: Actions → «Сборка APK» → Run workflow.
+# Ветка android-push — пробные сборки: APK собирается и проверяется, но в Releases не выкладывается.
 name: Сборка APK
 
 on:
   push:
-    branches: [android]
+    branches: [android, android-push]
   workflow_dispatch:
 
 permissions:
@@ -25,15 +26,24 @@ jobs:
         with:
           gradle-version: "8.7"
 
-      - name: Ключ подписи из Secrets (если задан)
+      - name: Ключ подписи и Firebase из Secrets (если заданы)
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+          GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
         run: |
-          if [ -n "$KEYSTORE_B64" ]; then echo "$KEYSTORE_B64" | base64 -d > app/release.keystore; fi
+          KS="${KEYSTORE_B64:-$KEYSTORE_BASE64}"
+          if [ -n "$KS" ]; then echo "$KS" | base64 -d > app/release.keystore; echo "Подпись: постоянный ключ"; else echo "Подпись: временный ключ (нет секрета KEYSTORE_BASE64)"; fi
+          if [ -n "$GOOGLE_SERVICES_JSON" ]; then
+            if echo "$GOOGLE_SERVICES_JSON" | grep -q '{'; then printf '%s' "$GOOGLE_SERVICES_JSON" > app/google-services.json
+            else echo "$GOOGLE_SERVICES_JSON" | base64 -d > app/google-services.json; fi
+            echo "Firebase: подключён"
+          else echo "Firebase: нет секрета GOOGLE_SERVICES_JSON — уведомления раз в 15 минут"; fi
 
       - name: Собрать APK
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: gradle assembleRelease --no-daemon
 
       - name: Переименовать файл
@@ -45,6 +55,7 @@ jobs:
           path: Arkenstone.apk
 
       - name: Выложить в Releases
+        if: github.ref == 'refs/heads/android'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: app-v1.${{ github.run_number }}

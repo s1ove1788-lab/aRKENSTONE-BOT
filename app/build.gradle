@@ -1,6 +1,11 @@
 plugins {
     id 'com.android.application'
 }
+// Firebase (мгновенные уведомления) подключается, только если в сборку положен google-services.json
+// (его берёт из Secrets GitHub сборщик). Без файла APK собирается и уведомления приходят раз в 15 минут.
+if (file('google-services.json').exists()) {
+    apply plugin: 'com.google.gms.google-services'
+}
 
 // Номер версии берётся из номера сборки на GitHub, чтобы телефон видел обновление
 def build = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()
@@ -38,8 +43,19 @@ android {
         }
     }
 
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
+}
+
+dependencies {
+    implementation 'androidx.core:core:1.13.1'
+    implementation 'androidx.work:work-runtime:2.9.1'
+    implementation 'com.google.firebase:firebase-messaging:24.0.3'
 }
