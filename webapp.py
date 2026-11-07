@@ -1628,6 +1628,10 @@ def start(**hooks) -> None:
     log.info("Приложение для сотрудников: слушаю порт %d", config.ALICE_PORT)
     threading.Thread(target=_update_watch, daemon=True).start()
     try:
+        sheets.start_warmer()  # таблица в памяти сервера: кнопки не ждут Google
+    except Exception:
+        log.exception("Таблица: не смог запустить фоновое обновление")
+    try:
         d = photo_dir()
         if str(d).startswith("/app/shared"):
             log.info("Фото чата: %s (постоянное хранилище)", d)

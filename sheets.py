@@ -2,11 +2,13 @@
 import base64
 import json
 import logging
+import threading
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import gspread
+import gspread.utils
 
 import config
 import logic
@@ -58,6 +60,9 @@ SHIP_HEADERS = ["Дата и время", "Дата отгрузки", "Код",
 
 CACHE_TTL = 15  # секунд: чтобы не дёргать Google при каждом нажатии кнопки
 READ_TTL = 20  # секунд: сколько помним прочитанный лист (Google разрешает ~60 чтений в минуту на всех)
+MAX_STALE = 180  # секунд: до какого «возраста» лист можно отдать сразу, а свежий подтянуть в фоне
+WARM_EVERY = 15  # секунд: как часто фоновый поток перечитывает все листы одним запросом
+WARM_IDLE = 30 * 60  # лист, который никто не открывал полчаса, в фоне не перечитываем (ночью Google не дёргаем)
 _book = None
 
 # Методы листа, которые только читают и не сбрасывают запомненное содержимое
@@ -75,25 +80,73 @@ class _CachedSheet:
         self._ttl = ttl
         self._vals = None
         self._t = 0.0
+        self._gen = 0  # номер записи: фоновое чтение, начатое до записи, не должно затереть её результат
+        self._used = time.time()
+        self._lock = threading.Lock()
+        self._bg = False
+
+    def _fetch(self) -> None:
+        """Читает лист из Google. Если другой поток уже читает — ждёт его и берёт его результат."""
+        start = time.time()
+        with self._lock:
+            if self._vals is not None and self._t >= start:
+                return
+            gen = self._gen
+            vals = self._ws.get_all_values()
+            if gen == self._gen:
+                self._vals, self._t = vals, time.time()
+
+    def _refresh_bg(self) -> None:
+        if self._bg:
+            return
+        self._bg = True
+
+        def run():
+            try:
+                self._fetch()
+            except Exception as e:
+                log.warning("Google: фоновое чтение листа «%s» не вышло: %s", self._ws.title, e)
+            finally:
+                self._bg = False
+        threading.Thread(target=run, daemon=True).start()
+
+    def set_values(self, vals: list, gen: int) -> None:
+        """Результат пакетного фонового чтения. Не принимаем, если после начала чтения в лист писали."""
+        if gen == self._gen:
+            self._vals, self._t = vals, time.time()
 
     def get_all_values(self, *a, fresh: bool = False, **kw):
         """fresh=True — прочитать из Google прямо сейчас. Так читают перед записью «было + изменение»,
-        чтобы не затереть то, что человек только что поправил руками в таблице."""
+        чтобы не затереть то, что человек только что поправил руками в таблице.
+        Без fresh лист отдаётся из памяти сразу, даже чуть устаревший (до MAX_STALE), а свежий подтягивается в фоне."""
         if a or kw:
             return self._ws.get_all_values(*a, **kw)
-        if not fresh and self._vals is not None and time.time() - self._t < self._ttl:
-            return [list(r) for r in self._vals]
+        self._used = time.time()
+        if not fresh and self._vals is not None:
+            age = time.time() - self._t
+            if age < self._ttl:
+                return [list(r) for r in self._vals]
+            if self._ttl > 0 and age < MAX_STALE:
+                self._refresh_bg()
+                return [list(r) for r in self._vals]
         try:
-            self._vals = self._ws.get_all_values()
+            if fresh:
+                with self._lock:
+                    gen = self._gen
+                    vals = self._ws.get_all_values()
+                    if gen == self._gen:
+                        self._vals, self._t = vals, time.time()
+                return [list(r) for r in vals]
+            self._fetch()
         except gspread.exceptions.APIError as e:
             if self._vals is not None and "429" in str(e) and not fresh:
                 log.warning("Google: лимит чтений, беру лист «%s» из памяти", self._ws.title)
                 return [list(r) for r in self._vals]
             raise
-        self._t = time.time()
         return [list(r) for r in self._vals]
 
     def forget(self):
+        self._gen += 1
         self._vals = None
 
     def __getattr__(self, name):
@@ -101,11 +154,14 @@ class _CachedSheet:
         if not callable(attr) or name in _READS:
             return attr
 
-        def write(*a, **kw):  # запись: сначала делаем, потом забываем старое содержимое
+        def write(*a, **kw):  # запись: сначала делаем, потом забываем старое и сразу перечитываем в фоне
             try:
                 return attr(*a, **kw)
             finally:
+                self._gen += 1
                 self._vals = None
+                if self._ttl > 0:
+                    self._refresh_bg()
         return write
 
 
@@ -215,16 +271,49 @@ def sheet_url(kind: str) -> str:
 
 
 # ---------------------------------------------------------------- заказы
+_orders_bg = {"on": False, "gen": 0, "used": 0.0}
+_orders_lock = threading.Lock()
+
+
+def _orders_refresh_bg() -> None:
+    if _orders_bg["on"]:
+        return
+    _orders_bg["on"] = True
+
+    def run():
+        try:
+            read_orders(force=True)
+        except Exception as e:
+            log.warning("Google: фоновое чтение заказов не вышло: %s", e)
+        finally:
+            _orders_bg["on"] = False
+    threading.Thread(target=run, daemon=True).start()
+
+
 def read_orders(force: bool = False) -> list:
+    """Заказы. Без force — из памяти сразу (свежее подтянет фон); force — прямо из Google (перед записью)."""
     now = time.time()
-    if not force and _cache["rows"] is not None and now - _cache["t"] < CACHE_TTL:
-        return _cache["rows"]
+    _orders_bg["used"] = now
+    if not force and _cache["rows"] is not None:
+        if now - _cache["t"] < CACHE_TTL:
+            return _cache["rows"]
+        if now - _cache["t"] < MAX_STALE:
+            _orders_refresh_bg()
+            return _cache["rows"]
+    gen = _orders_bg["gen"]
     try:
         values = orders_ws().get_all_values()
     except gspread.exceptions.APIError:
         # лист переименовали или переставили, пока бот работал — забываем запомненные листы и находим заново
         _tabs.clear()
         values = orders_ws().get_all_values()
+    rows = _parse_orders(values)
+    if gen == _orders_bg["gen"]:
+        _cache.update(t=time.time(), rows=rows)
+    return rows
+
+
+def _parse_orders(values: list) -> list:
     lay = _set_layout(values[0] if values else [])
     width = max(lay.values(), default=0) + 1
 
@@ -257,7 +346,6 @@ def read_orders(force: bool = False) -> list:
             "has_status": bool(cell(v, "status")),
             "dup_of": dup_of,
         })
-    _cache.update(t=now, rows=rows)
     return rows
 
 
@@ -457,6 +545,7 @@ def safe_sync_colors() -> None:
 
 
 def _invalidate() -> None:
+    _orders_bg["gen"] += 1
     _cache["rows"] = None
 
 
@@ -1165,3 +1254,41 @@ def oz_seen() -> set:
 def oz_add(rows: list) -> None:
     if rows:
         _tab(config.OZON_TAB, MARKET_HEADERS).append_rows(rows, value_input_option="RAW")
+
+
+# ------------------------------------------------------------ фоновое обновление
+def _warm_once() -> None:
+    """Одним запросом к Google перечитывает все листы, которые сейчас в работе, и заказы.
+    Так кнопки в приложении и в MAX берут данные из памяти и не ждут Google."""
+    now = time.time()
+    items = [(k, ws) for k, ws in list(_tabs.items()) if isinstance(ws, _CachedSheet)
+             and (now - ws._used < WARM_IDLE or (k == "orders" and now - _orders_bg["used"] < WARM_IDLE))]
+    if not items:
+        return
+    gens = {k: ws._gen for k, ws in items}
+    ogen = _orders_bg["gen"]
+    titles = [ws._ws.title for _, ws in items]
+    res = get_book().values_batch_get(["'" + t.replace("'", "''") + "'" for t in titles])
+    for (k, ws), vr in zip(items, res.get("valueRanges", [])):
+        vals = gspread.utils.fill_gaps(vr.get("values", [[]]) or [[]])
+        if k == "orders":
+            if ogen == _orders_bg["gen"] and gens[k] == ws._gen:
+                _cache.update(t=time.time(), rows=_parse_orders(vals))
+            continue
+        ws.set_values(vals, gens[k])
+
+
+def start_warmer() -> None:
+    def loop():
+        fails = 0
+        while True:
+            time.sleep(WARM_EVERY if fails < 3 else 60)
+            try:
+                _warm_once()
+                fails = 0
+            except Exception as e:
+                fails += 1
+                if fails in (1, 3):
+                    log.warning("Google: фоновое обновление таблицы не вышло: %s", e)
+    threading.Thread(target=loop, daemon=True).start()
+    log.info("Таблица: фоновое обновление каждые %d сек", WARM_EVERY)

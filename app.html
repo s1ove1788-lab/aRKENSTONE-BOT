@@ -329,23 +329,39 @@ function open(k){
   document.querySelectorAll(".composer").forEach(e => e.remove());
   $("#main").style.paddingBottom = "";
   if (k === "chat") return chatOpen();
-  load();
+  load(true);
 }
 
 const NEED = {courier: "days", prod: "stock", keeper: "raw", manager: "devices", tech: "workers", reports: "reports"};  // по этому полю узнаём «свой» ответ
 
-async function load(){
+/* Последний ответ по каждому экрану: при переключении вкладок сразу рисуем его, а свежий подставляем,
+   когда придёт (и только если что-то поменялось — чтобы не сбивать прокрутку). */
+const shown = {};
+const DRAW = () => ({courier: drawCourier, prod: drawProd, keeper: drawKeeper, manager: drawManager, tech: drawTech, reports: drawReports});
+async function load(fromTab){
   clearInterval(timer);
   onPage = false; window._pageAgain = null;
-  const my = ++nav, t = tab;
+  const my = ++nav, t = tab, url = t === "tech" ? "/api/tech?day=" + techDay() : "/api/" + t;
   $("#refresh").classList.add("spin");
+  const prev = shown[url];
+  let early = false;
+  // старое показываем только при переключении вкладок; после нажатия кнопки ждём свежее, чтобы не мелькало прежнее
+  if (fromTab === true && prev && Date.now() - prev.at < 300000) {
+    try { DRAW()[t](prev.data); early = true; } catch(e) {}
+  }
   try {
-    const data = await call(t === "tech" ? "/api/tech?day=" + techDay() : "/api/" + t);
+    const data = await call(url);
     if (my !== nav || t !== tab) return;  // пока ждали, человек уже открыл другой экран
     if (!(NEED[t] in data)) throw new Error("Не получилось загрузить, повторите");
-    ({courier: drawCourier, prod: drawProd, keeper: drawKeeper, manager: drawManager, tech: drawTech, reports: drawReports})[t](data);
+    const json = JSON.stringify(data);
+    shown[url] = {data, json, at: Date.now()};
+    const typing = document.querySelector("#main input:focus, #main textarea:focus, #main select:focus");
+    if (!(early && prev.json === json) && !(early && typing)) DRAW()[t](data);
   } catch(e) {
-    if (me && my === nav) $("#main").innerHTML = `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="load()">Повторить</button></div>`;
+    if (me && my === nav) {
+      if (early) toast("Нет связи, показаны последние данные");
+      else $("#main").innerHTML = `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="load()">Повторить</button></div>`;
+    }
   } finally {
     if (my === nav) {
       $("#refresh").classList.remove("spin");
@@ -735,7 +751,7 @@ function page(title, html, again){
   clearInterval(timer);
   onPage = true;
   if (again) window._pageAgain = again;  // ⟳ на странице обновляет саму страницу
-  $("#main").innerHTML = `<div class="open-form"><button class="btn" style="margin-bottom:12px" onclick="load()">← Назад</button>
+  $("#main").innerHTML = `<div class="open-form"><button class="btn" style="margin-bottom:12px" onclick="load(true)">← Назад</button>
     <h2 style="margin-top:0">${title}</h2>${html}</div>`;
   window.scrollTo(0, 0);
 }
