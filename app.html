@@ -37,6 +37,14 @@ html,body{margin:0;background:var(--bg);color:var(--ink);
 header{position:sticky;top:0;z-index:5;background:var(--bar);color:var(--bar-ink);
   padding:calc(12px + env(safe-area-inset-top)) 16px 12px;display:flex;align-items:center;gap:12px}
 header h1{font-size:18px;margin:0;flex:1;letter-spacing:.2px}
+/* ---------- новогодняя гирлянда в шапке (рисует xmasDraw, нажатиям не мешает) */
+header.xmas{padding-bottom:22px}
+.xmas-svg{position:absolute;left:0;right:0;bottom:-16px;height:40px;pointer-events:none;overflow:visible}
+.xmas-svg .bulb{animation:twinkle 1.6s ease-in-out infinite}
+.xmas-svg .ball{transform-box:fill-box;transform-origin:50% 0;animation:swing 3.2s ease-in-out infinite}
+@keyframes twinkle{0%,100%{opacity:1;filter:drop-shadow(0 0 3px currentColor)}50%{opacity:.35;filter:none}}
+@keyframes swing{0%,100%{transform:rotate(-7deg)}50%{transform:rotate(7deg)}}
+@media (prefers-reduced-motion: reduce){.xmas-svg .bulb,.xmas-svg .ball{animation:none}}
 header .who{font-size:13px;opacity:.75}
 .iconbtn{background:none;border:0;color:inherit;font-size:22px;padding:4px 6px;cursor:pointer}
 main{padding:16px 16px calc(96px + env(safe-area-inset-bottom));max-width:640px;margin:0 auto}
@@ -441,11 +449,60 @@ function themeSet(t){
 }
 function themeForm(){
   let t = "auto"; try { t = localStorage.getItem("ark_theme") || "auto"; } catch(e) {}
+  const x = xmasOn();
   sheet(`<h3>Тема приложения</h3><div class="muted">Выбор запоминается на этом телефоне.</div>
     <div class="seg" id="th-seg">${Object.entries({auto: "Как в телефоне", light: "Светлая", dark: "Тёмная"}).map(([k, v]) =>
       `<button data-k="${k}" class="${k === t ? "on" : ""}" onclick="themeSet('${k}')">${v}</button>`).join("")}</div>
+    <label class="l">🎄 Новогодняя гирлянда</label>
+    <div class="seg" id="xm-seg"><button data-k="1" class="${x ? "on" : ""}" onclick="xmasSet(true)">Включена</button>
+      <button data-k="0" class="${x ? "" : "on"}" onclick="xmasSet(false)">Выключена</button></div>
     <button class="btn" style="width:100%" onclick="closeSheet()">Готово</button>`);
 }
+
+/* ------------------------------ новогодняя гирлянда: огоньки по краю шапки и шарики.
+   Сама включается с ноября по январь; выбор человека («Включена / Выключена») запоминается на телефоне */
+function xmasOn(){
+  let v = null; try { v = localStorage.getItem("ark_xmas"); } catch(e) {}
+  if (v === "1" || v === "0") return v === "1";
+  const m = new Date().getMonth();
+  return m === 10 || m === 11 || m === 0;
+}
+function xmasSet(on){
+  try { localStorage.setItem("ark_xmas", on ? "1" : "0"); } catch(e) {}
+  document.querySelectorAll("#xm-seg button").forEach(b => b.classList.toggle("on", b.dataset.k === (on ? "1" : "0")));
+  xmasDraw();
+}
+function xmasDraw(){
+  const h = document.querySelector("header"); if (!h) return;
+  h.querySelector(".xmas-svg")?.remove();
+  h.classList.toggle("xmas", xmasOn());
+  if (!xmasOn()) return;
+  const W = h.clientWidth, step = 34, n = Math.max(4, Math.round(W / step)), dx = W / n;
+  const colors = ["#ff4d4d", "#ffd23f", "#4ade80", "#4fa3ff", "#ff7ad9"];
+  let wire = `M 0 6`, bulbs = "";
+  for (let i = 0; i < n; i++) {
+    const x0 = i * dx, x1 = x0 + dx, xm = x0 + dx / 2;
+    wire += ` Q ${xm.toFixed(1)} 16 ${x1.toFixed(1)} 6`;
+    const c = colors[i % colors.length], bx = xm, by = 11;  // лампочка висит в провисе провода
+    bulbs += `<g class="bulb" style="color:${c};animation-delay:${((i * 0.37) % 1.6).toFixed(2)}s">
+      <rect x="${(bx - 2.2).toFixed(1)}" y="${by - 1}" width="4.4" height="3" rx="1" fill="#2b2b2b"/>
+      <ellipse cx="${bx.toFixed(1)}" cy="${by + 6}" rx="3.6" ry="5.2" fill="currentColor"/>
+      <ellipse cx="${(bx - 1.2).toFixed(1)}" cy="${by + 4.2}" rx="1" ry="1.6" fill="#fff" opacity=".6"/></g>`;
+  }
+  // шарики висят на ниточках в нескольких местах гирлянды
+  const ballAt = [0.18, 0.5, 0.82].map(f => Math.round(f * n - 0.5) * dx + dx);  // на стыках провода
+  const ballColors = ["#d62828", "#e9b10a", "#2a9d8f"];
+  const balls = ballAt.map((x, k) => `<g class="ball" style="animation-delay:${k * -1.1}s">
+      <line x1="${x.toFixed(1)}" y1="6" x2="${x.toFixed(1)}" y2="17" stroke="#c9c9c9" stroke-width="1"/>
+      <rect x="${(x - 2.6).toFixed(1)}" y="16" width="5.2" height="3.4" rx="1" fill="#d4af37"/>
+      <circle cx="${x.toFixed(1)}" cy="27" r="8.5" fill="${ballColors[k % 3]}"/>
+      <path d="M ${(x - 8).toFixed(1)} 26 Q ${x.toFixed(1)} 30 ${(x + 8).toFixed(1)} 26" stroke="#fff" stroke-opacity=".45" stroke-width="1.4" fill="none"/>
+      <circle cx="${(x - 3).toFixed(1)}" cy="23.5" r="2.2" fill="#fff" opacity=".55"/></g>`).join("");
+  h.insertAdjacentHTML("beforeend", `<svg class="xmas-svg" aria-hidden="true" viewBox="0 0 ${W} 40" width="${W}" height="40">
+    <path d="${wire}" fill="none" stroke="#3d5246" stroke-width="1.6"/>${bulbs}${balls}</svg>`);
+}
+xmasDraw();
+let _xmT; window.addEventListener("resize", () => { clearTimeout(_xmT); _xmT = setTimeout(xmasDraw, 200); });
 
 /* ------------------------------ окно-форма снизу */
 function sheet(html){
