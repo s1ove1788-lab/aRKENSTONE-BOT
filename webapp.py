@@ -1619,6 +1619,20 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def _prewarm() -> None:
+    """Сразу после запуска читаем листы всех экранов, чтобы и самое первое открытие было быстрым."""
+    time.sleep(5)
+    t0, today = time.time(), now_date()
+    for name, f in (("курьер", lambda: courier_data(today)), ("производство", lambda: prod_data(today)),
+                    ("склад", keeper_data), ("менеджер", lambda: manager_data(today)),
+                    ("табель", lambda: tech_data(today)), ("отчёты", reports), ("чат", lambda: chat_list(0, ""))):
+        try:
+            f()
+        except Exception as e:
+            log.warning("Прогрев: экран «%s» не прочитался: %s", name, e)
+    log.info("Прогрев таблицы: готово за %.1f сек", time.time() - t0)
+
+
 def start(**hooks) -> None:
     """Запускает веб-сервер в отдельном потоке: приложение на /, Алиса на /alice/<секрет>.
     hooks — функции бота, которые делают то же, что кнопки в MAX."""
@@ -1631,6 +1645,7 @@ def start(**hooks) -> None:
         sheets.start_warmer()  # таблица в памяти сервера: кнопки не ждут Google
     except Exception:
         log.exception("Таблица: не смог запустить фоновое обновление")
+    threading.Thread(target=_prewarm, daemon=True).start()
     try:
         d = photo_dir()
         if str(d).startswith("/app/shared"):
