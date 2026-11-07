@@ -113,6 +113,49 @@ table.dl .ch{color:var(--muted);font-size:13px}
 tr.short .ch{color:inherit}
 .result{white-space:pre-wrap;background:var(--ok-bg);border-radius:12px;padding:12px;margin-top:10px}
 .badge:empty{display:none}
+/* ---------- заказы менеджера, как в кабинете Маркета */
+.ob-sw{display:grid;grid-template-columns:1fr 1fr;background:var(--chip);border-radius:16px;padding:4px;margin-bottom:6px}
+.ob-sw button{border:0;background:none;padding:11px 6px;border-radius:12px;font:inherit;font-size:17px;font-weight:600;color:var(--muted);cursor:pointer}
+.ob-sw button.on{background:var(--card);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.ob-tabs{display:flex;gap:20px;overflow-x:auto;border-bottom:1px solid var(--line);margin:0 -16px 12px;padding:0 16px;scrollbar-width:none}
+.ob-tabs::-webkit-scrollbar{display:none}
+.ob-tabs button{flex:none;border:0;background:none;font:inherit;font-size:16px;font-weight:600;color:var(--ink);
+  padding:12px 0 10px;border-bottom:3px solid transparent;cursor:pointer;white-space:nowrap}
+.ob-tabs button small{color:var(--muted);font-weight:400;font-size:16px;margin-left:5px}
+.ob-tabs button.on{border-bottom-color:var(--ink)}
+.ob-tabs button.warn small{color:var(--warn);font-weight:700}
+.ob-q{position:relative;margin-bottom:6px}
+.ob-q input{padding-left:40px;border-radius:14px;background:var(--chip);border-color:transparent;margin:0}
+.ob-q:before{content:"⌕";position:absolute;left:14px;top:50%;transform:translateY(-52%);font-size:22px;color:var(--muted)}
+.ob-sum{display:flex;justify-content:space-between;color:var(--muted);font-size:14px;margin:10px 4px 8px}
+.oc{display:grid;grid-template-columns:auto 1fr;gap:4px 14px;padding:14px}
+.oc .no{color:var(--accent);font-weight:600;font-size:16px;word-break:break-all}
+.oc .nm{font-weight:700;font-size:16px;margin-top:2px}
+.oc .art{color:var(--muted);font-size:14px;margin-top:2px}
+.oc .kv{grid-column:1/-1;display:grid;grid-template-columns:96px 1fr;margin-top:8px;font-size:15px}
+.oc .kv div{padding:9px 0;border-top:1px solid var(--line)}
+.oc .kv div:nth-child(odd){color:var(--muted)}
+.oc .kv small{display:block;color:var(--muted);font-size:13px}
+.plate{width:52px;height:66px;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+  font-weight:800;font-size:18px;line-height:1.1;flex:none;position:relative}
+.plate small{font-size:10px;font-weight:600;opacity:.75;letter-spacing:.2px}
+.plate.black{background:#262626;color:#f3f3f3;box-shadow:inset 0 0 0 1px rgba(255,255,255,.22)}
+@media (prefers-color-scheme: dark){ .ob-sw button.on{background:#3a433e} .plate.black{background:#0b0d0c} }
+.plate.white{background:#ffffff;color:#262626;border:1px solid #d8d4cc}
+.plate.none{background:var(--chip);color:var(--muted)}
+.plate i{position:absolute;right:-6px;top:-6px;background:var(--accent);color:var(--accent-ink);font-style:normal;font-size:11px;
+  min-width:20px;height:20px;line-height:20px;border-radius:10px;text-align:center;padding:0 4px}
+.plates{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0 10px}
+.plates .plate{width:44px;height:56px;font-size:15px}
+.st{display:flex;align-items:center;gap:8px;color:var(--muted);font-size:15px;margin-top:4px}
+.st:before{content:"";width:9px;height:9px;border-radius:50%;background:var(--muted);flex:none}
+.st.today:before{background:var(--accent)}
+.st.late{color:var(--warn)} .st.late:before{background:var(--warn)}
+.st.done:before{background:var(--accent)}
+.st.cancel:before{background:#c0392b}
+.sh .hd{font-weight:700;font-size:17px}
+.sh .ft{display:flex;align-items:center;font-weight:600}
+.sh .ft span{flex:1}
 /* ---------- чат */
 nav button{position:relative}
 nav .dot{position:absolute;top:2px;left:calc(50% + 8px);background:var(--warn);color:#fff;font-size:11px;font-weight:700;
@@ -692,9 +735,9 @@ function invNew(kind){
 /* ------------------------------ менеджер */
 function drawManager(d){
   $("#main").innerHTML = `
-    <div class="stats"><div class="stat"><b>${d.today}</b><small>отгрузить сегодня</small></div>
-      <div class="stat"><b>${d.open}</b><small>в работе</small></div>
-      <div class="stat"><b>${d.city}</b><small>по городу</small></div></div>
+    <div class="stats"><div class="stat tap" onclick="ordersPage(true,{kind:'ru',tab:'today',q:''})"><b>${d.today}</b><small>отгрузить сегодня</small></div>
+      <div class="stat tap" onclick="ordersPage(true,{tab:'today',q:''})"><b>${d.open}</b><small>в работе</small></div>
+      <div class="stat tap" onclick="ordersPage(true,{kind:'city',tab:'today',q:''})"><b>${d.city}</b><small>по городу</small></div></div>
     <label class="btn main big" style="margin:10px 0">📄 Загрузить PDF с заказами
       <input type="file" accept="application/pdf,.pdf" hidden onchange="uploadPdf(this)"></label>
     <div class="toolbar"><button class="btn" onclick="ordersPage()">📊 Заказы</button>
@@ -747,45 +790,157 @@ function editDevice(code){
 }
 
 /* ------------------------------ страницы менеджера: заказы и остатки */
-function page(title, html, again){
+function page(title, html, again, back){
   clearInterval(timer);
   onPage = true;
   if (again) window._pageAgain = again;  // ⟳ на странице обновляет саму страницу
-  $("#main").innerHTML = `<div class="open-form"><button class="btn" style="margin-bottom:12px" onclick="load(true)">← Назад</button>
+  $("#main").innerHTML = `<div class="open-form"><button class="btn" style="margin-bottom:12px" onclick="${back || "load(true)"}">← Назад</button>
     <h2 style="margin-top:0">${title}</h2>${html}</div>`;
   window.scrollTo(0, 0);
 }
 
-async function ordersPage(filter){
+/* Экран «Заказы» как в кабинете Маркета: сверху Город / По России, ниже вкладки по статусам.
+   По России заказы склеены в отгрузки (дата · номер · N заказов), нажатие открывает заказы отгрузки. */
+const OB_TABS = {today: "Сегодня", ahead: "Впереди", late: "Просрочены", done: "Доставлены", cancel: "Отмены"};
+const OB_ST = {city: {today: "Доставка сегодня", ahead: "Ждёт доставки", late: "Просрочен", done: "Доставлен", cancel: "Отменён"},
+               ru: {today: "Отгрузка сегодня", ahead: "Ждёт отгрузки", late: "Просрочена", done: "Доставлено", cancel: "Отменено"}};
+function plural(n, one, few, many){
+  const a = Math.abs(n) % 100, b = a % 10;
+  return `${n} ${a > 10 && a < 20 ? many : b === 1 ? one : b >= 2 && b <= 4 ? few : many}`;
+}
+function obState(ch){
+  let st = window._obs;
+  if (!st) { try { st = JSON.parse(localStorage.getItem("ark_ob") || "null"); } catch(e) {} }
+  st = Object.assign({kind: "city", tab: "today", q: ""}, st || {}, ch || {});
+  window._obs = st;
+  try { localStorage.setItem("ark_ob", JSON.stringify({kind: st.kind, tab: st.tab})); } catch(e) {}
+  return st;
+}
+function niceDate(iso){
+  if (!iso) return "";
+  const [y, m, d] = iso.split("-").map(Number);
+  return `${d} ${MONTHS[m - 1]}`;
+}
+function plateHtml(r, small){
+  const cls = r.color || "none";
+  return `<div class="plate ${cls}">${r.width || "?"}<small>${r.color === "black" ? "чёрн." : r.color === "white" ? "бел." : ""}</small>${r.qty > 1 ? `<i>×${r.qty}</i>` : ""}</div>`;
+}
+function obCard(r){
+  const i = window._orders.rows.indexOf(r), kind = r.city ? "city" : "ru";
+  const [ad, at] = (r.added || "").split(" ");
+  const status = r.status && (r.tab === "done" || r.tab === "cancel") ? r.status : OB_ST[kind][r.tab];
+  return `<div class="card tap oc" onclick="orderView(${i})">
+    ${plateHtml(r)}
+    <div><div class="no">№ ${esc(r.order_no)}</div>
+      <div class="nm">Кровать ${esc(r.title)}${r.qty > 1 ? ` ×${r.qty}` : ""}</div>
+      ${r.article ? `<div class="art">${esc(r.article)}</div>` : ""}</div>
+    <div class="kv">
+      <div>Создан</div><div>${esc(ad || "—")}${at ? `<small>${esc(at)}</small>` : ""}</div>
+      <div>Отгрузка</div><div>${esc(r.ship || "—")}${r.shipment ? `<small>№ ${esc(r.shipment)}</small>` : ""}</div>
+      <div>Доставка</div><div>${esc(r.delivery || "—")}${r.address ? `<small>${esc(r.address)}</small>` : ""}</div>
+      <div>Статус</div><div><span class="st ${r.tab}" style="margin:0">${esc(status)}</span></div>
+      <div>Площадка</div><div>${esc(r.channel || "—")}</div>
+    </div></div>`;
+}
+function obGroups(rows){  // отгрузки по России: площадка + номер отгрузки + дата
+  const map = new Map();
+  rows.forEach(r => {
+    const k = `${r.channel}|${r.shipment}|${r.sort}`;
+    if (!map.has(k)) map.set(k, {key: k, channel: r.channel, shipment: r.shipment, sort: r.sort, tab: r.tab, rows: []});
+    map.get(k).rows.push(r);
+  });
+  return [...map.values()];
+}
+function obShipCard(g, gi){
+  const beds = g.rows.reduce((a, r) => a + r.qty, 0);
+  const head = (g.sort ? niceDate(g.sort) : "Без даты") + (g.shipment ? ` · №${g.shipment}` : "");
+  return `<div class="card tap sh" onclick="obShip(${gi})">
+    <div class="hd">${esc(head)}</div>
+    <div class="st ${g.tab}">${esc(OB_ST.ru[g.tab])} · ${esc(g.channel)}</div>
+    <div class="plates">${g.rows.slice(0, 8).map(r => plateHtml(r, true)).join("")}${g.rows.length > 8 ? `<div class="plate none">+${g.rows.length - 8}</div>` : ""}</div>
+    <div class="ft"><span>${plural(g.rows.length, "заказ", "заказа", "заказов")} · ${plural(beds, "кровать", "кровати", "кроватей")}</span><span class="muted" style="flex:none">›</span></div>
+  </div>`;
+}
+async function ordersPage(fresh, ch){
+  obState(ch);
   const my = ++nav;
-  if (!filter) page("Заказы в работе", `<div class="muted">Загрузка…</div>`, () => ordersPage());
-  let d;
-  try { d = window._orders && filter ? window._orders : await call("/api/manager/orders"); } catch(e) { return toast(e.message); }
-  if (my !== nav) return;
-  window._orders = d; filter = filter || "all";
-  const rows = d.rows.filter(r => filter === "all" || (filter === "city" ? r.city : filter === "ru" ? !r.city : r.late));
-  const n = rows.reduce((a, r) => a + r.qty, 0);
-  const chips = {all:"Все", city:"Город", ru:"По России", late:"Просрочены"};
-  page("Заказы в работе", `
-    <div class="seg">${Object.entries(chips).map(([k,v]) => `<button class="${k===filter?"on":""}" onclick="ordersPage('${k}')">${v}</button>`).join("")}</div>
-    <div class="muted" style="margin:0 4px 8px">${rows.length} заказ(ов) · ${n} кроватей</div>
-    <div class="card" style="padding:6px 10px">${rows.length ? `<table class="dl ot">
-      <tr><th>Дата</th><th>Куда</th><th>Кровать</th><th class="n">Шт</th></tr>
-      ${rows.map(r => `<tr class="tap ${r.late ? "short" : ""}" onclick="orderView(${d.rows.indexOf(r)})">
-        <td>${esc(r.date)}${r.today ? "<div class='ch'>сегодня</div>" : ""}</td>
-        <td><div class="pl">${esc(r.place)}</div><div class="ch">${esc(r.channel)}</div></td>
-        <td>${esc(r.bed)}</td><td class="n">${r.qty}</td></tr>`).join("")}</table>` : `<div class="muted" style="padding:10px">Нет заказов</div>`}</div>
-    ${d.url ? `<a class="btn" style="margin-top:10px" target="_blank" href="${esc(d.url)}">Открыть в Google Таблице</a>` : ""}`);
+  if (fresh !== false || !window._orders) {
+    if (!window._orders) page("Заказы и отгрузки", `<div class="muted">Загрузка…</div>`, () => ordersPage(true));
+    try { window._orders = await call("/api/manager/orders"); } catch(e) { return toast(e.message); }
+    if (my !== nav) return;
+  }
+  const st = window._obs;
+  page("Заказы и отгрузки", `
+    <div class="ob-sw" id="ob-sw"></div>
+    <div class="ob-tabs" id="ob-tabs"></div>
+    <div class="ob-q"><input id="ob-q" type="search" placeholder="Номер заказа, артикул, адрес" value="${esc(st.q)}" autocomplete="off" enterkeyhint="search"></div>
+    <div id="ob-body"></div>
+    ${window._orders.url ? `<a class="btn" style="margin-top:12px" target="_blank" href="${esc(window._orders.url)}">Открыть в Google Таблице</a>` : ""}`,
+    () => ordersPage(true));
+  let tm;
+  $("#ob-q").oninput = e => { clearTimeout(tm); tm = setTimeout(() => obGo({q: e.target.value}), 200); };
+  obFill();
+  if (window._obScroll != null) { window.scrollTo(0, window._obScroll); window._obScroll = null; }
+}
+function obGo(ch){  // переключили город/Россию, вкладку или набрали поиск: перерисовываем список, поле поиска не трогаем
+  obState(ch);
+  if (ch && "q" in ch && ch.q === "" && $("#ob-q")) $("#ob-q").value = "";
+  obFill();
+  if (ch && !("q" in ch && Object.keys(ch).length === 1)) window.scrollTo(0, 0);
+}
+function obFill(){
+  const st = window._obs, d = window._orders;
+  if (!$("#ob-body")) return;
+  const kindRows = d.rows.filter(r => r.city === (st.kind === "city"));
+  const q = st.q.trim().toLowerCase();
+  const rows = q ? kindRows.filter(r => [r.order_no, r.article, r.address, r.shipment, r.title, r.phone].join(" ").toLowerCase().includes(q))
+                 : kindRows.filter(r => r.tab === st.tab);
+  if (st.tab === "done" || st.tab === "cancel") rows.sort((a, b) => (b.end || "").localeCompare(a.end || "") || b.id - a.id);
+  const count = t => kindRows.filter(r => r.tab === t).length;
+  const beds = rows.reduce((a, r) => a + r.qty, 0);
+  const n = `${plural(rows.length, "заказ", "заказа", "заказов")} · ${plural(beds, "кровать", "кровати", "кроватей")}`;
+  let list, sum;
+  if (st.kind === "ru" && !q) {
+    const groups = obGroups(rows);
+    window._obg = groups;
+    sum = `<span>${plural(groups.length, "отгрузка", "отгрузки", "отгрузок")}</span><span>${n}</span>`;
+    list = groups.map(obShipCard).join("");
+  } else {
+    sum = `<span>${q ? "Найдено во всех вкладках" : ""}</span><span>${n}</span>`;
+    list = rows.map(obCard).join("");
+  }
+  $("#ob-sw").innerHTML = `<button class="${st.kind === "city" ? "on" : ""}" onclick="obGo({kind:'city',q:''})">Город</button>
+    <button class="${st.kind === "ru" ? "on" : ""}" onclick="obGo({kind:'ru',q:''})">По России</button>`;
+  $("#ob-tabs").innerHTML = Object.entries(OB_TABS).map(([k, v]) => `<button class="${!q && k === st.tab ? "on" : ""} ${k === "late" && count(k) ? "warn" : ""}"
+    onclick="obGo({tab:'${k}',q:''})">${v}<small>${count(k)}</small></button>`).join("");
+  $("#ob-body").innerHTML = `<div class="ob-sum">${sum}</div>` + (list || `<div class="empty">${q ? "Ничего не нашлось" : "Здесь пока пусто"}</div>`);
+  const on = document.querySelector(".ob-tabs button.on"); if (on) on.scrollIntoView({block: "nearest", inline: "center"});
+}
+function obShip(gi){
+  const g = window._obg[gi]; if (!g) return;
+  window._obScroll = window.scrollY;
+  const beds = g.rows.reduce((a, r) => a + r.qty, 0);
+  const head = (g.sort ? niceDate(g.sort) : "Без даты") + (g.shipment ? ` · №${g.shipment}` : "");
+  page(esc(head), `<div class="st ${g.tab}" style="margin:-4px 4px 12px">${esc(OB_ST.ru[g.tab])} · ${esc(g.channel)} ·
+      ${plural(g.rows.length, "заказ", "заказа", "заказов")} · ${plural(beds, "кровать", "кровати", "кроватей")}</div>
+    ${g.rows.map(obCard).join("")}`, () => ordersPage(true), "ordersPage(false)");
+  window.scrollTo(0, 0);
 }
 
 function orderView(i){
   const r = window._orders.rows[i];
-  sheet(`<h3>№ ${esc(r.order_no)}</h3><div class="muted">${esc(r.channel)} · ${esc(r.date)}${r.late ? " · просрочен" : ""}</div>
-    <table><tr><td>Куда</td><td>${esc(r.place)}</td></tr><tr><td>Кровать</td><td>${esc(r.bed)} ×${r.qty}</td></tr>
+  const kind = r.city ? "city" : "ru";
+  const status = r.status && (r.tab === "done" || r.tab === "cancel") ? r.status : OB_ST[kind][r.tab];
+  const where = r.city ? r.address : (r.shipment ? `Отгрузка № ${r.shipment}` : "");
+  sheet(`<h3>№ ${esc(r.order_no)}</h3><div class="muted">${esc(r.channel)} · ${esc(status)}</div>
+    <table><tr><td>Кровать</td><td>${esc(r.title)} ×${r.qty}</td></tr>
     ${r.article ? `<tr><td>Артикул</td><td>${esc(r.article)}</td></tr>` : ""}
+    ${where ? `<tr><td>${r.city ? "Адрес" : "Куда"}</td><td>${esc(where)}</td></tr>` : ""}
+    ${r.ship ? `<tr><td>Отгрузка</td><td>${esc(r.ship)}</td></tr>` : ""}
+    ${r.delivery ? `<tr><td>Доставка</td><td>${esc(r.delivery)}</td></tr>` : ""}
     ${r.phone ? `<tr><td>Телефон</td><td>${esc(r.phone)}</td></tr>` : ""}</table>
-    <div class="actions">${r.phone ? `<a class="btn" href="tel:${esc(r.phone.split(",")[0].replace(/[^\d+]/g, ""))}">📞 Позвонить</a>` : ""}
-    ${r.city && r.place !== "—" ? `<a class="btn" target="_blank" href="${esc(mapUrl(r.place))}">🗺 Карта</a>` : ""}</div>`);
+    <div class="actions">${r.tel ? `<a class="btn" href="tel:${esc(r.tel)}">📞 Позвонить</a>` : ""}
+    ${r.city && r.address ? `<a class="btn" target="_blank" href="${esc(mapUrl(r.address))}">🗺 Карта</a>` : ""}</div>`);
 }
 
 async function stockPage(){

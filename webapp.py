@@ -482,23 +482,52 @@ def keeper_data() -> dict:
     return res
 
 
+BOARD_CLOSED_MAX = 150  # сколько доставленных и отменённых отдаём в каждую вкладку (самые свежие)
+
+
+def _board_tab(o: dict, r, today: date) -> str:
+    st = (o["status"] or "").strip().lower().replace("ё", "е")
+    if "отмен" in st or "возврат" in st:
+        return "cancel"
+    if st:
+        return "done"
+    if r is None:
+        return "today" if logic.is_city(o) else "ahead"  # дату не поняли: городской лучше показать сразу
+    if r[1] < today:
+        return "late"
+    return "today" if r[0] <= today else "ahead"
+
+
 def open_orders(today: date) -> dict:
-    """Недоставленные заказы для таблицы в приложении, по дате доставки/отгрузки."""
-    rows = []
+    """Все заказы для экрана «Заказы» (как в кабинете Маркета): Город / По России и вкладки
+    Сегодня · Впереди · Просрочены · Доставлены · Отмены. Отгрузки по России склеивает телефон."""
+    rows, closed = [], {}
     for o in sheets.read_orders():
-        if o["status"]:
-            continue
         r = logic.key_range(o, today)
         city = logic.is_city(o)
-        rows.append({
-            "sort": str(r[0]) if r else "9999", "date": f"{r[1]:%d.%m}" if r else (logic.key_text(o) or "—"),
-            "late": bool(r and r[1] < today), "today": bool(r and r[0] <= today <= r[1]),
-            "city": city, "channel": o["channel"], "bed": logic.item_line(o), "qty": logic.qty(o),
-            "order_no": o["order_no"], "place": (o["address"] if city else (f"Отгрузка №{o['phone']}" if o["phone"] else "")) or "—",
-            "phone": logic.fmt_phone(o["phone"]) if city else "", "article": o["article"],
-        })
-    rows.sort(key=lambda x: (x["sort"], not x["city"], x["channel"], x["place"]))
-    return {"rows": rows, "url": sheets.sheet_url("orders")}
+        tab = _board_tab(o, r, today)
+        a = logic.parse_article(o["article"])
+        width = int(a["width"]) if a else int((re.match(r"\d+", o["size"]) or [0])[0] or 0)
+        color = (a["color_code"] if a else {"чёрный": "04", "черный": "04", "белый": "06"}.get(o["color"].lower(), ""))
+        item = {
+            "id": o["row"], "tab": tab, "city": city, "channel": o["channel"], "order_no": o["order_no"],
+            "title": logic.article_name(o["article"], logic.item_line(o)), "qty": logic.qty(o),
+            "width": width, "color": {"04": "black", "06": "white"}.get(color, ""), "article": o["article"],
+            "added": o["added"], "ship": o["ship"], "delivery": o["delivery"],
+            "sort": str(r[0]) if r else "", "end": str(r[1]) if r else "",
+            "status": o["status"] or "", "address": o["address"] if city else "",
+            "shipment": "" if city else o["phone"], "phone": logic.fmt_phone(o["phone"]) if city else "",
+            "tel": re.sub(r"[^\d+]", "", (o["phone"] or "").split("доб")[0].split(",")[0]) if city else "",
+        }
+        if tab in ("done", "cancel"):
+            closed.setdefault((tab, city), []).append(item)
+        else:
+            rows.append(item)
+    for items in closed.values():  # из закрытых — только самые свежие, иначе за год экран станет неподъёмным
+        items.sort(key=lambda x: (x["end"] or "", x["id"]), reverse=True)
+        rows += items[:BOARD_CLOSED_MAX]
+    rows.sort(key=lambda x: (x["sort"] or "9999", x["channel"], x["shipment"], x["address"], x["id"]))
+    return {"rows": rows, "today": str(today), "url": sheets.sheet_url("orders")}
 
 
 def manager_data(today: date, pay: bool = False) -> dict:
