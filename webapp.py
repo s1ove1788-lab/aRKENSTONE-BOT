@@ -32,8 +32,8 @@ log = logging.getLogger("orders-bot")
 APP_TAB = "Приложение"
 APP_HEADERS = ["Код", "Имя", "Роль", "Добавлен", "Кто добавил"]
 # Роли приложения: те же, что в MAX, плюс директора (их в MAX нет, поэтому список свой)
-ROLE_LABELS = {**config.ROLE_LABELS, "techdir": "Тех. директор", "gendir": "Ген. директор"}
-ROLE_WORDS = {"техдиректор": "techdir", "тех.директор": "techdir", "технический": "techdir",
+ROLE_LABELS = {**config.ROLE_LABELS, "techdir": "Тех. директор", "gendir": "Ген. директор", "admin": "Администратор"}
+ROLE_WORDS = {"администратор": "admin", "админ": "admin","техдиректор": "techdir", "тех.директор": "techdir", "технический": "techdir",
               "гендиректор": "gendir", "ген.директор": "gendir", "генеральный": "gendir", "директор": "gendir",
               "менеджер": "manager", "курьер": "courier", "производство": "prod", "цех": "prod",
               "кладовщик": "keeper", "склад": "keeper"}
@@ -59,6 +59,18 @@ _deps: dict = {}  # функции бота: deliver, move, notify, shipped, sto
 def pay_codes() -> set:
     import os
     return {c for c in (norm_code(x) for x in os.getenv("PAY_CODES", "").split(",")) if c}
+
+
+# Администратор видит всё и один может менять роли сотрудников. Первого администратора задаёт владелец хостинга:
+# переменная ADMIN_CODES на Bothost (коды телефонов через запятую). Дальше администратор может назначать
+# других администраторов в приложении. Менеджер и команда /app в MAX администратора назначить не могут.
+def admin_codes() -> set:
+    import os
+    return {c for c in (norm_code(x) for x in os.getenv("ADMIN_CODES", "").split(",")) if c}
+
+
+def role_of(code: str, dev: dict) -> str:
+    return "admin" if code in admin_codes() else dev["role"]
 
 
 RETURN_KINDS = {"ya": "Яндекс", "oz": "Озон", "wb": "Вайлдберриз"}
@@ -146,13 +158,24 @@ def remove_device(code: str) -> bool:
 # телефоны спрашивают «есть новое?» каждые несколько секунд, и если бы каждый раз читать таблицу,
 # Google быстро упёрся бы в лимит. В таблицу только дописываем новые сообщения.
 CHAT_TAB = "Чат"
-CHAT_HEADERS = ["Время", "Код", "Имя", "Роль", "Сообщение", "Изменено"]
+CHAT_HEADERS = ["Время", "Код", "Имя", "Роль", "Сообщение", "Изменено", "Ответ на", "Фото"]
 CHAT_KEEP = 500        # сколько последних сообщений держим в памяти и отдаём телефону
 CHAT_MAX_LEN = 1000    # длина одного сообщения
 # rev — номер последнего изменения в чате. Телефон присылает свой rev и получает только то,
 # что появилось или поменялось после него (новые и отредактированные сообщения).
 _chat = {"loaded": False, "msgs": [], "rev": 0, "epoch": str(int(time.time()))}
 _chat_lock = threading.Lock()
+MAX_PHOTO = 8 * 1024 * 1024
+
+
+def photo_dir() -> Path:
+    """Куда класть фото из чата. /app/shared — постоянное хранилище Bothost (включается кнопкой на карточке бота),
+    оно переживает обновления. Без него фото лежат в папке бота и могут пропасть при обновлении из Git."""
+    import os
+    d = os.getenv("CHAT_PHOTO_DIR") or ("/app/shared/chat_photos" if Path("/app/shared").is_dir() else str(HERE / "chat_photos"))
+    p = Path(d)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
 
 
 def _chat_ws():
@@ -177,12 +200,13 @@ def _chat_load() -> None:
     labels = {v.lower(): k for k, v in ROLE_LABELS.items()}
     msgs = []
     for i, v in enumerate(_chat_ws().get_all_values()[1:], start=2):
-        v = list(v) + [""] * 6
-        text = v[4].strip()
-        if not text:
+        v = list(v) + [""] * 8
+        text, photo = v[4].strip(), v[7].strip()
+        if not text and not photo:
             continue
         msgs.append({"id": i, "t": v[0].strip(), "code": norm_code(v[1]), "name": v[2].strip() or "сотрудник",
-                     "role": labels.get(v[3].strip().lower(), ""), "text": text, "edited": v[5].strip()})
+                     "role": labels.get(v[3].strip().lower(), ""), "text": text, "edited": v[5].strip(),
+                     "reply": _int(v[6], 0), "photo": photo})
     msgs = msgs[-CHAT_KEEP:]
     for m in msgs:
         _chat_bump(m)
@@ -194,33 +218,47 @@ def chat_list(since: int, code: str) -> dict:
         _chat_load()
         msgs = [m for m in _chat["msgs"] if m["rev"] > since]
         rev = _chat["rev"]
+        by_id = {m["id"]: m for m in _chat["msgs"]}
+
+    def quote(rid):
+        if not rid:
+            return None
+        q = by_id.get(rid)
+        if not q:
+            return {"id": rid, "name": "", "text": "Сообщение недоступно", "photo": False}
+        return {"id": rid, "name": q["name"], "text": q["text"][:140], "photo": bool(q.get("photo"))}
+
     return {"epoch": _chat["epoch"], "rev": rev,
             "msgs": [{"id": m["id"], "t": m["t"], "name": m["name"], "role": m["role"],
                       "label": ROLE_LABELS.get(m["role"], ""), "text": m["text"],
-                      "edited": bool(m.get("edited")), "mine": m["code"] == code}
+                      "edited": bool(m.get("edited")), "mine": m["code"] == code,
+                      "reply": quote(m.get("reply")), "photo": m.get("photo") or ""}
                      for m in msgs]}
 
 
-def _clean(text: str) -> str:
+def _clean(text: str, empty_ok: bool = False) -> str:
     text = re.sub(r"\n{3,}", "\n\n", (text or "").replace("\r", "")).strip()[:CHAT_MAX_LEN]
-    if not text:
+    if not text and not empty_ok:
         raise ValueError("Пустое сообщение")
     return text
 
 
-def chat_send(text: str, me: dict, code: str) -> dict:
-    text = _clean(text)
+def chat_send(text: str, me: dict, code: str, reply: int = 0, photo: str = "") -> dict:
+    text = _clean(text, empty_ok=bool(photo))
     now = datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m.%Y %H:%M")
     name = me["name"] or "сотрудник"
     with _chat_lock:
         _chat_load()
         # RAW: таблица сохраняет текст как есть, «=2+2» или «+7…» не превратятся в формулу
-        res = _chat_ws().append_row([now, code, name, ROLE_LABELS[me["role"]], text, ""],
+        if reply and not any(m["id"] == reply for m in _chat["msgs"]):
+            reply = 0
+        res = _chat_ws().append_row([now, code, name, ROLE_LABELS[me["role"]], text, "", reply or "", photo],
                                     value_input_option="RAW")
         # номер строки, куда легло сообщение, — по нему потом находим сообщение для правки
         hit = re.search(r"!A(\d+)", str(((res or {}).get("updates") or {}).get("updatedRange") or ""))
         new_id = int(hit.group(1)) if hit else ((_chat["msgs"][-1]["id"] + 1) if _chat["msgs"] else 2)
-        m = {"id": new_id, "t": now, "code": code, "name": name, "role": me["role"], "text": text, "edited": ""}
+        m = {"id": new_id, "t": now, "code": code, "name": name, "role": me["role"], "text": text, "edited": "",
+             "reply": reply, "photo": photo}
         _chat_bump(m)
         _chat["msgs"].append(m)
         del _chat["msgs"][:-CHAT_KEEP]
@@ -228,13 +266,13 @@ def chat_send(text: str, me: dict, code: str) -> dict:
 
 
 def chat_edit(msg_id: int, text: str, code: str) -> dict:
-    """Правка своего сообщения. Чужие сообщения менять нельзя."""
-    text = _clean(text)
+    """Правка своего сообщения (у фото — подписи). Чужие сообщения менять нельзя."""
     with _chat_lock:
         _chat_load()
         m = next((x for x in _chat["msgs"] if x["id"] == msg_id), None)
         if not m:
             raise ValueError("Сообщение слишком старое или удалено")
+        text = _clean(text, empty_ok=bool(m.get("photo")))
         if m["code"] != code:
             raise PermissionError("Можно менять только свои сообщения")
         if m["text"] == text:
@@ -273,6 +311,9 @@ def app_command(raw: str, who: str) -> str:
             return usage + "\n\nСейчас в приложении:\n" + "\n".join(lines)
         if parts[0].lower().startswith("удал") and len(parts) > 1:
             code = norm_code(parts[1])
+            cur = devices(force=True).get(code)
+            if cur and role_of(code, cur) == "admin":
+                return "Администратора убирает только администратор в приложении."
             return f"🗑 {code} удалён из приложения." if code and remove_device(code) else "Такого кода нет в списке."
         if len(parts) > 1 and not norm_code(parts[0]) and norm_code(parts[0] + parts[1]):
             parts = [parts[0] + parts[1]] + parts[2:]  # код написали через пробел: «K7QM 2XPA»
@@ -281,6 +322,9 @@ def app_command(raw: str, who: str) -> str:
         if not code or not role:
             return "Не понял. " + usage
         name = " ".join(parts[2:])[:40]
+        cur = devices(force=True).get(code)
+        if role == "admin" or (cur and role_of(code, cur) == "admin"):
+            return "Администратора назначает и меняет только администратор в приложении."
         add_device(code, role, name, who)
         return f"✅ {code} добавлен: {name or 'без имени'}, {ROLE_LABELS[role]}.\nПусть нажмёт «Проверить» в приложении."
     except Exception:
@@ -453,9 +497,31 @@ def manager_data(today: date, pay: bool = False) -> dict:
         "today": max(0, logic.today_total(orders, today) - _shipped_today(today)),
         "open": sum(logic.qty(o) for o in open_),
         "city": sum(logic.qty(o) for o in open_ if logic.is_city(o)),
-        "devices": [{"code": c, "name": d["name"], "role": d["role"], "label": ROLE_LABELS[d["role"]]}
+        "devices": [{"code": c, "name": d["name"], "role": role_of(c, d), "label": ROLE_LABELS[role_of(c, d)],
+                     "fixed": c in admin_codes()}
                     for c, d in devices(force=True).items()],
     }
+
+
+PHOTO_KINDS = {b"\xff\xd8\xff": ".jpg", b"\x89PNG": ".png", b"RIFF": ".webp"}
+
+
+def chat_photo(token: str, data: bytes, caption: str, reply: int) -> tuple:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token or ""):
+        return 400, {"error": "Нет ключа телефона"}
+    code = code_for(token)
+    me = devices().get(code)
+    if not me:
+        return 403, {"error": "Телефон не добавлен"}
+    ext = next((e for sig, e in PHOTO_KINDS.items() if data.startswith(sig)), None)
+    if not ext or (ext == ".webp" and data[8:12] != b"WEBP"):
+        return 400, {"error": "Это не фото (нужен JPG, PNG или WEBP)"}
+    name = secrets.token_urlsafe(18) + ext  # длинное случайное имя: по ссылке фото не подобрать
+    (photo_dir() / name).write_bytes(data)
+    try:
+        return 200, chat_send(caption, {**me, "role": role_of(code, me)}, code, reply, name)
+    except ValueError as e:
+        return 400, {"error": str(e)}
 
 
 # ------------------------------------------------------------ табель цеха (тех. директор)
@@ -634,7 +700,8 @@ def reports() -> list:
 ROLE_TABS = {"manager": ["courier", "prod", "keeper", "manager", "chat"], "courier": ["courier", "chat"],
              "prod": ["prod", "chat"], "keeper": ["keeper", "chat"],
              "techdir": ["tech", "prod", "keeper", "chat"],
-             "gendir": ["courier", "prod", "keeper", "manager", "reports", "chat"]}
+             "gendir": ["courier", "prod", "keeper", "manager", "reports", "chat"],
+             "admin": ["courier", "prod", "keeper", "manager", "tech", "reports", "chat"]}
 
 
 def _int(x, default: int) -> int:
@@ -699,10 +766,13 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         if not me:
             return 200, {"code": code, "ok": False}
         return 200, {"code": code, "ok": True, "name": me["name"], "role": me["role"],
-                     "label": ROLE_LABELS[me["role"]], "tabs": ROLE_TABS[me["role"]]}
+                     "label": ROLE_LABELS[role_of(code, me)], "tabs": ROLE_TABS[role_of(code, me)],
+                     "admin": role_of(code, me) == "admin"}
     if not me:
         return 403, {"error": "Телефон не добавлен", "code": code}
+    me = {**me, "role": role_of(code, me)}
     tabs = ROLE_TABS[me["role"]]
+    is_admin = me["role"] == "admin"
     pay = code in pay_codes()
     who = me["name"] or "сотрудник"
     today = now_date()
@@ -718,7 +788,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
             return 400, {"error": str(e)}
     if method == "POST" and path == "/api/chat/send":
         try:
-            return 200, chat_send(str(body.get("text") or ""), me, code)
+            return 200, chat_send(str(body.get("text") or ""), me, code, _int(body.get("reply"), 0))
         except ValueError as e:
             return 400, {"error": str(e)}
 
@@ -869,13 +939,35 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
             return 400, {"error": "Код должен быть из 8 знаков, как на экране телефона: K7QM-2XPA"}
         if role not in ROLE_LABELS:
             return 400, {"error": "Выберите роль"}
+        cur = devices(force=True).get(new_code)
+        if not is_admin and (role == "admin" or (cur and role_of(new_code, cur) == "admin")):
+            return 400, {"error": "Администратора назначает только администратор"}
+        if cur and not is_admin:
+            return 400, {"error": "Этот телефон уже добавлен. Сменить роль может только администратор"}
         with _lock:
             add_device(new_code, role, str(body.get("name") or "").strip()[:40], who)
+        return 200, {"ok": True}
+    if method == "POST" and path == "/api/admin/device" and is_admin:
+        ed, role = norm_code(body.get("code")), body.get("role")
+        cur = devices(force=True).get(ed)
+        if not cur:
+            return 400, {"error": "Сотрудник не найден, обновите список"}
+        if role not in ROLE_LABELS:
+            return 400, {"error": "Выберите роль"}
+        if ed in admin_codes() and role != "admin":
+            return 400, {"error": "Этот администратор задан на Bothost (ADMIN_CODES), его роль меняется только там"}
+        if ed == code and role != "admin":
+            return 400, {"error": "Свою роль администратора снять нельзя"}
+        with _lock:
+            add_device(ed, role, str(body.get("name") if body.get("name") is not None else cur["name"]).strip()[:40], who)
         return 200, {"ok": True}
     if method == "POST" and path == "/api/manager/device/remove" and "manager" in tabs:
         rm = norm_code(body.get("code"))
         if rm == code:
             return 400, {"error": "Себя удалить нельзя"}
+        cur = devices(force=True).get(rm)
+        if cur and role_of(rm, cur) == "admin" and (not is_admin or rm in admin_codes()):
+            return 400, {"error": "Администратора убрать нельзя" if not is_admin else "Этот администратор задан на Bothost"}
         with _lock:
             remove_device(rm)
         return 200, {"ok": True}
@@ -926,6 +1018,16 @@ class Handler(BaseHTTPRequestHandler):
             return self._api("GET", dict(parse_qsl(urlsplit(self.path).query)))
         if path == "/sw.js":
             return self._send(200, SW_JS, "text/javascript; charset=utf-8", "no-cache")
+        if path.startswith("/chat-photo/"):
+            name = path.rsplit("/", 1)[-1]
+            if not re.fullmatch(r"[A-Za-z0-9_-]{20,40}\.(jpg|png|webp)", name):
+                return self._send(404, b"", "text/plain")
+            try:
+                data = (photo_dir() / name).read_bytes()
+            except OSError:
+                return self._send(404, b"", "text/plain")
+            ctype = {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"}[name.rsplit(".", 1)[1]]
+            return self._send(200, data, ctype, "private, max-age=31536000, immutable")
         if path in ("/health", "/ok"):
             return self._send(200, b"ok", "text/plain")
         if path.startswith("/alice"):
@@ -953,6 +1055,19 @@ class Handler(BaseHTTPRequestHandler):
                 log.exception("Алиса: не смог обработать запрос")
                 return self._json(200, {"response": {"text": "Что-то пошло не так, попробуйте ещё раз.",
                                                      "end_session": False}, "version": "1.0"})
+        if path == "/api/chat/photo":
+            size = int(self.headers.get("Content-Length") or 0)
+            if size > MAX_PHOTO:
+                return self._json(400, {"error": "Фото больше 8 МБ"})
+            data = self.rfile.read(size)
+            from urllib.parse import unquote
+            try:
+                code, res = chat_photo(self.headers.get("X-Token") or "", data,
+                                       unquote(self.headers.get("X-Caption") or ""), _int(self.headers.get("X-Reply"), 0))
+            except Exception:
+                log.exception("Приложение: фото в чат")
+                code, res = 500, {"error": "Не получилось сохранить фото"}
+            return self._json(code, res)
         if path == "/api/manager/pdf":
             size = int(self.headers.get("Content-Length") or 0)
             if size > MAX_PDF:
@@ -984,3 +1099,11 @@ def start(**hooks) -> None:
     srv = ThreadingHTTPServer(("0.0.0.0", config.ALICE_PORT), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     log.info("Приложение для сотрудников: слушаю порт %d", config.ALICE_PORT)
+    try:
+        d = photo_dir()
+        if str(d).startswith("/app/shared"):
+            log.info("Фото чата: %s (постоянное хранилище)", d)
+        else:
+            log.warning("Фото чата: %s — постоянное хранилище Bothost не подключено, фото могут пропасть при обновлении", d)
+    except Exception:
+        log.exception("Фото чата: не смог создать папку")
