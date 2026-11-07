@@ -23,6 +23,8 @@ import android.os.Build;
 
 import com.google.firebase.messaging.FirebaseMessaging;
 
+import org.json.JSONObject;
+
 /**
  * Приложение Arkenstone: окно браузера, которое открывает экран сотрудников с сервера бота.
  * Вся логика живёт на сервере, поэтому обновления экранов приходят без переустановки APK.
@@ -36,6 +38,7 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> fileCallback;
     /** Приложение сейчас на экране — уведомления чата не показываем, сообщения и так видно. */
     static volatile boolean visible;
+    private Updater updater;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -99,6 +102,12 @@ public class MainActivity extends Activity {
             }
         });
 
+        updater = new Updater(this, new Updater.Ui() {
+            @Override public void progress(int pct) { js("window.onUpdateProgress&&onUpdateProgress(" + pct + ")"); }
+            @Override public void ready() { js("window.onUpdateReady&&onUpdateReady()"); }
+            @Override public void error(String msg) { js("window.onUpdateError&&onUpdateError(" + JSONObject.quote(msg) + ")"); }
+            @Override public void needPermission() { js("window.onUpdatePermission&&onUpdatePermission()"); }
+        });
         web.addJavascriptInterface(new Bridge(), "ArkNative");
 
         if (state != null) web.restoreState(state);
@@ -144,8 +153,27 @@ public class MainActivity extends Activity {
         }
     }
 
+    private void js(String code) {
+        web.evaluateJavascript(code, null);
+    }
+
     /** То, что экран приложения может попросить у телефона. */
     private class Bridge {
+        @JavascriptInterface
+        public long versionCode() {
+            return BuildConfigHelper.versionCode(MainActivity.this);
+        }
+
+        @JavascriptInterface
+        public void update(String url) {
+            runOnUiThread(() -> updater.start(url));
+        }
+
+        @JavascriptInterface
+        public void installUpdate() {
+            runOnUiThread(() -> updater.install());
+        }
+
         @JavascriptInterface
         public void setDevice(String token, String server) {
             if (token == null || !token.matches("[A-Za-z0-9_-]{32,128}")) return;
@@ -228,6 +256,7 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         visible = true;
+        if (updater != null) updater.onResume();
         web.onResume();
     }
 

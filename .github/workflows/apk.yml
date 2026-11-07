@@ -54,6 +54,13 @@ jobs:
           name: Arkenstone-apk
           path: Arkenstone.apk
 
+      - name: Что нового (первая строка описания изменения)
+        id: notes
+        env:
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          echo "text=$(printf '%s' "$MSG" | head -n1 | tr -d '\r' | cut -c1-200)" >> "$GITHUB_OUTPUT"
+
       - name: Выложить в Releases
         if: github.ref == 'refs/heads/android'
         uses: softprops/action-gh-release@v2
@@ -65,4 +72,7 @@ jobs:
           body: |
             Приложение Arkenstone для сотрудников. Скачайте Arkenstone.apk на телефон и установите.
             Новая версия ставится поверх старой, вход сохраняется.
+
+            Что нового:
+            ${{ steps.notes.outputs.text }}
           files: Arkenstone.apk
