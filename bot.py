@@ -882,6 +882,11 @@ def broadcast(text: str, skip_uid=None) -> None:
             home(ctx)
     for c in groups:
         mx.send({"type": "chat", "id": c}, text)
+    try:  # то же уведомление о новом заказе — на телефоны с приложением
+        import webapp
+        webapp.push_order_text(text)
+    except Exception:
+        log.exception("Уведомления в приложение: не смог отправить")
 
 
 def notify_all(new: list, who: str, skip_uid=None) -> None:

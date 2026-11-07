@@ -262,7 +262,24 @@ def chat_send(text: str, me: dict, code: str, reply: int = 0, photo: str = "") -
         _chat_bump(m)
         _chat["msgs"].append(m)
         del _chat["msgs"][:-CHAT_KEEP]
+        replied = next((x["code"] for x in _chat["msgs"] if reply and x["id"] == reply), None)
+    _chat_push(name, text, photo, code, replied)
     return {"ok": True, "id": new_id}
+
+
+def _chat_push(name: str, text: str, photo: str, author: str, replied) -> None:
+    try:
+        body = (("📷 " if photo else "") + (text or ("Фото" if photo else ""))).strip()
+        everyone = _codes(skip=author)
+        if replied and replied != author and replied in everyone:
+            push_safe("chat", f"↩️ {name} ответил(а) вам", body, {replied}, "chat")
+            everyone.discard(replied)
+        with _push_lock:
+            _push_load()
+            muted = {c for c, d in _push["devs"].items() if not d["chat"]}
+        push_safe("chat", f"💬 {name}", body, everyone - muted, "chat")
+    except Exception:
+        log.exception("Уведомления: чат")
 
 
 def chat_edit(msg_id: int, text: str, code: str) -> dict:
@@ -524,6 +541,184 @@ def chat_photo(token: str, data: bytes, caption: str, reply: int) -> tuple:
         return 400, {"error": str(e)}
 
 
+# ------------------------------------------------------------ уведомления на телефон (APK)
+# Как это устроено:
+#  • Событие (новый заказ, сообщение в чате, ответ, отчёт табеля) кладётся в очередь «входящих» нужных телефонов.
+#  • Телефонам с Firebase сразу отправляется push — приходит за секунды, даже если приложение закрыто.
+#  • Запасной путь для всех: APK раз в 15 минут сам забирает свои входящие (/api/push/inbox) — так уведомления
+#    доходят и до телефонов без сервисов Google. Номер события растёт со временем, повтора не будет.
+# Firebase включается переменной FIREBASE_CREDENTIALS_JSON на Bothost (ключ сервисного аккаунта Firebase).
+PUSH_TAB = "Уведомления"
+PUSH_HEADERS = ["Код", "Имя", "Firebase", "Чат", "Обновлено"]
+PUSH_KEEP_SEC = 2 * 24 * 3600
+_push = {"loaded": False, "devs": {}, "events": [], "seq": 0, "fcm": {"creds": None, "project": "", "off": False}}
+_push_lock = threading.Lock()
+
+
+def _push_ws():
+    return sheets._tab(PUSH_TAB, PUSH_HEADERS)
+
+
+def _push_load() -> None:
+    if _push["loaded"]:
+        return
+    devs = {}
+    for i, v in enumerate(_push_ws().get_all_values()[1:], start=2):
+        v = list(v) + [""] * 5
+        c = norm_code(v[0])
+        if c:
+            devs[c] = {"fcm": v[2].strip(), "chat": v[3].strip().lower() != "выкл", "row": i}
+    _push.update(loaded=True, devs=devs)
+
+
+def _push_save(code: str) -> None:
+    d = _push["devs"][code]
+    name = (devices().get(code) or {}).get("name", "")
+    row = [code, name, d["fcm"], "вкл" if d["chat"] else "выкл", _stamp()]
+    ws = _push_ws()
+    if d.get("row"):
+        ws.update(values=[row], range_name=f"A{d['row']}:E{d['row']}", value_input_option="RAW")
+    else:
+        res = ws.append_row(row, value_input_option="RAW")
+        hit = re.search(r"!A(\d+)", str(((res or {}).get("updates") or {}).get("updatedRange") or ""))
+        d["row"] = int(hit.group(1)) if hit else 0
+
+
+def push_register(code: str, fcm: str = None, chat: bool = None) -> dict:
+    with _push_lock:
+        _push_load()
+        d = _push["devs"].setdefault(code, {"fcm": "", "chat": True, "row": 0})
+        changed = not d.get("row")
+        if fcm is not None and fcm != d["fcm"]:
+            d["fcm"], changed = fcm[:400], True
+        if chat is not None and chat != d["chat"]:
+            d["chat"], changed = bool(chat), True
+        if changed:
+            _push_save(code)
+        return {"ok": True, "chat": d["chat"], "firebase": bool(d["fcm"]), "server_push": fcm_enabled()}
+
+
+def push_inbox(code: str, after: int) -> dict:
+    with _push_lock:
+        evs = [e for e in _push["events"] if code in e["codes"] and e["id"] > after]
+        last = _push["seq"]
+    if after <= 0:  # первый запрос после установки: старое не показываем, только запоминаем, с какого места ждать
+        evs = []
+    return {"last": last, "events": [{k: e[k] for k in ("id", "kind", "title", "body", "tab")} for e in evs[-20:]]}
+
+
+def _codes(roles=None, skip=None) -> set:
+    """Коды телефонов по ролям (с учётом администраторов). roles=None — все."""
+    out = set()
+    for c, d in devices().items():
+        if c == skip:
+            continue
+        if roles is None or role_of(c, d) in roles:
+            out.add(c)
+    return out
+
+
+def push_event(kind: str, title: str, body: str, codes: set, tab: str = "") -> None:
+    if not codes:
+        return
+    with _push_lock:
+        _push["seq"] = max(int(time.time() * 1000), _push["seq"] + 1)
+        ev = {"id": _push["seq"], "kind": kind, "title": title[:120], "body": body[:400], "tab": tab,
+              "codes": set(codes), "t": time.time()}
+        _push["events"].append(ev)
+        cut = time.time() - PUSH_KEEP_SEC
+        _push["events"] = [e for e in _push["events"] if e["t"] > cut][-500:]
+    if fcm_enabled():
+        threading.Thread(target=_fcm_send_all, args=(ev,), daemon=True).start()
+
+
+def push_safe(*a, **k) -> None:
+    """То же, что push_event, но никогда не роняет основное действие (отправку сообщения, запись заказа)."""
+    try:
+        push_event(*a, **k)
+    except Exception:
+        log.exception("Уведомления: не смог поставить событие")
+
+
+def push_order_text(text: str) -> None:
+    """Вызывается из рассылки бота: уведомления о новых заказах получают все роли."""
+    t = (text or "").strip()
+    if not t.startswith(("🛒", "🆕")):
+        return
+    head, _, rest = t.partition("\n")
+    push_safe("orders", head, rest.strip() or head, _codes(), "")
+
+
+# ---------- Firebase Cloud Messaging (HTTP v1)
+def fcm_enabled() -> bool:
+    if _push["fcm"]["off"]:
+        return False
+    if _push["fcm"]["creds"] is None:
+        import os
+        raw = os.getenv("FIREBASE_CREDENTIALS_JSON", "").strip()
+        if not raw:
+            _push["fcm"]["off"] = True
+            return False
+        try:
+            if not raw.startswith("{"):
+                raw = base64.b64decode(raw).decode("utf-8")
+            info = json.loads(raw)
+            from google.oauth2 import service_account
+            _push["fcm"]["creds"] = service_account.Credentials.from_service_account_info(
+                info, scopes=["https://www.googleapis.com/auth/firebase.messaging"])
+            _push["fcm"]["project"] = info["project_id"]
+            log.info("Уведомления: Firebase подключён (проект %s)", info["project_id"])
+        except Exception:
+            log.exception("Уведомления: не смог прочитать FIREBASE_CREDENTIALS_JSON — push выключен, работает запасная проверка")
+            _push["fcm"]["off"] = True
+            return False
+    return True
+
+
+def _fcm_token() -> str:
+    creds = _push["fcm"]["creds"]
+    if not creds.valid:
+        from google.auth.transport.requests import Request
+        creds.refresh(Request())
+    return creds.token
+
+
+def _fcm_send_all(ev: dict) -> None:
+    import requests
+    with _push_lock:
+        targets = [(c, _push["devs"][c]["fcm"]) for c in ev["codes"]
+                   if c in _push["devs"] and _push["devs"][c]["fcm"]]
+    if not targets:
+        return
+    try:
+        auth = {"Authorization": "Bearer " + _fcm_token()}
+    except Exception:
+        log.exception("Уведомления: Firebase не выдал ключ доступа")
+        return
+    url = f"https://fcm.googleapis.com/v1/projects/{_push['fcm']['project']}/messages:send"
+    data = {"id": str(ev["id"]), "kind": ev["kind"], "title": ev["title"], "body": ev["body"], "tab": ev["tab"]}
+    dead = []
+    for code, tok in targets:
+        msg = {"message": {"token": tok, "data": data,
+                           "notification": {"title": ev["title"], "body": ev["body"]},
+                           "android": {"priority": "HIGH", "notification": {
+                               "channel_id": ev["kind"] if ev["kind"] in ("orders", "chat", "reports") else "chat",
+                               "tag": f"{ev['kind']}-{ev['id']}", "icon": "ic_notify"}}}}
+        try:
+            r = requests.post(url, json=msg, headers=auth, timeout=15)
+            if r.status_code in (400, 404) and ("UNREGISTERED" in r.text or "INVALID_ARGUMENT" in r.text and "token" in r.text):
+                dead.append(code)
+            elif r.status_code >= 300:
+                log.warning("Уведомления: Firebase ответил %s: %s", r.status_code, r.text[:200])
+        except Exception as e:
+            log.warning("Уведомления: Firebase недоступен: %s", e)
+    for code in dead:  # приложение удалили или переустановили — старый адрес больше не нужен
+        try:
+            push_register(code, fcm="")
+        except Exception:
+            pass
+
+
 # ------------------------------------------------------------ табель цеха (тех. директор)
 # «Работники цеха» — люди, которым ведут учёт часов. Им не нужно приложение: тех. директор заводит их вручную.
 # «Табель» — по строке на человека и день: сколько часов отработал.
@@ -680,6 +875,10 @@ def report_send(d1: date, d2: date, who: str) -> dict:
     sheets._tab(REPORTS_TAB, REPORTS_HEADERS).append_row(
         [_stamp(), who, _d(summ["from"]).strftime("%d.%m.%Y"), _d(summ["to"]).strftime("%d.%m.%Y"), summ["total"],
          json.dumps(summ, ensure_ascii=False)], value_input_option="RAW")
+    a, b = _d(summ["from"]), _d(summ["to"])
+    period = a.strftime("%d.%m") + ("" if a == b else "–" + b.strftime("%d.%m.%Y"))
+    push_safe("reports", f"📑 Табель за {period}", f"{summ['total']} ч, {len(summ['people'])} чел. Отправил(а) {who}",
+              _codes({"gendir", "admin"}), "reports")
     return summ
 
 
@@ -777,6 +976,14 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
     who = me["name"] or "сотрудник"
     today = now_date()
 
+    if path == "/api/push/inbox":
+        return 200, push_inbox(code, _int(body.get("after"), 0))
+    if method == "POST" and path == "/api/push/register":
+        fcm = body.get("fcm")
+        return 200, push_register(code, fcm=str(fcm).strip() if isinstance(fcm, str) else None,
+                                  chat=body["chat"] if isinstance(body.get("chat"), bool) else None)
+    if path == "/api/push/settings":
+        return 200, push_register(code)
     if path == "/api/chat":
         return 200, chat_list(_int(body.get("since"), 0), code)
     if method == "POST" and path == "/api/chat/edit":

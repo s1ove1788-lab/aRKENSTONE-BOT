@@ -120,6 +120,9 @@ nav .dot{position:absolute;top:2px;left:calc(50% + 8px);background:var(--warn);c
 nav .dot:empty{display:none}
 body.chat main{padding-bottom:calc(150px + env(safe-area-inset-bottom))}
 .chat-list{display:flex;flex-direction:column;gap:4px}
+.chat-note{text-align:center;color:var(--muted);font-size:12px;margin:0 0 6px}
+.chat-note:empty{display:none}
+.chat-note a{color:var(--accent)}
 .chat-day{align-self:center;background:var(--chip);color:var(--muted);font-size:12px;border-radius:999px;padding:3px 12px;margin:12px 0 6px}
 .msg{max-width:82%;align-self:flex-start;background:var(--card);border:1px solid var(--line);
   border-radius:16px 16px 16px 4px;padding:8px 12px 6px}
@@ -268,8 +271,12 @@ async function boot(){
   nav.innerHTML = me.tabs.map(k => `<button data-tab="${k}"><span>${TABS[k][0]}</span>${many && (k === "prod" || me.tabs.length > 6) && SHORT[k] || TABS[k][1]}${k === "chat" ? `<b class="dot" id="chatdot"></b>` : ""}</button>`).join("");
   nav.querySelectorAll("button").forEach(b => b.onclick = () => open(b.dataset.tab));
   let saved = null; try { saved = localStorage.getItem("ark_tab"); } catch(e) {}
-  open(me.tabs.includes(saved) ? saved : me.tabs[0]);
+  // нажали на уведомление — APK открывает адрес с #tab=chat и т.п.
+  const want = (location.hash.match(/tab=(\w+)/) || [])[1];
+  if (want) try { history.replaceState(null, "", location.pathname); } catch(e) {}
+  open(me.tabs.includes(want) ? want : me.tabs.includes(saved) ? saved : me.tabs[0]);
   chatPoll();
+  nativeSetup();
 }
 
 function showCode(){
@@ -985,6 +992,30 @@ function reportPage(i){
   page(esc(fmtPeriod(r.from, r.to)), `<p class="muted">Отправил ${esc(r.who || "—")}, ${esc(r.sent)}</p>` + summaryTable(r));
 }
 
+/* ------------------------------ уведомления в APK
+   В браузере уведомлений нет. В APK есть мост window.ArkNative: отдаём ему ключ телефона (чтобы APK сам раз в
+   15 минут забирал свои уведомления) и регистрируем адрес Firebase для мгновенных push. */
+function nativeSetup(){
+  const N = window.ArkNative; if (!N) return;
+  try { N.setDevice(TOKEN, location.origin + "/"); } catch(e) {}
+  let fcm = ""; try { fcm = N.fcmToken() || ""; } catch(e) {}
+  call("/api/push/register", fcm ? {fcm} : {}).then(r => { window._push = r; if (tab === "chat") chatNote(); }).catch(() => {});
+}
+window.onFcmToken = t => { if (me && me.ok && t) call("/api/push/register", {fcm: t}).then(r => { window._push = r; }).catch(() => {}); };
+window.openTab = k => { if (me && me.ok && me.tabs.includes(k)) open(k); };
+function chatNote(){
+  const box = $("#chat-note"); if (!box) return;
+  const p = window._push;
+  box.innerHTML = !window.ArkNative ? "" : !p ? "" :
+    `🔔 Уведомления о сообщениях ${p.chat ? "включены" : "выключены"} · <a href="#" onclick="chatMute(event)">${p.chat ? "выключить" : "включить"}</a>
+     <div>Об ответах на ваши сообщения приходит всегда</div>`;
+}
+async function chatMute(ev){
+  ev.preventDefault(); ev.stopPropagation();
+  try { window._push = await call("/api/push/register", {chat: !window._push.chat}); chatNote(); toast(window._push.chat ? "🔔 Включено" : "🔕 Выключено"); }
+  catch(e) { toast(e.message); }
+}
+
 /* ------------------------------ чат
    Все сообщения храним здесь (chat.msgs) и раз в несколько секунд спрашиваем у сервера только новые.
    Открыт чат — проверяем каждые 3 сек, иначе раз в 20 сек, чтобы показать число непрочитанных на вкладке. */
@@ -1093,8 +1124,9 @@ function chatDraw(fresh, keepScroll){
     return window.scrollTo(0, atBottom ? document.body.scrollHeight : y);
   }
   if (!list || !fresh) {
-    $("#main").innerHTML = chat.msgs.length ? `<div class="chat-list"></div>`
-      : `<div class="chat-list"></div><div class="empty" id="chat-empty">Здесь пока тихо.<br>Напишите первое сообщение — его увидят все сотрудники.</div>`;
+    $("#main").innerHTML = `<div class="chat-note" id="chat-note"></div>` + (chat.msgs.length ? `<div class="chat-list"></div>`
+      : `<div class="chat-list"></div><div class="empty" id="chat-empty">Здесь пока тихо.<br>Напишите первое сообщение — его увидят все сотрудники.</div>`);
+    chatNote();
     list = document.querySelector(".chat-list");
     list.innerHTML = chat.msgs.map((m, i) => msgHtml(m, chat.msgs[i - 1])).join("");
     return window.scrollTo(0, document.body.scrollHeight);
