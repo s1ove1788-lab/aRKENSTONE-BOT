@@ -127,6 +127,31 @@ final class Updater {
         act.startActivity(i);
     }
 
+    /**
+     * Скачанный файл обновления больше не нужен: либо новая версия уже стоит (приложение перезапустилось
+     * после установки), либо человек отказался. Вызывается при каждом запуске приложения.
+     */
+    static void cleanup(Activity act) {
+        File dir = new File(act.getCacheDir(), "updates");
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        long current = BuildConfigHelper.versionCode(act);
+        for (File f : files) {
+            // Не трогаем файл, который ещё ждёт установки (новее текущей версии и скачан меньше суток назад)
+            long fileCode = 0;
+            try {
+                android.content.pm.PackageInfo p = act.getPackageManager().getPackageArchiveInfo(f.getPath(), 0);
+                if (p != null) fileCode = Build.VERSION.SDK_INT >= 28 ? p.getLongVersionCode() : p.versionCode;
+            } catch (Exception ignored) {
+            }
+            boolean pending = fileCode > current && System.currentTimeMillis() - f.lastModified() < 24 * 3600_000L;
+            if (!pending) {
+                //noinspection ResultOfMethodCallIgnored
+                f.delete();
+            }
+        }
+    }
+
     /** Вернулись из настроек: если разрешение дали — сразу ставим. */
     void onResume() {
         if (waitingPermission && Build.VERSION.SDK_INT >= 26 && act.getPackageManager().canRequestPackageInstalls()) {

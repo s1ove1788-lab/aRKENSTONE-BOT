@@ -1,11 +1,11 @@
 # Собирает APK приложения Arkenstone и выкладывает его в «Releases» репозитория.
 # Запускается сам при каждом изменении ветки android, или вручную: Actions → «Сборка APK» → Run workflow.
-# Ветка android-push — пробные сборки: APK собирается и проверяется, но в Releases не выкладывается.
+# Пробные сборки (ветка android-push) — отдельный файл apk-test.yml, чтобы не тратить номера версий.
 name: Сборка APK
 
 on:
   push:
-    branches: [android, android-push]
+    branches: [android]
   workflow_dispatch:
 
 permissions:
@@ -26,6 +26,17 @@ jobs:
         with:
           gradle-version: "8.7"
 
+      - name: Номер версии
+        id: ver
+        run: |
+          # До перехода на 1.0.x было 8 сборок (1.1 … 1.8). Сборка 9 — это 1.0.1, 10 — 1.0.2 … 107 — 1.0.99, дальше 1.1.0.
+          N=$(( ${{ github.run_number }} - 8 ))
+          if [ "$N" -lt 1 ]; then N=1; fi
+          NAME="1.$(( N / 100 )).$(( N % 100 ))"
+          echo "code=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "Версия $NAME, сборка ${{ github.run_number }}"
+
       - name: Ключ подписи и Firebase из Secrets (если заданы)
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
@@ -44,6 +55,8 @@ jobs:
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          APP_VERSION_CODE: ${{ steps.ver.outputs.code }}
+          APP_VERSION_NAME: ${{ steps.ver.outputs.name }}
         run: gradle assembleRelease --no-daemon
 
       - name: Переименовать файл
@@ -65,13 +78,15 @@ jobs:
         if: github.ref == 'refs/heads/android'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: app-v1.${{ github.run_number }}
-          name: Arkenstone 1.${{ github.run_number }}
+          tag_name: app-v${{ steps.ver.outputs.name }}
+          name: Arkenstone ${{ steps.ver.outputs.name }}
           target_commitish: ${{ github.sha }}
           make_latest: true
           body: |
             Приложение Arkenstone для сотрудников. Скачайте Arkenstone.apk на телефон и установите.
             Новая версия ставится поверх старой, вход сохраняется.
+
+            Сборка: ${{ steps.ver.outputs.code }}
 
             Что нового:
             ${{ steps.notes.outputs.text }}

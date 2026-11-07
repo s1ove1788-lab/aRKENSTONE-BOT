@@ -7,8 +7,10 @@ if (file('google-services.json').exists()) {
     apply plugin: 'com.google.gms.google-services'
 }
 
-// Номер версии берётся из номера сборки на GitHub, чтобы телефон видел обновление
-def build = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()
+// Внутренний номер (versionCode) — номер сборки на GitHub, он только растёт, иначе Android не поставит обновление.
+// Название версии (1.0.1, 1.0.2 …) считает сборщик и передаёт в APP_VERSION_NAME.
+def build = (System.getenv("APP_VERSION_CODE") ?: System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInteger()
+def buildName = System.getenv("APP_VERSION_NAME") ?: "0.0.${build}"
 
 android {
     namespace 'ru.arkenstone.app'
@@ -19,7 +21,7 @@ android {
         minSdk 24
         targetSdk 34
         versionCode build
-        versionName "1.${build}"
+        versionName buildName
     }
 
     // Постоянный ключ подписи берётся из закрытых настроек GitHub (Secrets), а не из кода.

@@ -102,6 +102,7 @@ public class MainActivity extends Activity {
             }
         });
 
+        Updater.cleanup(this);  // после установки обновления скачанный файл удаляем
         updater = new Updater(this, new Updater.Ui() {
             @Override public void progress(int pct) { js("window.onUpdateProgress&&onUpdateProgress(" + pct + ")"); }
             @Override public void ready() { js("window.onUpdateReady&&onUpdateReady()"); }
