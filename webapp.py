@@ -1656,16 +1656,28 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def _prewarm() -> None:
-    """Сразу после запуска читаем листы всех экранов, чтобы и самое первое открытие было быстрым."""
+    """Сразу после запуска читаем листы всех экранов, чтобы и самое первое открытие было быстрым.
+    Упёрлись в минутный лимит Google (429) — ждём минуту и дочитываем то, что не успели."""
     time.sleep(5)
     t0, today = time.time(), now_date()
-    for name, f in (("курьер", lambda: courier_data(today)), ("производство", lambda: prod_data(today)),
-                    ("склад", keeper_data), ("менеджер", lambda: manager_data(today)),
-                    ("табель", lambda: tech_data(today)), ("отчёты", reports), ("чат", lambda: chat_list(0, ""))):
-        try:
-            f()
-        except Exception as e:
-            log.warning("Прогрев: экран «%s» не прочитался: %s", name, e)
+    todo = [("курьер", lambda: courier_data(today)), ("производство", lambda: prod_data(today)),
+            ("склад", keeper_data), ("менеджер", lambda: manager_data(today)),
+            ("табель", lambda: tech_data(today)), ("отчёты", reports), ("чат", lambda: chat_list(0, ""))]
+    for attempt in (1, 2):
+        left = []
+        for name, f in todo:
+            try:
+                f()
+            except Exception as e:
+                if "429" in str(e) and attempt == 1:
+                    left.append((name, f))
+                else:
+                    log.warning("Прогрев: экран «%s» не прочитался: %s", name, e)
+        if not left:
+            break
+        log.info("Прогрев: лимит Google на минуту, дочитаю через минуту: %s", ", ".join(n for n, _ in left))
+        time.sleep(65)
+        todo = left
     log.info("Прогрев таблицы: готово за %.1f сек", time.time() - t0)
 
 

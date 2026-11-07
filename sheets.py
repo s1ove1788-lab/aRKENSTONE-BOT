@@ -228,14 +228,34 @@ def orders_ws():
     return ws
 
 
+# Список листов книги одним запросом. Раньше каждый лист искали отдельным запросом к Google, и при запуске
+# (прогрев всех экранов) набегало больше 60 чтений в минуту — Google отвечал «лимит исчерпан» (429).
+_ws_map = {"t": 0.0, "map": {}}
+_ws_lock = threading.Lock()
+
+
+def _find_ws(book, title: str):
+    with _ws_lock:
+        age = time.time() - _ws_map["t"]
+        if title not in _ws_map["map"] and age > 5 or age > 300:  # нет в списке — перечитать (не чаще раза в 5 сек)
+            _ws_map["map"] = {w.title: w for w in book.worksheets()}
+            _ws_map["t"] = time.time()
+        ws = _ws_map["map"].get(title)
+    if ws is None:
+        raise gspread.WorksheetNotFound(title)
+    return ws
+
+
 def _tab(title: str, headers: list):
     ws = _tabs.get(title)
     if ws is None:
         book = get_book()
         try:
-            ws = book.worksheet(title)
+            ws = _find_ws(book, title)
         except gspread.WorksheetNotFound:
             ws = book.add_worksheet(title=title, rows=200, cols=max(len(headers), 4))
+            with _ws_lock:
+                _ws_map["map"][title] = ws
         _ensure_header(ws, headers)
         _tabs[title] = ws
         ws = _tabs[title]
@@ -306,6 +326,7 @@ def read_orders(force: bool = False) -> list:
     except gspread.exceptions.APIError:
         # лист переименовали или переставили, пока бот работал — забываем запомненные листы и находим заново
         _tabs.clear()
+        _ws_map["t"] = 0.0
         values = orders_ws().get_all_values()
     rows = _parse_orders(values)
     if gen == _orders_bg["gen"]:
