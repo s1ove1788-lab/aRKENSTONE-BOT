@@ -158,7 +158,7 @@ def remove_device(code: str) -> bool:
 # телефоны спрашивают «есть новое?» каждые несколько секунд, и если бы каждый раз читать таблицу,
 # Google быстро упёрся бы в лимит. В таблицу только дописываем новые сообщения.
 CHAT_TAB = "Чат"
-CHAT_HEADERS = ["Время", "Код", "Имя", "Роль", "Сообщение", "Изменено", "Ответ на", "Фото"]
+CHAT_HEADERS = ["Время", "Код", "Имя", "Роль", "Сообщение", "Изменено", "Ответ на", "Фото", "Удалено"]
 CHAT_KEEP = 500        # сколько последних сообщений держим в памяти и отдаём телефону
 CHAT_MAX_LEN = 1000    # длина одного сообщения
 # rev — номер последнего изменения в чате. Телефон присылает свой rev и получает только то,
@@ -200,9 +200,9 @@ def _chat_load() -> None:
     labels = {v.lower(): k for k, v in ROLE_LABELS.items()}
     msgs = []
     for i, v in enumerate(_chat_ws().get_all_values()[1:], start=2):
-        v = list(v) + [""] * 8
+        v = list(v) + [""] * 9
         text, photo = v[4].strip(), v[7].strip()
-        if not text and not photo:
+        if (not text and not photo) or v[8].strip():  # пустое или удалённое
             continue
         msgs.append({"id": i, "t": v[0].strip(), "code": norm_code(v[1]), "name": v[2].strip() or "сотрудник",
                      "role": labels.get(v[3].strip().lower(), ""), "text": text, "edited": v[5].strip(),
@@ -217,6 +217,8 @@ def chat_list(since: int, code: str) -> dict:
     with _chat_lock:
         _chat_load()
         msgs = [m for m in _chat["msgs"] if m["rev"] > since]
+        if since <= 0:  # телефон загружает чат с нуля — удалённые ему не нужны
+            msgs = [m for m in msgs if not m.get("deleted")]
         rev = _chat["rev"]
         by_id = {m["id"]: m for m in _chat["msgs"]}
 
@@ -224,16 +226,20 @@ def chat_list(since: int, code: str) -> dict:
         if not rid:
             return None
         q = by_id.get(rid)
-        if not q:
-            return {"id": rid, "name": "", "text": "Сообщение недоступно", "photo": False}
+        if not q or q.get("deleted"):
+            return {"id": rid, "name": "", "text": "Сообщение удалено", "photo": False}
         return {"id": rid, "name": q["name"], "text": q["text"][:140], "photo": bool(q.get("photo"))}
 
-    return {"epoch": _chat["epoch"], "rev": rev,
-            "msgs": [{"id": m["id"], "t": m["t"], "name": m["name"], "role": m["role"],
-                      "label": ROLE_LABELS.get(m["role"], ""), "text": m["text"],
-                      "edited": bool(m.get("edited")), "mine": m["code"] == code,
-                      "reply": quote(m.get("reply")), "photo": m.get("photo") or ""}
-                     for m in msgs]}
+    out = []
+    for m in msgs:
+        if m.get("deleted"):  # телефоны, у которых это сообщение уже есть, уберут его
+            out.append({"id": m["id"], "deleted": True})
+            continue
+        out.append({"id": m["id"], "t": m["t"], "name": m["name"], "role": m["role"],
+                    "label": ROLE_LABELS.get(m["role"], ""), "text": m["text"],
+                    "edited": bool(m.get("edited")), "mine": m["code"] == code,
+                    "reply": quote(m.get("reply")), "photo": m.get("photo") or ""})
+    return {"epoch": _chat["epoch"], "rev": rev, "msgs": out}
 
 
 def _clean(text: str, empty_ok: bool = False) -> str:
@@ -250,7 +256,7 @@ def chat_send(text: str, me: dict, code: str, reply: int = 0, photo: str = "") -
     with _chat_lock:
         _chat_load()
         # RAW: таблица сохраняет текст как есть, «=2+2» или «+7…» не превратятся в формулу
-        if reply and not any(m["id"] == reply for m in _chat["msgs"]):
+        if reply and not any(m["id"] == reply and not m.get("deleted") for m in _chat["msgs"]):
             reply = 0
         res = _chat_ws().append_row([now, code, name, ROLE_LABELS[me["role"]], text, "", reply or "", photo],
                                     value_input_option="RAW")
@@ -286,7 +292,7 @@ def chat_edit(msg_id: int, text: str, code: str) -> dict:
     """Правка своего сообщения (у фото — подписи). Чужие сообщения менять нельзя."""
     with _chat_lock:
         _chat_load()
-        m = next((x for x in _chat["msgs"] if x["id"] == msg_id), None)
+        m = next((x for x in _chat["msgs"] if x["id"] == msg_id and not x.get("deleted")), None)
         if not m:
             raise ValueError("Сообщение слишком старое или удалено")
         text = _clean(text, empty_ok=bool(m.get("photo")))
@@ -520,6 +526,34 @@ def manager_data(today: date, pay: bool = False) -> dict:
     }
 
 
+def chat_delete(msg_id: int, code: str, is_admin: bool, who: str) -> dict:
+    """Удаляет сообщение у всех. Своё — любой сотрудник, чужое — только администратор.
+    В таблице строка остаётся (номера строк не сдвигаются), но текст и фото стираются, а в «Удалено» — кто и когда."""
+    with _chat_lock:
+        _chat_load()
+        m = next((x for x in _chat["msgs"] if x["id"] == msg_id and not x.get("deleted")), None)
+        if not m:
+            raise ValueError("Сообщение уже удалено или слишком старое")
+        if m["code"] != code and not is_admin:
+            raise PermissionError("Удалять чужие сообщения может только администратор")
+        ws = _chat_ws()
+        row = ws.row_values(msg_id) + [""] * 9
+        if norm_code(row[1]) != m["code"] or row[0].strip() != m["t"]:
+            raise ValueError("В таблице чата поменялись строки, сообщение не удалено")
+        mark = f"{_stamp()} · {who}" + (" (админ)" if m["code"] != code else "")
+        ws.update(values=[[""]], range_name=f"E{msg_id}", value_input_option="RAW")
+        ws.update(values=[["", mark]], range_name=f"H{msg_id}:I{msg_id}", value_input_option="RAW")
+        photo = m.get("photo")
+        m.update(deleted=True, text="", photo="")
+        _chat_bump(m)
+    if photo and re.fullmatch(r"[A-Za-z0-9_-]{20,40}\.(jpg|png|webp)", photo):
+        try:
+            (photo_dir() / photo).unlink()
+        except OSError:
+            pass
+    return {"ok": True}
+
+
 PHOTO_KINDS = {b"\xff\xd8\xff": ".jpg", b"\x89PNG": ".png", b"RIFF": ".webp"}
 
 
@@ -737,12 +771,18 @@ def app_version(force: bool = False):
                          headers={"Accept": "application/vnd.github+json", "User-Agent": "arkenstone-bot"})
         r.raise_for_status()
         j = r.json()
-        hit = re.fullmatch(r"app-v1\.(\d+)", j.get("tag_name") or "")
+        tag = j.get("tag_name") or ""
+        body = (j.get("body") or "").strip()
         apk = next((a for a in j.get("assets") or [] if a.get("name", "").endswith(".apk")), None)
-        if hit and apk:
-            body = (j.get("body") or "").strip()
+        # Новый формат: тег app-v1.0.5, внутренний номер сборки — строкой «Сборка: 13» в описании.
+        # Старый формат: тег app-v1.8, номер сборки — последнее число в теге.
+        new = re.fullmatch(r"app-v(\d+\.\d+\.\d+)", tag)
+        old = re.fullmatch(r"app-v1\.(\d+)", tag)
+        code_hit = re.search(r"Сборка:\s*(\d+)", body)
+        if apk and (new and code_hit or old):
             notes = body.split("Что нового:", 1)[1] if "Что нового:" in body else ""  # пишет сборщик из описания изменения
-            _app_ver["data"] = {"code": int(hit.group(1)), "version": f"1.{hit.group(1)}",
+            _app_ver["data"] = {"code": int(code_hit.group(1)) if new else int(old.group(1)),
+                                "version": new.group(1) if new else f"1.{old.group(1)}",
                                 "url": apk["browser_download_url"], "notes": notes.strip()[:600]}
             _app_ver["t"] = time.time()
     except Exception as e:
@@ -1043,6 +1083,11 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         except PermissionError as e:
             return 400, {"error": str(e)}
         except ValueError as e:
+            return 400, {"error": str(e)}
+    if method == "POST" and path == "/api/chat/delete":
+        try:
+            return 200, chat_delete(_int(body.get("id"), 0), code, is_admin, who)
+        except (PermissionError, ValueError) as e:
             return 400, {"error": str(e)}
     if method == "POST" and path == "/api/chat/send":
         try:

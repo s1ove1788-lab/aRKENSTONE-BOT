@@ -1080,6 +1080,7 @@ async function chatPoll(){
       const added = [], changed = [];
       for (const m of d.msgs) {
         const i = chat.msgs.findIndex(x => x.id === m.id);
+        if (m.deleted) { if (i >= 0) { chat.msgs.splice(i, 1); changed.push(m); if (chat.reply === m.id) chatReply(0); } continue; }
         if (i >= 0) { chat.msgs[i] = m; changed.push(m); } else added.push(m);
       }
       chat.rev = Math.max(chat.rev, d.rev || 0);
@@ -1249,8 +1250,16 @@ function msgMenu(ev, id){
     <button class="btn" onclick="closeSheet();chatReply(${id})">↩️ Ответить</button>
     ${m.mine ? `<button class="btn" onclick="closeSheet();editMsg(${id})">✏️ Изменить</button>` : ""}
     ${m.text ? `<button class="btn" onclick="copyMsg(${id})">📋 Скопировать</button>` : ""}
+    ${m.mine || me.admin ? `<button class="btn" style="color:var(--warn)" onclick="deleteMsg(${id})">🗑 Удалить${m.mine ? "" : " (админ)"}</button>` : ""}
     ${m.photo ? `<button class="btn" onclick="closeSheet();viewPhoto('/chat-photo/${esc(m.photo)}')">🔍 Открыть фото</button>` : ""}
     <button class="btn" onclick="closeSheet()">Отмена</button></div>`);
+}
+async function deleteMsg(id){
+  const m = chat.msgs.find(x => x.id === id); closeSheet(); if (!m) return;
+  const who = m.mine ? "своё сообщение" : `сообщение от ${m.name}`;
+  if (!confirm(`Удалить ${who} у всех? Вернуть его будет нельзя.`)) return;
+  try { await call("/api/chat/delete", {id}); toast("🗑 Удалено"); chat.busy ? setTimeout(chatPoll, 400) : chatPoll(); }
+  catch(e) { toast(e.message); }
 }
 async function copyMsg(id){
   const m = chat.msgs.find(x => x.id === id); closeSheet();
