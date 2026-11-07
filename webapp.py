@@ -819,7 +819,32 @@ WORKERS_HEADERS = ["ID", "Имя", "Участок", "Добавлен", "Кто
 TABEL_TAB = "Табель"
 TABEL_HEADERS = ["Дата", "ID", "Имя", "Часы", "Кто внёс", "Изменено"]
 REPORTS_TAB = "Отчёты табеля"
-REPORTS_HEADERS = ["Отправлено", "Кто отправил", "С", "По", "Всего часов", "Данные"]
+REPORTS_HEADERS = ["Отправлено", "Кто отправил", "С", "По", "Всего часов", "Данные", "Ставка ₽/ч", "К выплате ₽"]
+DEFAULT_RATE = 625  # ₽ за час, пока ген. директор не поставил другую ставку в приложении
+
+
+def hour_rate() -> float:
+    """Ставка за час: из «Настроек» (hour_rate), иначе 625 ₽."""
+    try:
+        r = float(str(sheets.get_setting("hour_rate") or "").replace(",", ".").strip() or DEFAULT_RATE)
+        return r if 0 < r < 100000 else DEFAULT_RATE
+    except (TypeError, ValueError):
+        return DEFAULT_RATE
+
+
+def _money(hours, rate) -> int:
+    """Рубли с округлением как в бухгалтерии: 14 062,5 → 14 063 (round в Python округлил бы к чётному)."""
+    from decimal import ROUND_HALF_UP, Decimal
+    return int((Decimal(str(hours or 0)) * Decimal(str(rate))).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
+
+
+def with_pay(summ: dict, rate: float) -> dict:
+    """Добавляет к итогам деньги: каждому часы × ставка, и общий итог."""
+    for p in summ["people"]:
+        p["pay"] = _money(p["hours"], rate)
+    summ["rate"] = rate
+    summ["pay"] = sum(p["pay"] for p in summ["people"])
+    return summ
 FIRED = "Уволен"
 
 
@@ -963,12 +988,15 @@ def report_send(d1: date, d2: date, who: str) -> dict:
     summ = period_summary(d1, d2)
     if not summ["people"]:
         raise ValueError("За этот период в табеле нет часов")
+    with_pay(summ, hour_rate())  # ставка запоминается в отчёте: поменяют ставку — старые отчёты не пересчитаются
     sheets._tab(REPORTS_TAB, REPORTS_HEADERS).append_row(
         [_stamp(), who, _d(summ["from"]).strftime("%d.%m.%Y"), _d(summ["to"]).strftime("%d.%m.%Y"), summ["total"],
-         json.dumps(summ, ensure_ascii=False)], value_input_option="RAW")
+         json.dumps(summ, ensure_ascii=False), summ["rate"], summ["pay"]], value_input_option="RAW")
     a, b = _d(summ["from"]), _d(summ["to"])
     period = a.strftime("%d.%m") + ("" if a == b else "–" + b.strftime("%d.%m.%Y"))
-    push_safe("reports", f"📑 Табель за {period}", f"{summ['total']} ч, {len(summ['people'])} чел. Отправил(а) {who}",
+    money = f"{summ['pay']:,}".replace(",", " ")
+    push_safe("reports", f"📑 Табель за {period}: {money} ₽",
+              f"{summ['total']} ч × {summ['rate']:g} ₽ · {len(summ['people'])} чел. Отправил(а) {who}",
               _codes({"gendir", "admin"}), "reports")
     return summ
 
@@ -982,6 +1010,9 @@ def reports() -> list:
         except ValueError:
             continue
         data.update(id=i, sent=v[0].strip(), who=v[1].strip())
+        if "rate" not in data:  # отчёты, отправленные до появления ставки, — по текущей ставке
+            with_pay(data, hour_rate())
+            data["rate_now"] = True
         out.append(data)
     return out[::-1][:60]
 
@@ -1103,8 +1134,9 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
                 return 200, {"workers": workers()}
             if path == "/api/tech/summary":
                 return 200, period_summary(_d(body.get("from")), _d(body.get("to")))
-            if path == "/api/tech/sent":
-                return 200, {"reports": [r for r in reports() if r.get("who") == who][:20]}
+            if path == "/api/tech/sent":  # тех. директору — только часы, без денег
+                return 200, {"reports": [{k: r[k] for k in ("from", "to", "total", "sent", "who")}
+                                         for r in reports() if r.get("who") == who][:20]}
             if method == "POST":
                 with _lock:
                     if path == "/api/tech/day":
@@ -1122,7 +1154,17 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         except ValueError as e:
             return 400, {"error": str(e)}
     if path == "/api/reports" and "reports" in tabs:
-        return 200, {"reports": reports()}
+        return 200, {"reports": reports(), "rate": hour_rate(), "can_rate": me["role"] in ("gendir", "admin")}
+    if method == "POST" and path == "/api/reports/rate" and me["role"] in ("gendir", "admin"):
+        try:
+            r = round(float(str(body.get("rate")).replace(",", ".")), 2)
+        except (TypeError, ValueError):
+            return 400, {"error": "Ставка — число, например 625"}
+        if not 0 < r < 100000:
+            return 400, {"error": "Ставка должна быть больше нуля"}
+        with _lock:
+            sheets.set_setting("hour_rate", f"{r:g}")
+        return 200, {"ok": True, "rate": r}
 
     if path == "/api/courier" and "courier" in tabs:
         return 200, courier_data(today, pay)
