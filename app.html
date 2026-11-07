@@ -39,6 +39,7 @@ header{position:sticky;top:0;z-index:5;background:var(--bar);color:var(--bar-ink
 header h1{font-size:18px;margin:0;flex:1;letter-spacing:.2px}
 /* ---------- новогодняя гирлянда в шапке (рисует xmasDraw, нажатиям не мешает) */
 header.xmas{padding-bottom:22px}
+header.xmas + main{padding-top:34px}  /* шарики висят ниже шапки — отодвигаем начало экрана */
 .xmas-svg{position:absolute;left:0;right:0;bottom:-16px;height:40px;pointer-events:none;overflow:visible}
 .xmas-svg .bulb{animation:twinkle 1.6s ease-in-out infinite}
 .xmas-svg .ball{transform-box:fill-box;transform-origin:50% 0;animation:swing 3.2s ease-in-out infinite}
