@@ -137,6 +137,63 @@ def remove_device(code: str) -> bool:
     return True
 
 
+# ------------------------------------------------------------ чат сотрудников
+# Сообщения лежат на листе «Чат». Сервер читает лист один раз при запуске и дальше держит их в памяти:
+# телефоны спрашивают «есть новое?» каждые несколько секунд, и если бы каждый раз читать таблицу,
+# Google быстро упёрся бы в лимит. В таблицу только дописываем новые сообщения.
+CHAT_TAB = "Чат"
+CHAT_HEADERS = ["Время", "Код", "Имя", "Роль", "Сообщение"]
+CHAT_KEEP = 500        # сколько последних сообщений держим в памяти и отдаём телефону
+CHAT_MAX_LEN = 1000    # длина одного сообщения
+_chat = {"loaded": False, "msgs": [], "epoch": str(int(time.time()))}
+_chat_lock = threading.Lock()
+
+
+def _chat_ws():
+    return sheets._tab(CHAT_TAB, CHAT_HEADERS)
+
+
+def _chat_load() -> None:
+    if _chat["loaded"]:
+        return
+    labels = {v.lower(): k for k, v in config.ROLE_LABELS.items()}
+    msgs = []
+    for i, v in enumerate(_chat_ws().get_all_values()[1:], start=2):
+        v = list(v) + [""] * 5
+        text = v[4].strip()
+        if not text:
+            continue
+        msgs.append({"id": i, "t": v[0].strip(), "code": norm_code(v[1]), "name": v[2].strip() or "сотрудник",
+                     "role": labels.get(v[3].strip().lower(), ""), "text": text})
+    _chat.update(loaded=True, msgs=msgs[-CHAT_KEEP:])
+
+
+def chat_list(after: int, code: str) -> dict:
+    with _chat_lock:
+        _chat_load()
+        msgs = [m for m in _chat["msgs"] if m["id"] > after]
+    return {"epoch": _chat["epoch"],
+            "msgs": [{"id": m["id"], "t": m["t"], "name": m["name"], "role": m["role"],
+                      "label": config.ROLE_LABELS.get(m["role"], ""), "text": m["text"], "mine": m["code"] == code}
+                     for m in msgs]}
+
+
+def chat_send(text: str, me: dict, code: str) -> dict:
+    text = re.sub(r"\n{3,}", "\n\n", (text or "").replace("\r", "")).strip()[:CHAT_MAX_LEN]
+    if not text:
+        raise ValueError("Пустое сообщение")
+    now = datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m.%Y %H:%M")
+    name = me["name"] or "сотрудник"
+    with _chat_lock:
+        _chat_load()
+        # RAW: таблица сохраняет текст как есть, «=2+2» или «+7…» не превратятся в формулу
+        _chat_ws().append_row([now, code, name, config.ROLE_LABELS[me["role"]], text], value_input_option="RAW")
+        new_id = (_chat["msgs"][-1]["id"] + 1) if _chat["msgs"] else 2
+        _chat["msgs"].append({"id": new_id, "t": now, "code": code, "name": name, "role": me["role"], "text": text})
+        del _chat["msgs"][:-CHAT_KEEP]
+    return {"ok": True, "id": new_id}
+
+
 def _parse_role(text: str):
     t = (text or "").strip().lower()
     for word, key in ROLE_WORDS.items():
@@ -346,8 +403,8 @@ def manager_data(today: date, pay: bool = False) -> dict:
 
 
 # --------------------------------------------------------------- запросы
-ROLE_TABS = {"manager": ["courier", "prod", "keeper", "manager"], "courier": ["courier"],
-             "prod": ["prod"], "keeper": ["keeper"]}
+ROLE_TABS = {"manager": ["courier", "prod", "keeper", "manager", "chat"], "courier": ["courier", "chat"],
+             "prod": ["prod", "chat"], "keeper": ["keeper", "chat"]}
 
 
 def _int(x, default: int) -> int:
@@ -419,6 +476,14 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
     pay = code in pay_codes()
     who = me["name"] or "сотрудник"
     today = now_date()
+
+    if path == "/api/chat":
+        return 200, chat_list(_int(body.get("after"), 0), code)
+    if method == "POST" and path == "/api/chat/send":
+        try:
+            return 200, chat_send(str(body.get("text") or ""), me, code)
+        except ValueError as e:
+            return 400, {"error": str(e)}
 
     if path == "/api/courier" and "courier" in tabs:
         return 200, courier_data(today, pay)
@@ -591,7 +656,8 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = self.path.split("?")[0]
         if path.startswith("/api/"):
-            return self._api("GET", {})
+            from urllib.parse import parse_qsl, urlsplit
+            return self._api("GET", dict(parse_qsl(urlsplit(self.path).query)))
         if path == "/sw.js":
             return self._send(200, SW_JS, "text/javascript; charset=utf-8", "no-cache")
         if path in ("/health", "/ok"):

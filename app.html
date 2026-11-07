@@ -113,6 +113,33 @@ table.dl .ch{color:var(--muted);font-size:13px}
 tr.short .ch{color:inherit}
 .result{white-space:pre-wrap;background:var(--ok-bg);border-radius:12px;padding:12px;margin-top:10px}
 .badge:empty{display:none}
+/* ---------- чат */
+nav button{position:relative}
+nav .dot{position:absolute;top:2px;left:calc(50% + 8px);background:var(--warn);color:#fff;font-size:11px;font-weight:700;
+  min-width:18px;height:18px;line-height:18px;border-radius:9px;padding:0 5px}
+nav .dot:empty{display:none}
+body.chat main{padding-bottom:calc(150px + env(safe-area-inset-bottom))}
+.chat-list{display:flex;flex-direction:column;gap:4px}
+.chat-day{align-self:center;background:var(--chip);color:var(--muted);font-size:12px;border-radius:999px;padding:3px 12px;margin:12px 0 6px}
+.msg{max-width:82%;align-self:flex-start;background:var(--card);border:1px solid var(--line);
+  border-radius:16px 16px 16px 4px;padding:8px 12px 6px}
+.msg.mine{align-self:flex-end;background:var(--ok-bg);border-color:transparent;border-radius:16px 16px 4px 16px}
+.msg .who{font-size:13px;font-weight:600;color:var(--accent);margin-bottom:2px}
+.msg .who small{color:var(--muted);font-weight:400}
+.msg .txt{white-space:pre-wrap;word-break:break-word}
+.msg .tm{font-size:11px;color:var(--muted);text-align:right;margin-top:2px}
+.msg.cont{margin-top:-1px}
+.msg.cont .who{display:none}
+.composer{position:fixed;left:0;right:0;z-index:4;bottom:calc(64px + env(safe-area-inset-bottom));
+  background:var(--bg);border-top:1px solid var(--line);padding:8px 10px}
+.composer .in{max-width:640px;margin:0 auto;display:flex;gap:8px;align-items:flex-end}
+.composer textarea{flex:1;font:inherit;padding:11px 14px;border-radius:20px;border:1px solid var(--line);
+  background:var(--card);color:var(--ink);resize:none;max-height:120px;min-height:44px;line-height:1.35}
+.msg a{color:var(--accent)}
+.composer textarea:focus{outline:none;border-color:var(--accent)}
+.composer button{width:46px;height:46px;border-radius:50%;border:0;background:var(--accent);color:var(--accent-ink);
+  font-size:20px;cursor:pointer;flex:none}
+.composer button:disabled{opacity:.5}
 </style>
 </head>
 <body>
@@ -126,7 +153,7 @@ tr.short .ch{color:inherit}
 <div class="toast" id="toast"></div>
 
 <script>
-const TABS = {courier:["🚚","Курьер"], prod:["🏭","Производство"], keeper:["📦","Склад"], manager:["👔","Менеджер"]};
+const TABS = {courier:["🚚","Курьер"], prod:["🏭","Производство"], keeper:["📦","Склад"], manager:["👔","Менеджер"], chat:["💬","Чат"]};
 const ROLES = {courier:"Курьер", prod:"Производство", keeper:"Кладовщик", manager:"Менеджер"};
 let me = null, tab = null, timer = null;
 let nav = 0;          // номер «перехода»: ответ, пришедший после ухода с экрана, выбрасываем
@@ -180,10 +207,11 @@ async function boot(){
   $("#who").textContent = (me.name ? me.name + " · " : "") + me.label;
   const nav = $("#nav");
   nav.hidden = me.tabs.length < 2;
-  nav.innerHTML = me.tabs.map(k => `<button data-tab="${k}"><span>${TABS[k][0]}</span>${TABS[k][1]}</button>`).join("");
+  nav.innerHTML = me.tabs.map(k => `<button data-tab="${k}"><span>${TABS[k][0]}</span>${TABS[k][1]}${k === "chat" ? `<b class="dot" id="chatdot"></b>` : ""}</button>`).join("");
   nav.querySelectorAll("button").forEach(b => b.onclick = () => open(b.dataset.tab));
   let saved = null; try { saved = localStorage.getItem("ark_tab"); } catch(e) {}
   open(me.tabs.includes(saved) ? saved : me.tabs[0]);
+  chatPoll();
 }
 
 function showCode(){
@@ -211,6 +239,9 @@ function showCode(){
 function open(k){
   tab = k; try { localStorage.setItem("ark_tab", k); } catch(e) {}
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === k));
+  document.body.classList.toggle("chat", k === "chat");
+  document.querySelectorAll(".composer").forEach(e => e.remove());
+  if (k === "chat") return chatOpen();
   load();
 }
 
@@ -237,10 +268,11 @@ async function load(){
 }
 /* Фоновое обновление: не трогаем открытую страницу, окошко или форму, в которую что-то вводят */
 function quietRefresh(){
+  if (tab === "chat") return chatPoll();
   if (onPage || document.querySelector(".open-form, .sheet-bg")) return;
   load();
 }
-$("#refresh").onclick = () => me && me.ok ? (onPage && window._pageAgain ? window._pageAgain() : load()) : boot();
+$("#refresh").onclick = () => !(me && me.ok) ? boot() : tab === "chat" ? chatOpen() : (onPage && window._pageAgain ? window._pageAgain() : load());
 document.addEventListener("visibilitychange", () => { if (!document.hidden && me && me.ok) quietRefresh(); });
 
 /* ------------------------------ окно-форма снизу */
@@ -678,6 +710,105 @@ async function removeDevice(code, name){
   if (!confirm(`Убрать ${name || code} из приложения?`)) return;
   try { await call("/api/manager/device/remove", {code}); toast("Убрано"); window._mgr = await call("/api/manager"); staffPage(); }
   catch(e) { toast(e.message); }
+}
+
+/* ------------------------------ чат
+   Все сообщения храним здесь (chat.msgs) и раз в несколько секунд спрашиваем у сервера только новые.
+   Открыт чат — проверяем каждые 3 сек, иначе раз в 20 сек, чтобы показать число непрочитанных на вкладке. */
+const chat = {msgs: [], last: 0, epoch: "", busy: false, timer: null, sending: false};
+function chatSeen(v){
+  try { if (v !== undefined) localStorage.setItem("ark_chat_seen", String(v)); return +localStorage.getItem("ark_chat_seen") || 0; }
+  catch(e) { return v || 0; }
+}
+async function chatPoll(){
+  clearTimeout(chat.timer);
+  if (!(me && me.ok)) return;
+  if (!chat.busy && !document.hidden) {
+    chat.busy = true;
+    try {
+      const d = await call("/api/chat?after=" + (chat.epoch ? chat.last : 0));
+      if (d.epoch !== chat.epoch) { chat.msgs = []; chat.last = 0; chat.epoch = d.epoch; }  // сервер перезапустился — берём всё заново
+      const fresh = d.msgs.filter(m => m.id > chat.last);
+      if (fresh.length) {
+        chat.msgs = chat.msgs.concat(fresh).slice(-500);
+        chat.last = chat.msgs[chat.msgs.length - 1].id;
+        if (tab === "chat") chatDraw(fresh);
+      } else if (tab === "chat" && !document.querySelector(".chat-list")) chatDraw();
+    } catch(e) {
+      if (tab === "chat" && !document.querySelector(".chat-list")) $("#main").innerHTML = `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="chatOpen()">Повторить</button></div>`;
+    } finally { chat.busy = false; }
+  }
+  if (tab === "chat") chatSeen(chat.last);
+  chatBadge();
+  chat.timer = setTimeout(chatPoll, tab === "chat" ? 3000 : 20000);
+}
+function chatBadge(){
+  const dot = document.getElementById("chatdot"); if (!dot) return;
+  const seen = chatSeen(), n = tab === "chat" ? 0 : chat.msgs.filter(m => m.id > seen && !m.mine).length;
+  dot.textContent = n ? (n > 99 ? "99+" : n) : "";
+}
+function chatOpen(){
+  clearInterval(timer); ++nav; onPage = false; window._pageAgain = null;
+  $("#main").innerHTML = chat.msgs.length ? "" : `<div class="empty">Загрузка…</div>`;
+  if (chat.msgs.length) chatDraw();
+  document.body.insertAdjacentHTML("beforeend", `<div class="composer"><div class="in">
+    <textarea id="chat-in" rows="1" maxlength="1000" placeholder="Сообщение для всех…" enterkeyhint="send"></textarea>
+    <button id="chat-go" aria-label="Отправить">➤</button></div></div>`);
+  const ta = $("#chat-in");
+  let draft = ""; try { draft = localStorage.getItem("ark_chat_draft") || ""; } catch(e) {}
+  ta.value = draft; grow(ta);
+  ta.oninput = () => { grow(ta); try { localStorage.setItem("ark_chat_draft", ta.value); } catch(e) {} };
+  ta.onkeydown = e => {  // на компьютере Enter отправляет, Shift+Enter — новая строка; на телефоне Enter — новая строка
+    if (e.key === "Enter" && !e.shiftKey && !("ontouchstart" in window)) { e.preventDefault(); chatSend(); }
+  };
+  $("#chat-go").onclick = chatSend;
+  chatPoll();
+}
+function grow(ta){ ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight + 2, 120) + "px"; }
+function chatDay(t){  // «07.11.2026 12:40» -> «Сегодня» / «Вчера» / «5 ноября»
+  const m = /^(\d{2})\.(\d{2})\.(\d{4})/.exec(t || ""); if (!m) return "";
+  const d = new Date(+m[3], +m[2] - 1, +m[1]), now = new Date(), y = new Date(now); y.setDate(now.getDate() - 1);
+  const same = (a, b) => a.toDateString() === b.toDateString();
+  if (same(d, now)) return "Сегодня";
+  if (same(d, y)) return "Вчера";
+  return d.toLocaleDateString("ru-RU", {day: "numeric", month: "long", year: d.getFullYear() === now.getFullYear() ? undefined : "numeric"});
+}
+function msgHtml(m, prev){
+  const day = chatDay(m.t), pday = prev ? chatDay(prev.t) : null;
+  const cont = prev && pday === day && prev.name === m.name && prev.mine === m.mine;
+  const linked = esc(m.text).replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>')
+    .replace(/(\+?[78][\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2})/g, m2 => `<a href="tel:${m2.replace(/[^\d+]/g, "")}">${m2}</a>`);
+  return (day !== pday ? `<div class="chat-day">${esc(day)}</div>` : "") +
+    `<div class="msg${m.mine ? " mine" : ""}${cont ? " cont" : ""}">
+      ${m.mine ? "" : `<div class="who">${esc(m.name)} <small>· ${esc(m.label)}</small></div>`}
+      <div class="txt">${linked}</div><div class="tm">${esc((m.t || "").slice(11, 16))}</div></div>`;
+}
+function chatDraw(fresh){
+  const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 120;
+  let list = document.querySelector(".chat-list");
+  if (!list || !fresh) {
+    $("#main").innerHTML = chat.msgs.length ? `<div class="chat-list"></div>`
+      : `<div class="chat-list"></div><div class="empty" id="chat-empty">Здесь пока тихо.<br>Напишите первое сообщение — его увидят все сотрудники.</div>`;
+    list = document.querySelector(".chat-list");
+    list.innerHTML = chat.msgs.map((m, i) => msgHtml(m, chat.msgs[i - 1])).join("");
+    return window.scrollTo(0, document.body.scrollHeight);
+  }
+  const e = $("#chat-empty"); if (e) e.remove();
+  const start = chat.msgs.length - fresh.length;
+  list.insertAdjacentHTML("beforeend", fresh.map((m, i) => msgHtml(m, chat.msgs[start + i - 1])).join(""));
+  if (atBottom || fresh.some(m => m.mine)) window.scrollTo(0, document.body.scrollHeight);
+  else toast("Новое сообщение ↓");
+}
+async function chatSend(){
+  const ta = $("#chat-in"), btn = $("#chat-go"), text = ta.value.trim();
+  if (!text || chat.sending) return;
+  chat.sending = true; btn.disabled = true;
+  try {
+    await call("/api/chat/send", {text});
+    ta.value = ""; grow(ta); try { localStorage.removeItem("ark_chat_draft"); } catch(e) {}
+    if (chat.busy) setTimeout(chatPoll, 400); else await chatPoll();
+  } catch(e) { toast(e.message); }
+  finally { chat.sending = false; btn.disabled = false; ta.focus(); }
 }
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
