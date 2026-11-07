@@ -850,7 +850,7 @@ def _update_watch() -> None:
 # «Табель» — по строке на человека и день: сколько часов отработал.
 # «Отчёты табеля» — итоги за период, которые тех. директор отправил ген. директору (снимок на момент отправки).
 WORKERS_TAB = "Работники цеха"
-WORKERS_HEADERS = ["ID", "Имя", "Участок", "Добавлен", "Кто добавил", "Статус"]
+WORKERS_HEADERS = ["ID", "Имя", "Участок", "Добавлен", "Кто добавил", "Статус", "Ставка ₽/ч", "За кровать ₽"]
 TABEL_TAB = "Табель"
 TABEL_HEADERS = ["Дата", "ID", "Имя", "Часы", "Кто внёс", "Изменено", "Кровати"]
 BONUS_TAB = "Премии"
@@ -1064,16 +1064,29 @@ def _money(hours, rate) -> int:
     return int((Decimal(str(hours or 0)) * Decimal(str(rate))).quantize(Decimal("1"), rounding=ROUND_HALF_UP))
 
 
-def with_pay(summ: dict, rate: float, brate: float = None) -> dict:
-    """Деньги за работу: часы × ставка + кровати × ставка за кровать (у маляров). Премии добавляются отдельно."""
+def with_pay(summ: dict, rate: float, brate: float = None, personal: dict = None) -> dict:
+    """Деньги за работу: часы × ставка + кровати × ставка за кровать (у маляров) + доплата/вычет из правки отчёта.
+    Ставки — личные у сотрудника (personal: {ID: (за час, за кровать)}), иначе общие. Премии добавляются отдельно.
+    Ставки человека запоминаются в отчёте (p["rate"]): потом их поменяют — старый отчёт не пересчитается."""
     brate = DEFAULT_BED_RATE if brate is None else brate
     for p in summ["people"]:
-        p["pay_hours"] = _money(p["hours"], rate)
-        p["pay_beds"] = _money(p.get("beds", 0), brate)
-        p["pay"] = p["pay_hours"] + p["pay_beds"]
+        if personal is not None:  # отправка отчёта: личная ставка сотрудника, а если её нет — общая
+            own = personal.get(p.get("id")) or (None, None)
+            p["rate"] = own[0] if own[0] is not None else rate
+            p["bed_rate"] = own[1] if own[1] is not None else brate
+        else:  # пересчёт сохранённого отчёта: ставка человека из отчёта, в старых отчётах её нет — ставка отчёта
+            p.setdefault("rate", rate)
+            p.setdefault("bed_rate", brate)
+        p["pay_hours"] = _money(p["hours"], p["rate"])
+        p["pay_beds"] = _money(p.get("beds", 0), p["bed_rate"])
+        p["pay"] = p["pay_hours"] + p["pay_beds"] + int(p.get("adj") or 0)
     summ["rate"], summ["bed_rate"] = rate, brate
     summ["pay"] = sum(p["pay"] for p in summ["people"])
     return summ
+
+
+def personal_rates() -> dict:
+    return {w["id"]: (w["rate"], w["bed_rate"]) for w in workers(include_fired=True)}
 
 
 def with_bonuses(summ: dict, bonuses: list) -> dict:
@@ -1134,24 +1147,62 @@ def _hours(x):
 def workers(include_fired: bool = False) -> list:
     out = []
     for i, v in enumerate(_tt(WORKERS_TAB, WORKERS_HEADERS).get_all_values()[1:], start=2):
-        v = list(v) + [""] * 6
+        v = list(v) + [""] * 8
         if not v[0].strip() or not v[1].strip():
             continue
         fired = v[5].strip().lower() == FIRED.lower()
         if fired and not include_fired:
             continue
-        out.append({"id": v[0].strip(), "name": v[1].strip(), "area": v[2].strip(), "row": i, "fired": fired})
+        out.append({"id": v[0].strip(), "name": v[1].strip(), "area": v[2].strip(), "row": i, "fired": fired,
+                    "rate": _rate_cell(v[6]), "bed_rate": _rate_cell(v[7])})
     return sorted(out, key=lambda w: (w["area"].lower(), w["name"].lower()))
 
 
-def worker_add(name: str, area: str, who: str) -> None:
+def _rate_cell(x):
+    """Личная ставка из ячейки или поля: «450», «450,5» -> 450 / 450.5; пусто -> None (берётся общая)."""
+    t = str(x if x is not None else "").replace(" ", "").replace("₽", "").replace(",", ".").strip()
+    if not t:
+        return None
+    try:
+        r = round(float(t), 2)
+    except ValueError:
+        return None
+    return (int(r) if r == int(r) else r) if 0 < r < 100000 else None
+
+
+def _rate_in(x, what: str):
+    """Ставка, которую ввели в приложении: пусто — общая, иначе число больше нуля."""
+    if x is None or not str(x).strip():
+        return None
+    r = _rate_cell(x)
+    if r is None:
+        raise ValueError(f"{what} — число больше нуля, например 450")
+    return r
+
+
+def worker_add(name: str, area: str, who: str, rate=None, brate=None) -> None:
     name, area = name.strip()[:40], area.strip()[:30]
     if not name:
         raise ValueError("Впишите имя")
     if any(w["name"].lower() == name.lower() for w in workers()):
         raise ValueError("Такой сотрудник уже есть")
+    r, b = _rate_in(rate, "Ставка за час"), _rate_in(brate, "Ставка за кровать")
     _tt(WORKERS_TAB, WORKERS_HEADERS).append_row(
-        [secrets.token_hex(3), name, area, _stamp(), who, ""], value_input_option="RAW")
+        [secrets.token_hex(3), name, area, _stamp(), who, "", "" if r is None else r, "" if b is None else b],
+        value_input_option="RAW")
+
+
+def worker_edit(wid: str, area, rate, brate) -> None:
+    """Тех. директор меняет участок и личные ставки сотрудника (пусто — общая ставка)."""
+    w = next((x for x in workers() if x["id"] == wid), None)
+    if not w:
+        raise ValueError("Сотрудник не найден, обновите список")
+    r, b = _rate_in(rate, "Ставка за час"), _rate_in(brate, "Ставка за кровать")
+    a = w["area"] if area is None else str(area).strip()[:30]
+    ws = _tt(WORKERS_TAB, WORKERS_HEADERS)
+    ws.update(values=[[a]], range_name=f"C{w['row']}", value_input_option="RAW")
+    ws.update(values=[["" if r is None else r, "" if b is None else b]], range_name=f"G{w['row']}:H{w['row']}",
+              value_input_option="RAW")
 
 
 def worker_fire(wid: str) -> None:
@@ -1204,8 +1255,10 @@ def tech_data(day: date) -> dict:
     month = [r for r in rows if r["day"].year == day.year and r["day"].month == day.month]
     return {"day": day.isoformat(), "today": now_date().isoformat(),
             "workers": [{"id": w["id"], "name": w["name"], "area": w["area"], "painter": is_painter(w["area"]),
-                         "hours": (got.get(w["id"]) or {}).get("hours"), "beds": (got.get(w["id"]) or {}).get("beds")}
+                         "hours": (got.get(w["id"]) or {}).get("hours"), "beds": (got.get(w["id"]) or {}).get("beds"),
+                         "rate": w["rate"], "bed_rate": w["bed_rate"]}
                         for w in ws_list],
+            "rate_common": hour_rate(), "bed_rate_common": bed_rate(),
             "filled": sum(1 for w in ws_list if (got.get(w["id"]) or {}).get("hours")),
             "month_hours": round(sum(r["hours"] or 0 for r in month), 2),
             "month_beds": sum(r["beds"] or 0 for r in month)}
@@ -1277,7 +1330,7 @@ def report_send(d1: date, d2: date, who: str) -> dict:
     summ = period_summary(d1, d2)
     if not summ["people"]:
         raise ValueError("За этот период в табеле нет часов")
-    with_pay(summ, hour_rate(), bed_rate())  # ставки запоминаются в отчёте: поменяют — старые не пересчитаются
+    with_pay(summ, hour_rate(), bed_rate(), personal_rates())  # ставки запоминаются в отчёте: поменяют — старые не пересчитаются
     _tt(REPORTS_TAB, REPORTS_HEADERS).append_row(
         [_stamp(), who, _d(summ["from"]).strftime("%d.%m.%Y"), _d(summ["to"]).strftime("%d.%m.%Y"), summ["total"],
          json.dumps(summ, ensure_ascii=False), summ["rate"], summ["pay"]], value_input_option="RAW")
@@ -1310,12 +1363,76 @@ def reports() -> list:
             data["rate_now"] = True
         elif "bed_rate" not in data:
             with_pay(data, data["rate"], bed_rate())
+        else:
+            with_pay(data, data["rate"], data["bed_rate"])  # у людей ставки уже в отчёте; без них — ставка отчёта
+        data["row_sent"] = v[0].strip()
         out.append(data)
     out = out[::-1][:60]
     bl = bonuses()
     for r in out:
         with_bonuses(r, bl)
     return out
+
+
+def _report_row(rid: int, sent: str):
+    ws = _tt(REPORTS_TAB, REPORTS_HEADERS)
+    rows = ws.get_all_values(fresh=True)
+    if not 2 <= rid <= len(rows) or rows[rid - 1][0].strip() != (sent or "").strip():
+        raise ValueError("Отчёты в таблице поменялись, обновите экран и повторите")
+    return ws, rows[rid - 1]
+
+
+def report_edit(rid: int, sent: str, body: dict, who: str) -> dict:
+    """Ген. директор правит отчёт: период, люди (часы, дни, кровати, ставки, доплата/вычет). Суммы считает сервер."""
+    ws, row = _report_row(rid, sent)
+    try:
+        old = json.loads((list(row) + [""] * 6)[5])
+    except ValueError:
+        old = {}
+    d1, d2 = _d(body.get("from")), _d(body.get("to"))
+    if d2 < d1:
+        d1, d2 = d2, d1
+    prev = {p.get("id"): p for p in old.get("people", []) if p.get("id")}
+    people = []
+    for x in body.get("people") or []:
+        name = str(x.get("name") or "").strip()[:40]
+        if not name:
+            raise ValueError("У сотрудника пустое имя")
+        hours = _hours(x.get("hours")) or 0
+        beds = _beds(x.get("beds")) or 0
+        wid = str(x.get("id") or "").strip()[:12] or ("r" + secrets.token_hex(3))
+        try:
+            adj = int(round(float(str(x.get("adj") or 0).replace(" ", "").replace(",", "."))))
+        except ValueError:
+            raise ValueError(f"{name}: доплата или вычет — число, например 2000 или -500")
+        o = prev.get(wid, {})
+        p = {"id": wid, "name": name, "area": str(x.get("area") or o.get("area") or "").strip()[:30],
+             "hours": hours, "beds": beds, "days": max(0, min(400, _int(x.get("days"), o.get("days", 0)))),
+             "rate": _rate_in(x.get("rate"), f"{name}: ставка за час") or old.get("rate") or hour_rate(),
+             "bed_rate": _rate_in(x.get("bed_rate"), f"{name}: ставка за кровать") or old.get("bed_rate") or bed_rate(),
+             "adj": adj, "adj_note": str(x.get("adj_note") or "").strip()[:120],
+             "by_day": o.get("by_day", {}), "beds_by_day": o.get("beds_by_day", {})}
+        if o and (o.get("hours") != hours or o.get("beds", 0) != beds):
+            p["edited"] = True  # по дням было другое — показываем, что итог поправлен руками
+        people.append(p)
+    if not people:
+        raise ValueError("В отчёте должен остаться хотя бы один человек. Чтобы убрать отчёт, нажмите «Удалить отчёт»")
+    summ = {"from": d1.isoformat(), "to": d2.isoformat(), "people": people,
+            "total": round(sum(p["hours"] for p in people), 2), "beds": sum(p["beds"] for p in people),
+            "edited": {"by": who, "at": _stamp()}}
+    with_pay(summ, old.get("rate") or hour_rate(), old.get("bed_rate") or bed_rate())
+    ws.update(values=[[d1.strftime("%d.%m.%Y"), d2.strftime("%d.%m.%Y"), summ["total"],
+                       json.dumps(summ, ensure_ascii=False), summ["rate"], summ["pay"]]],
+              range_name=f"C{rid}:H{rid}", value_input_option="RAW")
+    log.info("Отчёт табеля %s изменён (%s): %s ч, %s ₽", rid, who, summ["total"], summ["pay"])
+    return {"ok": True, "pay": summ["pay"]}
+
+
+def report_delete(rid: int, sent: str, who: str) -> dict:
+    ws, row = _report_row(rid, sent)
+    ws.delete_rows(rid)
+    log.info("Отчёт табеля удалён (%s): %s–%s, отправлен %s", who, row[2] if len(row) > 2 else "", row[3] if len(row) > 3 else "", sent)
+    return {"ok": True}
 
 
 # ------------------------------------------------------------ премии (тех. директор → ген. директор)
@@ -1531,7 +1648,11 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
                         return 200, bonus_propose(str(body.get("worker") or ""), body.get("amount"),
                                                   str(body.get("reason") or ""), who, code)
                     if path == "/api/tech/worker":
-                        worker_add(str(body.get("name") or ""), str(body.get("area") or ""), who)
+                        worker_add(str(body.get("name") or ""), str(body.get("area") or ""), who,
+                                   body.get("rate"), body.get("bed_rate"))
+                        return 200, {"ok": True}
+                    if path == "/api/tech/worker/edit":
+                        worker_edit(str(body.get("id") or ""), body.get("area"), body.get("rate"), body.get("bed_rate"))
                         return 200, {"ok": True}
                     if path == "/api/tech/worker/remove":
                         worker_fire(str(body.get("id") or ""))
@@ -1558,6 +1679,14 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         with _lock:
             _set_rate_raw(key, f"{r:g}")
         return 200, {"ok": True, "rate": r}
+    if method == "POST" and path in ("/api/reports/edit", "/api/reports/delete") and me["role"] in ("gendir", "admin"):
+        try:
+            with _lock:
+                if path.endswith("delete"):
+                    return 200, report_delete(_int(body.get("id"), 0), str(body.get("sent") or ""), who)
+                return 200, report_edit(_int(body.get("id"), 0), str(body.get("sent") or ""), body, who)
+        except ValueError as e:
+            return 400, {"error": str(e)}
     if method == "POST" and path == "/api/reports/bonus" and me["role"] in ("gendir", "admin"):
         try:
             with _lock:

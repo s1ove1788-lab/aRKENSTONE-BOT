@@ -1164,28 +1164,55 @@ async function techSave(btn){
 }
 async function techStaffPage(){
   if (techDirty() && !confirm("Часы за день не сохранены. Уйти без сохранения?")) return;
-  let list = (window._tech || {}).workers || [];
+  const t = window._tech || {};
+  let list = t.workers || [];
   page("Сотрудники цеха", `
     <div class="card open-form">
       <div class="title" style="margin-bottom:8px">Добавить сотрудника</div>
       <input id="w-name" placeholder="Имя и фамилия" autocomplete="off">
       <input id="w-area" placeholder="Участок или должность (необязательно): покраска, сварка…" autocomplete="off">
+      <div class="toolbar"><input id="w-rate" type="text" inputmode="decimal" placeholder="₽/час (${t.rate_common})" autocomplete="off">
+        <input id="w-brate" type="text" inputmode="decimal" placeholder="₽/кровать (${t.bed_rate_common})" autocomplete="off"></div>
+      <div class="muted" style="margin:-2px 2px 8px">Ставки можно не заполнять — будет общая. За кровать — только для маляров.</div>
       <button class="btn main" style="width:100%" onclick="techAddWorker(this)">Добавить</button>
     </div>
     <h2>В табеле · ${list.length}</h2>
     ${list.length ? `<div class="card" style="padding:6px 10px"><table>
-      ${list.map(w => `<tr><td><b>${esc(w.name)}</b>${w.area ? `<div class="ch">${esc(w.area)}</div>` : ""}</td>
-        <td class="n"><button class="btn" style="padding:8px 12px" onclick="techFire('${esc(w.id)}','${esc(w.name)}')">Убрать</button></td></tr>`).join("")}
+      ${list.map((w, i) => `<tr><td><b>${esc(w.name)}</b>${w.area ? `<div class="ch">${esc(w.area)}</div>` : ""}
+          <div class="ch">${w.rate != null ? `<b style="color:var(--ink)">${rub(w.rate)}/ч</b>` : `${rub(t.rate_common)}/ч · общая`}${w.painter
+            ? ` · ${w.bed_rate != null ? `<b style="color:var(--ink)">${rub(w.bed_rate)}/кр.</b>` : `${rub(t.bed_rate_common)}/кр. · общая`}` : ""}</div></td>
+        <td class="n"><div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn" style="padding:8px 12px" onclick="techEditWorker(${i})">Ставка</button>
+          <button class="btn" style="padding:8px 10px" onclick="techFire('${esc(w.id)}','${esc(w.name)}')" aria-label="Убрать">✕</button></div></td></tr>`).join("")}
     </table></div>
     <p class="muted">Убранный сотрудник пропадает из списка, но его часы за прошлые дни остаются в итогах и отчётах.</p>`
     : `<div class="empty">Пока никого. Добавьте всех, кому нужно считать часы.</div>`}`, techStaffPage);
   window._pageAgain = async () => { try { window._tech = await call("/api/tech?day=" + techDay()); } catch(e) {} techStaffPage(); };
 }
+function techEditWorker(i){
+  const t = window._tech, w = t.workers[i]; if (!w) return;
+  const v = x => x == null ? "" : String(x).replace(".", ",");
+  sheet(`<h3>${esc(w.name)}</h3><div class="muted">Пусто — общая ставка. Новая ставка действует для следующих отчётов, присланные не меняются.</div>
+    <label class="l">Участок</label><input id="e-area" value="${esc(w.area)}" placeholder="покраска, сварка…">
+    <label class="l">Ставка за час, ₽ (общая ${rub(t.rate_common)})</label>
+    <input id="e-rate" type="text" inputmode="decimal" value="${v(w.rate)}" placeholder="${t.rate_common}" style="font-size:22px;text-align:center;font-weight:700">
+    <div id="e-bwrap" ${w.painter ? "" : "hidden"}><label class="l">За покрашенную кровать, ₽ (общая ${rub(t.bed_rate_common)})</label>
+    <input id="e-brate" type="text" inputmode="decimal" value="${v(w.bed_rate)}" placeholder="${t.bed_rate_common}" style="font-size:22px;text-align:center;font-weight:700"></div>
+    <div class="actions"><button class="btn" onclick="closeSheet()">Отмена</button><button class="btn main" id="e-go">Сохранить</button></div>`);
+  $("#e-area").oninput = e => { $("#e-bwrap").hidden = !/покрас|маляр|окрас|краск/i.test(e.target.value) && !w.bed_rate; };
+  $("#e-go").onclick = async () => {
+    const btn = $("#e-go"); btn.disabled = true;
+    try {
+      await call("/api/tech/worker/edit", {id: w.id, area: $("#e-area").value, rate: $("#e-rate").value,
+        bed_rate: $("#e-bwrap").hidden ? "" : $("#e-brate").value});
+      closeSheet(); toast("Сохранено"); window._tech = await call("/api/tech?day=" + techDay()); techStaffPage();
+    } catch(e) { toast(e.message); btn.disabled = false; }
+  };
+}
 async function techAddWorker(btn){
   const name = $("#w-name").value.trim(), area = $("#w-area").value.trim();
   if (!name) return toast("Впишите имя");
   btn.disabled = true;
-  try { await call("/api/tech/worker", {name, area}); toast("Добавлен"); window._tech = await call("/api/tech?day=" + techDay()); techStaffPage(); }
+  try { await call("/api/tech/worker", {name, area, rate: $("#w-rate").value, bed_rate: $("#w-brate").value}); toast("Добавлен"); window._tech = await call("/api/tech?day=" + techDay()); techStaffPage(); }
   catch(e) { toast(e.message); btn.disabled = false; }
 }
 async function techFire(id, name){
@@ -1201,14 +1228,18 @@ function summaryTable(s, open){
   const detail = p => [
       Object.entries(p.by_day || {}).map(([d, h]) => `${d}: ${hh(h)} ч` + ((p.beds_by_day || {})[d] ? `, ${p.beds_by_day[d]} кр.` : "")).join(" · "),
       Object.entries(p.beds_by_day || {}).filter(([d]) => !(p.by_day || {})[d]).map(([d, b]) => `${d}: ${b} кр.`).join(" · "),
-      money ? [p.hours ? `часы ${rub(p.pay_hours)}` : "", p.beds ? `кровати ${p.beds} × ${rub(s.bed_rate)} = ${rub(p.pay_beds)}` : "",
-               ...(p.bonus_list || []).map(b => `🎁 премия ${rub(b.amount)} — ${esc(b.reason)}`)].filter(Boolean).join("<br>") : ""
+      money ? [p.hours ? `часы ${hh(p.hours)} × ${rub(p.rate ?? s.rate)} = ${rub(p.pay_hours)}` : "",
+               p.beds ? `кровати ${p.beds} × ${rub(p.bed_rate ?? s.bed_rate)} = ${rub(p.pay_beds)}` : "",
+               p.adj ? `${p.adj > 0 ? "➕ доплата" : "➖ вычет"} ${rub(Math.abs(p.adj))}${p.adj_note ? ` — ${esc(p.adj_note)}` : ""}` : "",
+               ...(p.bonus_list || []).map(b => `🎁 премия ${rub(b.amount)} — ${esc(b.reason)}`),
+               p.edited ? "✏️ итог поправлен ген. директором, по дням — как было в табеле" : ""].filter(Boolean).join("<br>") : ""
     ].filter(Boolean).join("<br>");
   return `<div class="stats" style="grid-template-columns:${money ? "1fr 1fr 1fr" : "1fr 1fr"}">
       ${money ? `<div class="stat"><b style="font-size:17px;white-space:nowrap;line-height:32px">${rub(total)}</b><small>к выплате</small></div>` : ""}
       <div class="stat"><b>${hh(s.total)}</b><small>часов${s.beds ? ` · ${s.beds} кров.` : " всего"}</small></div>
       <div class="stat"><b>${s.people.length}</b><small>человек</small></div></div>
-    ${money ? `<p class="muted" style="margin:2px 4px 8px">Ставка ${rub(s.rate)} за час${beds ? `, ${rub(s.bed_rate)} за кровать` : ""}${s.bonus ? ` · премии ${rub(s.bonus)}` : ""}${s.rate_now ? " (ставка текущая — отчёт отправлен до её появления)" : ""}</p>` : ""}
+    ${money ? `<p class="muted" style="margin:2px 4px 8px">${s.people.some(p => p.rate != null && p.rate !== s.rate || p.beds && p.bed_rate != null && p.bed_rate !== s.bed_rate)
+      ? "Ставки у сотрудников свои — нажмите на человека" : `Ставка ${rub(s.rate)} за час${beds ? `, ${rub(s.bed_rate)} за кровать` : ""}`}${s.bonus ? ` · премии ${rub(s.bonus)}` : ""}${s.rate_now ? " (ставка текущая — отчёт отправлен до её появления)" : ""}</p>` : ""}
     <div class="card" style="padding:6px 10px"><table>
       <tr><th>Сотрудник</th><th class="n">Дней</th><th class="n">Часов</th>${beds ? `<th class="n">Кров.</th>` : ""}${money ? `<th class="n">Сумма</th>` : ""}</tr>
       ${s.people.map((p, i) => `<tr class="tap" onclick="document.getElementById('bd${i}').hidden ^= 1"><td><b>${esc(p.name)}</b>${p.area ? `<div class="ch">${esc(p.area)}</div>` : ""}${p.bonus ? `<div class="ch">🎁 +${rub(p.bonus)}</div>` : ""}</td>
@@ -1291,7 +1322,7 @@ function drawReports(d){
     <h2>Табель цеха от тех. директора</h2>` + (d.reports.length ? d.reports.map((r, i) => `
     <div class="card tap" onclick="reportPage(${i})"><div class="top">
       <div class="title">${esc(fmtPeriod(r.from, r.to))}</div><span class="badge">${rub(r.total_pay ?? r.pay)}</span></div>
-      <div class="sub">${hh(r.total)} ч${r.beds ? ` · ${r.beds} кров.` : ""}${r.bonus ? ` · премии ${rub(r.bonus)}` : ""} · ${r.people.length} чел. · отправил ${esc(r.who || "—")}, ${esc(r.sent)}</div></div>`).join("")
+      <div class="sub">${hh(r.total)} ч${r.beds ? ` · ${r.beds} кров.` : ""}${r.bonus ? ` · премии ${rub(r.bonus)}` : ""} · ${r.people.length} чел. · отправил ${esc(r.who || "—")}, ${esc(r.sent)}${r.edited ? " · ✏️ изменён" : ""}</div></div>`).join("")
     : `<div class="empty">Пока ничего не присылали.<br>Отчёт появится здесь, когда тех. директор нажмёт «Отправить директору».</div>`)
     + ((d.decided || []).length ? `<h2>Решённые премии</h2><div class="card" style="padding:6px 10px"><table>${d.decided.map(b =>
       `<tr><td><b>${esc(b.name)}</b><div class="ch">${esc(b.reason)}</div><div class="ch">${esc(b.decided)}${b.comment ? " · " + esc(b.comment) : ""}</div></td>
@@ -1299,7 +1330,7 @@ function drawReports(d){
 }
 function rateForm(){
   const d = window._rateInfo;
-  sheet(`<h3>Ставки</h3><div class="muted">Для новых отчётов. Уже присланные отчёты не пересчитаются.</div>
+  sheet(`<h3>Общие ставки</h3><div class="muted">Для тех, кому тех. директор не поставил личную ставку. Действуют для новых отчётов, присланные не пересчитаются.</div>
     <label class="l">За час, ₽</label>
     <input id="rate-in" type="text" inputmode="decimal" value="${String(d.rate).replace(".", ",")}" style="font-size:22px;text-align:center;font-weight:700">
     <label class="l">Маляру за покрашенную кровать, ₽</label>
@@ -1359,7 +1390,84 @@ async function bonusSend(btn){
 }
 function reportPage(i){
   const r = window._reports[i];
-  page(esc(fmtPeriod(r.from, r.to)), `<p class="muted">Отправил ${esc(r.who || "—")}, ${esc(r.sent)}</p>` + summaryTable(r));
+  const can = (window._rateInfo || {}).can_rate;
+  page(esc(fmtPeriod(r.from, r.to)), `<p class="muted">Отправил ${esc(r.who || "—")}, ${esc(r.sent)}${r.edited ? `<br>✏️ Изменён: ${esc(r.edited.by)}, ${esc(r.edited.at)}` : ""}</p>`
+    + summaryTable(r)
+    + (can ? `<div class="toolbar" style="margin-top:12px"><button class="btn main" onclick="reportEdit(${i})">✏️ Изменить</button>
+        <button class="btn" style="color:var(--warn)" onclick="reportDelete(${i})">🗑 Удалить отчёт</button></div>` : ""),
+    null, "load(true)");
+}
+/* Правка отчёта ген. директором: итоги по людям. Деньги считает сервер, здесь — только предварительный итог */
+function reportEdit(i){
+  const r = window._reports[i];
+  window._redit = {i, people: r.people.filter(p => (p.hours || p.beds || p.adj || p.pay)).map(p => ({id: p.id || "", name: p.name, area: p.area || "",
+    hours: p.hours || 0, days: p.days || 0, beds: p.beds || 0, rate: p.rate ?? r.rate, bed_rate: p.bed_rate ?? r.bed_rate,
+    adj: p.adj || 0, adj_note: p.adj_note || "", painter: !!(p.beds || /покрас|маляр|окрас|краск/i.test(p.area || ""))}))};
+  page("Правка отчёта", `
+    <div class="toolbar"><div><label class="l">С</label><input type="date" id="re-from" value="${esc(r.from)}"></div>
+      <div><label class="l">По</label><input type="date" id="re-to" value="${esc(r.to)}"></div></div>
+    <div id="re-list"></div>
+    <button class="btn" style="width:100%;margin-top:4px" onclick="reAdd()">➕ Добавить сотрудника</button>
+    <div class="card" style="margin-top:12px"><div class="row"><div class="grow"><div class="muted" style="margin:0">Итого к выплате</div>
+      <div class="title" id="re-total"></div><div class="muted" style="margin:0">без премий — они добавятся сами</div></div></div></div>
+    <button class="btn main big" style="width:100%" id="re-save" onclick="reSave(this)">💾 Сохранить отчёт</button>`, null, `reportPage(${i})`);
+  reDraw();
+}
+const reNum = x => parseFloat(String(x ?? "").replace(/\s/g, "").replace(",", ".")) || 0;
+function reSum(p){ return Math.round(reNum(p.hours) * reNum(p.rate)) + Math.round(reNum(p.beds) * reNum(p.bed_rate)) + Math.round(reNum(p.adj)); }
+function reDraw(){
+  const e = window._redit, v = x => String(x ?? "").replace(".", ",");
+  const f = (k, j, label, val, mode, wide) => `<div ${wide ? 'style="grid-column:1/-1"' : ""}><label class="l">${label}</label>
+    <input data-k="${k}" data-j="${j}" type="text" inputmode="${mode}" value="${esc(v(val))}" oninput="reIn(this)"></div>`;
+  $("#re-list").innerHTML = e.people.map((p, j) => `<div class="card open-form" style="padding:12px 14px">
+      <div class="row"><input data-k="name" data-j="${j}" value="${esc(p.name)}" oninput="reIn(this)" style="font-weight:700;margin:0" placeholder="Имя">
+        <button class="btn" style="padding:10px 12px;flex:none" onclick="reDel(${j})" aria-label="Убрать">✕</button></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:0 8px;margin-top:6px">
+        ${f("hours", j, "Часов", p.hours, "decimal")}${f("days", j, "Дней", p.days, "numeric")}${f("rate", j, "₽ за час", p.rate, "decimal")}
+        ${p.painter ? f("beds", j, "Кроватей", p.beds, "numeric") + f("bed_rate", j, "₽ за кров.", p.bed_rate, "decimal") + "<div></div>" : ""}
+        ${f("adj", j, "± ₽", p.adj, "text")}<div style="grid-column:2/-1"><label class="l">Доплата (+) или вычет (−): за что</label>
+          <input data-k="adj_note" data-j="${j}" value="${esc(p.adj_note)}" oninput="reIn(this)" placeholder="необязательно"></div>
+      </div>
+      <div class="row" style="margin-top:2px"><span class="grow muted" style="margin:0">${p.painter ? "" : `<a href="#" onclick="window._redit.people[${j}].painter=true;reDraw();return false">+ кровати</a>`}</span>
+        <b id="re-s${j}">${rub(reSum(p))}</b></div></div>`).join("") || `<div class="empty">Никого нет — добавьте сотрудника</div>`;
+  reTotal();
+}
+function reIn(inp){
+  const p = window._redit.people[+inp.dataset.j]; p[inp.dataset.k] = inp.value;
+  const out = $("#re-s" + inp.dataset.j); if (out) out.textContent = rub(reSum(p));
+  reTotal();
+}
+function reTotal(){ $("#re-total").textContent = rub(window._redit.people.reduce((a, p) => a + reSum(p), 0)); }
+function reDel(j){
+  const p = window._redit.people[j];
+  if (!confirm(`Убрать ${p.name || "сотрудника"} из отчёта?`)) return;
+  window._redit.people.splice(j, 1); reDraw();
+}
+function reAdd(){
+  const r = window._reports[window._redit.i];
+  window._redit.people.push({id: "", name: "", area: "", hours: "", days: "", beds: "", rate: r.rate, bed_rate: r.bed_rate, adj: "", adj_note: "", painter: false});
+  reDraw();
+  const all = document.querySelectorAll('#re-list input[data-k="name"]'); all[all.length - 1].focus();
+}
+async function reSave(btn){
+  const e = window._redit, r = window._reports[e.i];
+  if (e.people.some(p => !String(p.name).trim())) return toast("Впишите имя у каждого сотрудника");
+  if (!confirm("Сохранить изменения в отчёте?")) return;
+  btn.disabled = true;
+  try {
+    await call("/api/reports/edit", {id: r.id, sent: r.row_sent, from: $("#re-from").value, to: $("#re-to").value,
+      people: e.people.map(({painter, ...p}) => p)});
+    toast("✅ Отчёт сохранён");
+    const d = await call("/api/reports"); window._reports = d.reports; window._rateInfo = d;
+    const k = d.reports.findIndex(x => x.id === r.id);
+    k >= 0 ? reportPage(k) : load(true);
+  } catch(err) { toast(err.message); btn.disabled = false; }
+}
+async function reportDelete(i){
+  const r = window._reports[i];
+  if (!confirm(`Удалить отчёт за ${fmtPeriod(r.from, r.to)}? Это нельзя отменить в приложении.`)) return;
+  try { await call("/api/reports/delete", {id: r.id, sent: r.row_sent}); toast("Отчёт удалён"); load(true); }
+  catch(e) { toast(e.message); }
 }
 
 /* ------------------------------ уведомления в APK
