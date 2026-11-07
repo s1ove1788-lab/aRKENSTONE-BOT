@@ -485,12 +485,13 @@ function deliveryView(di, ri){
       ${day.today ? `<button class="btn main wide" onclick="doneCur(this)">✅ Доставлен</button>
       <div class="wide" style="grid-column:1/-1"><label class="l">Перенести на дату</label>
         <input id="mv-date" type="date" min="${min}" value="${min}">
-        <button class="btn" style="width:100%" onclick="moveCur(this)">📅 Перенести</button></div>` : ""}
+        <button class="btn" style="width:100%" onclick="moveCur(this)">📅 Перенести</button></div>`
+      : r.kind === "city" ? `<button class="btn main wide" onclick="doneCur(this, true)">✅ Доставлен раньше срока</button>` : ""}
     </div>`);
 }
 
-async function doneCur(btn){
-  if (!confirm("Отметить как доставленный?")) return;
+async function doneCur(btn, early){
+  if (!confirm(early ? "Срок доставки ещё не наступил. Отметить как доставленный сегодня?" : "Отметить как доставленный?")) return;
   await act(btn, "/api/courier/done", {kind: window._cur.kind, key: window._cur.key});
 }
 
@@ -940,7 +941,22 @@ function orderView(i){
     ${r.delivery ? `<tr><td>Доставка</td><td>${esc(r.delivery)}</td></tr>` : ""}
     ${r.phone ? `<tr><td>Телефон</td><td>${esc(r.phone)}</td></tr>` : ""}</table>
     <div class="actions">${r.tel ? `<a class="btn" href="tel:${esc(r.tel)}">📞 Позвонить</a>` : ""}
-    ${r.city && r.address ? `<a class="btn" target="_blank" href="${esc(mapUrl(r.address))}">🗺 Карта</a>` : ""}</div>`);
+    ${r.city && r.address ? `<a class="btn" target="_blank" href="${esc(mapUrl(r.address))}">🗺 Карта</a>` : ""}
+    ${r.city && ["today", "ahead", "late"].includes(r.tab) && me && me.tabs.includes("courier")
+      ? `<button class="btn main wide" onclick="obDone(this, ${i})">✅ Доставлен${r.tab === "ahead" ? " раньше срока" : ""}</button>` : ""}</div>`);
+}
+/* «Доставлен» прямо из экрана «Заказы». Только город: заказы по России отмечаются день в день во вкладке «Курьер» */
+async function obDone(btn, i){
+  const r = window._orders.rows[i];
+  if (!confirm(r.tab === "ahead" ? `Срок доставки ещё не наступил. Отметить № ${r.order_no} доставленным сегодня?`
+                                 : `Отметить № ${r.order_no} доставленным?`)) return;
+  btn.disabled = true;
+  try {
+    const res = await call("/api/courier/done", {kind: "city", key: r.order_no});
+    closeSheet(); toast(res.message.split("\n")[0]);
+    window._obScroll = window.scrollY;
+    ordersPage(true);
+  } catch(e) { toast(e.message); btn.disabled = false; }
 }
 
 async function stockPage(){

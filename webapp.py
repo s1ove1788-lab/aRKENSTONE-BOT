@@ -405,12 +405,18 @@ def courier_pay(today: date) -> dict:
     return {"text": costs.summary(today), "url": costs.sheet_url()}
 
 
-def _find(today: date, kind: str, key: str) -> list:
-    items = logic.courier_items(sheets.read_orders(force=True), today)
+def _find(today: date, kind: str, key: str, early: bool = False) -> list:
+    """Заказы для «Доставлен» / «Перенести». По России — только отгрузки на сегодня (день в день).
+    Город при early=True — любой недоставленный городской заказ: его можно отметить раньше срока доставки."""
+    orders = sheets.read_orders(force=True)
+    items = logic.courier_items(orders, today)
     if kind == "ru":
         g = next((g for g in logic.russia_groups(items) if g["key"] == key), None)
         return g["orders"] if g else []
-    return [o for o, _ in items if o["order_no"] == key and logic.is_city(o)][:1]
+    found = [o for o, _ in items if o["order_no"] == key and logic.is_city(o)][:1]
+    if not found and early and kind == "city":
+        found = [o for o in orders if not o["status"] and o["order_no"] == key and logic.is_city(o)][:1]
+    return found
 
 
 def _shipped_today(today: date) -> int:
@@ -1388,9 +1394,10 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
     if method == "POST" and path in ("/api/courier/done", "/api/courier/move") and "courier" in tabs:
         kind, key = body.get("kind"), str(body.get("key") or "")
         with _lock:
-            orders = _find(today, kind, key)
+            orders = _find(today, kind, key, early=path.endswith("done"))
             if not orders:
-                return 409, {"error": "Уже обработано"}
+                return 409, {"error": "Уже обработано" if kind == "city" or path.endswith("move")
+                             else "Заказы по России отмечаются только в день отгрузки"}
             if path.endswith("done"):
                 marked = _deps["deliver"](orders, f"{who} (приложение)", today)
                 return 200, {"ok": True, "message": f"✅ Доставлено: {sum(logic.qty(o) for o in marked)} шт." if marked else "Уже отмечено"}
