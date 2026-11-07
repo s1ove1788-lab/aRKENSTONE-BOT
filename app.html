@@ -177,6 +177,16 @@ nav.lots button span{font-size:20px}
 .hrs .grow b{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .hrs input{width:78px;margin:0;text-align:center;font-size:20px;font-weight:700;padding:9px 4px}
 .hrs input.has{border-color:var(--accent);background:var(--ok-bg)}
+.hrs .fld{display:flex;flex-direction:column;align-items:center;gap:2px}
+.hrs .fld small{font-size:11px;color:var(--muted)}
+.hrs input.beds{width:64px}
+.bonus{border-left:4px solid var(--warn)}
+.bonus.ok{border-left-color:var(--accent)}
+.bonus.no{border-left-color:var(--line);opacity:.75}
+.bonus .amt{font-size:20px;font-weight:700;white-space:nowrap}
+.pill{display:inline-block;border-radius:999px;padding:2px 10px;font-size:12px;font-weight:600;background:var(--chip)}
+.pill.wait{background:var(--warn-bg);color:var(--warn)}
+.pill.ok{background:var(--ok-bg);color:var(--accent)}
 .daybar{display:grid;grid-template-columns:52px 1fr 52px;gap:8px;align-items:center;margin-bottom:10px}
 .daybar .btn{padding:12px 0;font-size:20px}
 .daybar .d{text-align:center;font-weight:700;font-size:17px}
@@ -852,21 +862,25 @@ function drawTech(d){
       <div class="quick"><button onclick="techFill(8)">Всем 8 ч</button><button onclick="techFill(10)">Всем 10 ч</button>
         <button onclick="techFill(12)">Всем 12 ч</button><button onclick="techFill('')">Очистить</button></div>
       ${d.workers.map(w => `<div class="hrs"><div class="grow"><b>${esc(w.name)}</b>${w.area ? `<div class="muted">${esc(w.area)}</div>` : ""}</div>
-        <input type="text" inputmode="decimal" placeholder="—" data-id="${esc(w.id)}" value="${w.hours ? hh(w.hours) : ""}"
-          class="${w.hours ? "has" : ""}" oninput="this.classList.toggle('has', !!this.value.trim())"></div>`).join("")}
-      <p class="muted" style="margin:8px 2px">Пусто — не работал. Можно дробно: 7,5</p>
+        ${w.painter ? `<div class="fld"><input type="text" inputmode="numeric" placeholder="—" data-beds="${esc(w.id)}" value="${w.beds || ""}"
+          class="beds ${w.beds ? "has" : ""}" oninput="this.classList.toggle('has', !!this.value.trim())"><small>кроватей</small></div>` : ""}
+        <div class="fld"><input type="text" inputmode="decimal" placeholder="—" data-id="${esc(w.id)}" value="${w.hours ? hh(w.hours) : ""}"
+          class="${w.hours ? "has" : ""}" oninput="this.classList.toggle('has', !!this.value.trim())"><small>часов</small></div></div>`).join("")}
+      <p class="muted" style="margin:8px 2px">Пусто — не работал. Можно дробно: 7,5${d.workers.some(w => w.painter) ? ". У маляров — сколько кроватей покрасил за день" : ""}</p>
       <button class="btn main" style="width:100%" onclick="techSave(this)">💾 Сохранить день</button>`
       : `<div class="empty">Сначала добавьте сотрудников цеха кнопкой выше</div>`}
     </div>
     <div class="toolbar" style="margin-top:12px"><button class="btn" onclick="techMonthPage('${iso(new Date(m.getFullYear(), m.getMonth(), 1))}')">📅 Итоги месяца</button>
       <button class="btn" onclick="techSendPage()">📤 Отправить директору</button></div>
-    <p class="muted" style="text-align:center">За ${MONTHS1[m.getMonth()].toLowerCase()}: ${hh(d.month_hours)} ч</p>`;
+    <button class="btn" style="width:100%;margin-top:8px" onclick="bonusPage()">🎁 Премия на согласование</button>
+    <p class="muted" style="text-align:center">За ${MONTHS1[m.getMonth()].toLowerCase()}: ${hh(d.month_hours)} ч${d.month_beds ? ` · ${d.month_beds} кроватей` : ""}</p>`;
 }
 function techDirty(){
   const d = window._tech; if (!d) return false;
   return [...document.querySelectorAll(".hrs input")].some(i => {
-    const w = d.workers.find(x => x.id === i.dataset.id);
-    return (i.value.trim().replace(",", ".") || "") !== (w && w.hours ? String(w.hours) : "");
+    const w = d.workers.find(x => x.id === (i.dataset.id || i.dataset.beds)); if (!w) return false;
+    const was = i.dataset.beds ? w.beds : w.hours;
+    return (i.value.trim().replace(",", ".") || "") !== (was ? String(was) : "");
   });
 }
 function techGo(step){
@@ -875,16 +889,21 @@ function techGo(step){
   if (iso(d) > iso(new Date())) return;
   techDay(iso(d)); load();
 }
-function techFill(v){ document.querySelectorAll(".hrs input").forEach(i => { i.value = v; i.oninput(); }); }
+function techFill(v){ document.querySelectorAll(".hrs input[data-id]").forEach(i => { i.value = v; i.oninput(); }); }
 async function techSave(btn){
-  const hours = {};
-  for (const i of document.querySelectorAll(".hrs input")) {
+  const hours = {}, beds = {};
+  for (const i of document.querySelectorAll(".hrs input[data-id]")) {
     const v = i.value.trim().replace(",", ".");
     if (v && !(+v >= 0 && +v <= 24)) { i.focus(); return toast("Часы — число от 0 до 24"); }
     hours[i.dataset.id] = v;
   }
+  for (const i of document.querySelectorAll(".hrs input[data-beds]")) {
+    const v = i.value.trim();
+    if (v && !/^\d{1,3}$/.test(v)) { i.focus(); return toast("Кровати — целое число"); }
+    beds[i.dataset.beds] = v;
+  }
   btn.disabled = true;
-  try { await call("/api/tech/day", {day: techDay(), hours}); toast("✅ Сохранено"); load(); }
+  try { await call("/api/tech/day", {day: techDay(), hours, beds}); toast("✅ Сохранено"); load(); }
   catch(e) { toast(e.message); btn.disabled = false; }
 }
 async function techStaffPage(){
@@ -921,20 +940,26 @@ async function techFire(id, name){
 const rub = n => Math.round(+n || 0).toLocaleString("ru-RU") + " ₽";
 function summaryTable(s, open){
   if (!s.people.length) return `<div class="empty">За этот период часов нет</div>`;
-  const money = s.rate !== undefined, cols = money ? 4 : 3;  // деньги есть только в отчётах ген. директору
+  const money = s.rate !== undefined, beds = s.people.some(p => p.beds);  // деньги есть только в отчётах ген. директору
+  const cols = 3 + (beds ? 1 : 0) + (money ? 1 : 0), total = money ? (s.total_pay ?? s.pay) : 0;
+  const detail = p => [
+      Object.entries(p.by_day || {}).map(([d, h]) => `${d}: ${hh(h)} ч` + ((p.beds_by_day || {})[d] ? `, ${p.beds_by_day[d]} кр.` : "")).join(" · "),
+      Object.entries(p.beds_by_day || {}).filter(([d]) => !(p.by_day || {})[d]).map(([d, b]) => `${d}: ${b} кр.`).join(" · "),
+      money ? [p.hours ? `часы ${rub(p.pay_hours)}` : "", p.beds ? `кровати ${p.beds} × ${rub(s.bed_rate)} = ${rub(p.pay_beds)}` : "",
+               ...(p.bonus_list || []).map(b => `🎁 премия ${rub(b.amount)} — ${esc(b.reason)}`)].filter(Boolean).join("<br>") : ""
+    ].filter(Boolean).join("<br>");
   return `<div class="stats" style="grid-template-columns:${money ? "1fr 1fr 1fr" : "1fr 1fr"}">
-      ${money ? `<div class="stat"><b style="font-size:20px">${rub(s.pay)}</b><small>к выплате</small></div>` : ""}
-      <div class="stat"><b>${hh(s.total)}</b><small>часов всего</small></div>
+      ${money ? `<div class="stat"><b style="font-size:17px;white-space:nowrap;line-height:32px">${rub(total)}</b><small>к выплате</small></div>` : ""}
+      <div class="stat"><b>${hh(s.total)}</b><small>часов${s.beds ? ` · ${s.beds} кров.` : " всего"}</small></div>
       <div class="stat"><b>${s.people.length}</b><small>человек</small></div></div>
-    ${money ? `<p class="muted" style="margin:2px 4px 8px">Ставка ${rub(s.rate)} за час${s.rate_now ? " (текущая — отчёт отправлен до появления ставки)" : ""}</p>` : ""}
+    ${money ? `<p class="muted" style="margin:2px 4px 8px">Ставка ${rub(s.rate)} за час${beds ? `, ${rub(s.bed_rate)} за кровать` : ""}${s.bonus ? ` · премии ${rub(s.bonus)}` : ""}${s.rate_now ? " (ставка текущая — отчёт отправлен до её появления)" : ""}</p>` : ""}
     <div class="card" style="padding:6px 10px"><table>
-      <tr><th>Сотрудник</th><th class="n">Дней</th><th class="n">Часов</th>${money ? `<th class="n">Сумма</th>` : ""}</tr>
-      ${s.people.map((p, i) => `<tr class="tap" onclick="document.getElementById('bd${i}').hidden ^= 1"><td><b>${esc(p.name)}</b>${p.area ? `<div class="ch">${esc(p.area)}</div>` : ""}</td>
-        <td class="n">${p.days}</td><td class="n">${money ? hh(p.hours) : `<b>${hh(p.hours)}</b>`}</td>${money ? `<td class="n" style="white-space:nowrap"><b>${rub(p.pay)}</b></td>` : ""}</tr>
-        <tr id="bd${i}" ${open ? "" : "hidden"}><td colspan="${cols}" class="muted" style="border-top:0;padding-top:0">
-          ${Object.entries(p.by_day).map(([d, h]) => `${d}: ${hh(h)} ч`).join(" · ")}</td></tr>`).join("")}
-      ${money ? `<tr><td><b>Итого</b></td><td></td><td class="n"><b>${hh(s.total)}</b></td><td class="n" style="white-space:nowrap"><b>${rub(s.pay)}</b></td></tr>` : ""}
-    </table></div><p class="muted">Нажмите на сотрудника, чтобы увидеть часы по дням.</p>`;
+      <tr><th>Сотрудник</th><th class="n">Дней</th><th class="n">Часов</th>${beds ? `<th class="n">Кров.</th>` : ""}${money ? `<th class="n">Сумма</th>` : ""}</tr>
+      ${s.people.map((p, i) => `<tr class="tap" onclick="document.getElementById('bd${i}').hidden ^= 1"><td><b>${esc(p.name)}</b>${p.area ? `<div class="ch">${esc(p.area)}</div>` : ""}${p.bonus ? `<div class="ch">🎁 +${rub(p.bonus)}</div>` : ""}</td>
+        <td class="n">${p.days}</td><td class="n">${money ? hh(p.hours) : `<b>${hh(p.hours)}</b>`}</td>${beds ? `<td class="n">${p.beds || ""}</td>` : ""}${money ? `<td class="n" style="white-space:nowrap"><b>${rub(p.total_pay ?? p.pay)}</b></td>` : ""}</tr>
+        <tr id="bd${i}" ${open ? "" : "hidden"}><td colspan="${cols}" class="muted" style="border-top:0;padding-top:0">${detail(p)}</td></tr>`).join("")}
+      ${money ? `<tr><td><b>Итого</b></td><td></td><td class="n"><b>${hh(s.total)}</b></td>${beds ? `<td class="n"><b>${s.beds}</b></td>` : ""}<td class="n" style="white-space:nowrap"><b>${rub(total)}</b></td></tr>` : ""}
+    </table></div><p class="muted">Нажмите на сотрудника, чтобы увидеть ${money ? "из чего сложилась сумма" : "часы по дням"}.</p>`;
 }
 async function techMonthPage(first){
   const d = fromIso(first), a = iso(new Date(d.getFullYear(), d.getMonth(), 1)), b = iso(new Date(d.getFullYear(), d.getMonth() + 1, 0));
@@ -996,26 +1021,85 @@ async function techSend(btn){
 
 /* ------------------------------ отчёты табеля (ген. директор) */
 function drawReports(d){
-  window._reports = d.reports; window._rateInfo = d;
-  $("#main").innerHTML = `<div class="card row">
+  window._reports = d.reports; window._rateInfo = d; window._pending = d.pending || [];
+  $("#main").innerHTML = (window._pending.length ? `<h2>🎁 Премии на согласовании · ${window._pending.length}</h2>` + window._pending.map((b, i) => `
+    <div class="card bonus"><div class="row"><div class="grow"><div class="title">${esc(b.name)}</div>
+        <div class="sub">${esc(b.reason)}</div><div class="muted" style="margin:4px 0 0">Предложил(а) ${esc(b.by)}, ${esc(b.created)}</div></div>
+      <div class="amt">${rub(b.amount)}</div></div>
+      <div class="actions"><button class="btn" onclick="bonusDecide(this, ${i}, false)">❌ Отклонить</button>
+        <button class="btn main" onclick="bonusDecide(this, ${i}, true)">✅ Согласовать</button></div></div>`).join("") : "") + `
+    <div class="card"><div class="row">
       <div class="grow"><div class="muted" style="margin:0">Ставка за час</div><div class="title">${rub(d.rate)}</div></div>
-      ${d.can_rate ? `<button class="btn" onclick="rateForm()">Изменить</button>` : ""}</div>
+      <div class="grow"><div class="muted" style="margin:0">Маляру за кровать</div><div class="title">${rub(d.bed_rate)}</div></div>
+      ${d.can_rate ? `<button class="btn" onclick="rateForm()">Изменить</button>` : ""}</div></div>
     <h2>Табель цеха от тех. директора</h2>` + (d.reports.length ? d.reports.map((r, i) => `
     <div class="card tap" onclick="reportPage(${i})"><div class="top">
-      <div class="title">${esc(fmtPeriod(r.from, r.to))}</div><span class="badge">${rub(r.pay)}</span></div>
-      <div class="sub">${hh(r.total)} ч · ${r.people.length} чел. · отправил ${esc(r.who || "—")}, ${esc(r.sent)}</div></div>`).join("")
-    : `<div class="empty">Пока ничего не присылали.<br>Отчёт появится здесь, когда тех. директор нажмёт «Отправить директору».</div>`);
+      <div class="title">${esc(fmtPeriod(r.from, r.to))}</div><span class="badge">${rub(r.total_pay ?? r.pay)}</span></div>
+      <div class="sub">${hh(r.total)} ч${r.beds ? ` · ${r.beds} кров.` : ""}${r.bonus ? ` · премии ${rub(r.bonus)}` : ""} · ${r.people.length} чел. · отправил ${esc(r.who || "—")}, ${esc(r.sent)}</div></div>`).join("")
+    : `<div class="empty">Пока ничего не присылали.<br>Отчёт появится здесь, когда тех. директор нажмёт «Отправить директору».</div>`)
+    + ((d.decided || []).length ? `<h2>Решённые премии</h2><div class="card" style="padding:6px 10px"><table>${d.decided.map(b =>
+      `<tr><td><b>${esc(b.name)}</b><div class="ch">${esc(b.reason)}</div><div class="ch">${esc(b.decided)}${b.comment ? " · " + esc(b.comment) : ""}</div></td>
+       <td class="n" style="white-space:nowrap">${rub(b.amount)}<div><span class="pill ${b.status === "Согласовано" ? "ok" : ""}">${esc(b.status)}</span></div></td></tr>`).join("")}</table></div>` : "");
 }
 function rateForm(){
   const d = window._rateInfo;
-  sheet(`<h3>Ставка за час</h3><div class="muted">Для новых отчётов. Уже присланные отчёты не пересчитаются.</div>
-    <input id="rate-in" type="text" inputmode="decimal" value="${String(d.rate).replace(".", ",")}" style="font-size:24px;text-align:center;font-weight:700">
+  sheet(`<h3>Ставки</h3><div class="muted">Для новых отчётов. Уже присланные отчёты не пересчитаются.</div>
+    <label class="l">За час, ₽</label>
+    <input id="rate-in" type="text" inputmode="decimal" value="${String(d.rate).replace(".", ",")}" style="font-size:22px;text-align:center;font-weight:700">
+    <label class="l">Маляру за покрашенную кровать, ₽</label>
+    <input id="bed-in" type="text" inputmode="decimal" value="${String(d.bed_rate).replace(".", ",")}" style="font-size:22px;text-align:center;font-weight:700">
     <div class="actions"><button class="btn" onclick="closeSheet()">Отмена</button><button class="btn main" id="rate-go">Сохранить</button></div>`);
   $("#rate-go").onclick = async () => {
     const btn = $("#rate-go"); btn.disabled = true;
-    try { const r = await call("/api/reports/rate", {rate: $("#rate-in").value}); closeSheet(); toast(`Ставка: ${rub(r.rate)} за час`); load(); }
-    catch(e) { toast(e.message); btn.disabled = false; }
+    try {
+      const a = $("#rate-in").value, b = $("#bed-in").value;
+      if (a !== String(d.rate).replace(".", ",")) await call("/api/reports/rate", {rate: a});
+      if (b !== String(d.bed_rate).replace(".", ",")) await call("/api/reports/rate", {rate: b, kind: "bed"});
+      closeSheet(); toast("Ставки сохранены"); load();
+    } catch(e) { toast(e.message); btn.disabled = false; }
   };
+}
+async function bonusDecide(btn, i, ok){
+  const b = window._pending[i]; if (!b) return;
+  let comment = "";
+  if (!ok) { comment = prompt(`Отклонить премию ${rub(b.amount)} для ${b.name}? Можно написать причину:`, ""); if (comment === null) return; }
+  else if (!confirm(`Согласовать премию ${rub(b.amount)} для ${b.name}?`)) return;
+  btn.disabled = true;
+  try { await call("/api/reports/bonus", {row: b.row, ok, comment}); toast(ok ? "✅ Премия согласована" : "Премия отклонена"); load(); }
+  catch(e) { toast(e.message); btn.disabled = false; }
+}
+
+/* ------------------------------ премия (тех. директор предлагает) */
+async function bonusPage(){
+  if (techDirty() && !confirm("Часы за день не сохранены. Уйти без сохранения?")) return;
+  const ws = (window._tech || {}).workers || [];
+  page("Премия на согласование", `
+    <div class="card open-form">
+      ${ws.length ? `<label class="l">Сотрудник</label>
+      <select id="b-who"><option value="">— выберите —</option>${ws.map(w => `<option value="${esc(w.id)}">${esc(w.name)}${w.area ? " · " + esc(w.area) : ""}</option>`).join("")}</select>
+      <label class="l">Сумма, ₽</label><input id="b-sum" type="text" inputmode="numeric" placeholder="Например, 3000" style="font-size:20px;font-weight:700">
+      <label class="l">За что</label><input id="b-why" maxlength="300" placeholder="Например: срочный заказ в выходной">
+      <button class="btn main" style="width:100%" onclick="bonusSend(this)">📤 Отправить ген. директору</button>
+      <p class="muted" style="margin:8px 2px 0">После согласования премия добавится к выплате в отчёте за этот период.</p>`
+      : `<div class="empty">Сначала добавьте сотрудников цеха</div>`}
+    </div>
+    <h2>Мои предложения</h2><div id="b-list" class="muted">…</div>`, bonusPage);
+  try {
+    const r = await call("/api/tech/bonuses");
+    $("#b-list").innerHTML = r.bonuses.length ? r.bonuses.map(b => `<div class="card bonus ${b.status === "Согласовано" ? "ok" : b.status === "Отклонено" ? "no" : ""}">
+      <div class="row"><div class="grow"><b>${esc(b.name)}</b><div class="sub">${esc(b.reason)}</div><div class="muted" style="margin:2px 0 0">${esc(b.created)}${b.comment ? " · " + esc(b.comment) : ""}</div></div>
+      <div style="text-align:right"><div class="amt">${rub(b.amount)}</div><span class="pill ${b.status === "Согласовано" ? "ok" : b.status === "Отклонено" ? "" : "wait"}">${esc(b.status)}</span></div></div></div>`).join("")
+      : "Пока не было";
+  } catch(e) { $("#b-list").textContent = ""; }
+}
+async function bonusSend(btn){
+  const worker = $("#b-who").value, amount = $("#b-sum").value.replace(/\s/g, ""), reason = $("#b-why").value.trim();
+  if (!worker) return toast("Выберите сотрудника");
+  if (!(+amount.replace(",", ".") > 0)) return toast("Впишите сумму");
+  if (!reason) return toast("Напишите, за что премия");
+  btn.disabled = true;
+  try { await call("/api/tech/bonus", {worker, amount, reason}); toast("📤 Отправлено на согласование"); bonusPage(); }
+  catch(e) { toast(e.message); btn.disabled = false; }
 }
 function reportPage(i){
   const r = window._reports[i];
