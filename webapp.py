@@ -592,7 +592,195 @@ def chat_delete(msg_id: int, code: str, is_admin: bool, who: str) -> dict:
 PHOTO_KINDS = {b"\xff\xd8\xff": ".jpg", b"\x89PNG": ".png", b"RIFF": ".webp"}
 
 
-def chat_photo(token: str, data: bytes, caption: str, reply: int) -> tuple:
+# ------------------------------------------------------------ личные сообщения (на сервере бота, не в Google)
+# Хранятся в базе SQLite на сервере. /app/shared — постоянное хранилище Bothost: переживает обновления бота.
+# Без него база лежит в папке бота и пропадает при каждом «Обновить из Git».
+# Переписку видят только двое в диалоге — ни администратор, ни кто-то ещё в приложении её не откроет.
+import sqlite3
+
+_dm_lock = threading.Lock()
+_dm = {"db": None, "epoch": ""}
+
+
+def data_dir() -> Path:
+    import os
+    d = os.getenv("DATA_DIR") or ("/app/shared/arkenstone" if Path("/app/shared").is_dir() else str(HERE / "data"))
+    p = Path(d)
+    p.mkdir(parents=True, exist_ok=True)
+    return p
+
+
+def dm_persistent() -> bool:
+    return str(data_dir()).startswith("/app/shared")
+
+
+def _dm_db():
+    if _dm["db"] is None:
+        db = sqlite3.connect(str(data_dir() / "messages.sqlite3"), check_same_thread=False)
+        db.row_factory = sqlite3.Row
+        db.executescript("""
+            PRAGMA journal_mode=WAL;
+            CREATE TABLE IF NOT EXISTS dm(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, a TEXT, b TEXT, text TEXT,
+                photo TEXT DEFAULT '', reply INTEGER DEFAULT 0, edited TEXT DEFAULT '', deleted INTEGER DEFAULT 0,
+                rev INTEGER DEFAULT 0);
+            CREATE INDEX IF NOT EXISTS dm_ab ON dm(a, b);
+            CREATE INDEX IF NOT EXISTS dm_rev ON dm(rev);
+            CREATE TABLE IF NOT EXISTS dm_read(code TEXT, peer TEXT, last INTEGER, PRIMARY KEY(code, peer));
+            CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+        """)
+        row = db.execute("SELECT v FROM meta WHERE k='epoch'").fetchone()
+        if not row:
+            db.execute("INSERT INTO meta VALUES('epoch', ?)", (secrets.token_hex(4),))
+            db.commit()
+            row = db.execute("SELECT v FROM meta WHERE k='epoch'").fetchone()
+        _dm.update(db=db, epoch=row[0])
+        if not dm_persistent():
+            log.warning("Личные сообщения: %s — постоянное хранилище Bothost не подключено, переписка пропадёт при обновлении",
+                        data_dir())
+    return _dm["db"]
+
+
+def _dm_next_rev(db) -> int:
+    return (db.execute("SELECT COALESCE(MAX(rev), 0) FROM dm").fetchone()[0] or 0) + 1
+
+
+def _peer(code: str, peer: str) -> dict:
+    peer = norm_code(peer)
+    d = devices().get(peer)
+    if not peer or not d:
+        raise ValueError("Сотрудник не найден")
+    if peer == code:
+        raise ValueError("Нельзя написать самому себе")
+    return d
+
+
+def _dm_public(r, code: str, names: dict, quotes: dict) -> dict:
+    if r["deleted"]:
+        return {"id": r["id"], "deleted": True}
+    who = names.get(r["a"]) or {}
+    q = None
+    if r["reply"]:
+        x = quotes.get(r["reply"])
+        q = ({"id": r["reply"], "name": "", "text": "Сообщение удалено", "photo": False} if not x or x["deleted"] else
+             {"id": x["id"], "name": (names.get(x["a"]) or {}).get("name") or "сотрудник", "text": (x["text"] or "")[:140],
+              "photo": bool(x["photo"])})
+    role = role_of(r["a"], who) if who else ""
+    return {"id": r["id"], "t": r["t"], "name": who.get("name") or "сотрудник", "role": role,
+            "label": ROLE_LABELS.get(role, ""), "text": r["text"] or "", "edited": bool(r["edited"]),
+            "mine": r["a"] == code, "reply": q, "photo": r["photo"] or ""}
+
+
+def dm_thread(code: str, peer: str, since: int) -> dict:
+    """Переписка двоих. since — номер последнего изменения у телефона: отдаём новые, исправленные и удалённые."""
+    _peer(code, peer)
+    peer = norm_code(peer)
+    with _dm_lock:
+        db = _dm_db()
+        where = "((a=? AND b=?) OR (a=? AND b=?))"
+        args = (code, peer, peer, code)
+        if since > 0:
+            rows = db.execute(f"SELECT * FROM dm WHERE {where} AND rev>? ORDER BY id", args + (since,)).fetchall()
+        else:
+            rows = db.execute(f"SELECT * FROM (SELECT * FROM dm WHERE {where} AND deleted=0 ORDER BY id DESC LIMIT 500) "
+                              "ORDER BY id", args).fetchall()
+        ids = {r["reply"] for r in rows if r["reply"]}
+        quotes = {x["id"]: x for x in db.execute(
+            f"SELECT * FROM dm WHERE {where} AND id IN ({','.join('?' * len(ids)) or '0'})", args + tuple(ids)).fetchall()}
+        rev = db.execute(f"SELECT COALESCE(MAX(rev), 0) FROM dm WHERE {where}", args).fetchone()[0]
+        last = db.execute(f"SELECT COALESCE(MAX(id), 0) FROM dm WHERE a=? AND b=?", (peer, code)).fetchone()[0]
+        if last:  # открыл переписку — всё от собеседника прочитано
+            db.execute("INSERT INTO dm_read VALUES(?,?,?) ON CONFLICT(code, peer) DO UPDATE SET last=MAX(last, excluded.last)",
+                       (code, peer, last))
+            db.commit()
+    names = devices()
+    return {"epoch": _dm["epoch"] + peer, "rev": rev, "msgs": [_dm_public(r, code, names, quotes) for r in rows]}
+
+
+def dm_unread(code: str) -> int:
+    with _dm_lock:
+        db = _dm_db()
+        return db.execute("SELECT COUNT(*) FROM dm m LEFT JOIN dm_read r ON r.code=m.b AND r.peer=m.a "
+                          "WHERE m.b=? AND m.deleted=0 AND m.id>COALESCE(r.last, 0)", (code,)).fetchone()[0]
+
+
+def dm_dialogs(code: str) -> dict:
+    """Список людей: с кем уже переписывались — сверху (по последнему сообщению), остальные — по имени."""
+    with _dm_lock:
+        db = _dm_db()
+        last = {}
+        for r in db.execute("SELECT * FROM dm WHERE (a=? OR b=?) AND deleted=0 ORDER BY id", (code, code)).fetchall():
+            last[r["b"] if r["a"] == code else r["a"]] = r
+        unread = {r[0]: r[1] for r in db.execute(
+            "SELECT m.a, COUNT(*) FROM dm m LEFT JOIN dm_read r ON r.code=m.b AND r.peer=m.a "
+            "WHERE m.b=? AND m.deleted=0 AND m.id>COALESCE(r.last, 0) GROUP BY m.a", (code,)).fetchall()}
+    people = []
+    for c, d in devices().items():
+        if c == code:
+            continue
+        m = last.get(c)
+        role = role_of(c, d)
+        people.append({"code": c, "name": d["name"] or "без имени", "label": ROLE_LABELS.get(role, ""),
+                       "last": ({"t": m["t"], "id": m["id"], "mine": m["a"] == code,
+                                 "text": ("📷 " if m["photo"] else "") + ((m["text"] or "") if m["text"] else ("Фото" if m["photo"] else ""))[:80]}
+                                if m else None),
+                       "unread": unread.get(c, 0)})
+    people.sort(key=lambda p: (p["last"] is None, -(p["last"]["id"] if p["last"] else 0), p["name"].lower()))
+    return {"people": people, "persistent": dm_persistent()}
+
+
+def dm_send(code: str, me: dict, peer: str, text: str, reply: int = 0, photo: str = "") -> dict:
+    _peer(code, peer)
+    peer = norm_code(peer)
+    text = _clean(text, empty_ok=bool(photo))
+    with _dm_lock:
+        db = _dm_db()
+        if reply and not db.execute("SELECT 1 FROM dm WHERE id=? AND ((a=? AND b=?) OR (a=? AND b=?))",
+                                    (reply, code, peer, peer, code)).fetchone():
+            reply = 0
+        cur = db.execute("INSERT INTO dm(t, a, b, text, photo, reply, rev) VALUES(?,?,?,?,?,?,?)",
+                         (_stamp(), code, peer, text, photo, reply or 0, _dm_next_rev(db)))
+        db.commit()
+        new_id = cur.lastrowid
+    body = (("📷 " if photo else "") + (text or ("Фото" if photo else ""))).strip()
+    push_safe("dm", f"✉️ {me['name'] or 'Сотрудник'}", body, {peer}, "chat")  # личное приходит всегда, даже если общий чат выключен
+    return {"ok": True, "id": new_id}
+
+
+def dm_edit(code: str, msg_id: int, text: str) -> dict:
+    with _dm_lock:
+        db = _dm_db()
+        r = db.execute("SELECT * FROM dm WHERE id=? AND deleted=0", (msg_id,)).fetchone()
+        if not r:
+            raise ValueError("Сообщение удалено")
+        if r["a"] != code:
+            raise ValueError("Можно менять только свои сообщения")
+        text = _clean(text, empty_ok=bool(r["photo"]))
+        db.execute("UPDATE dm SET text=?, edited=?, rev=? WHERE id=?", (text, _stamp(), _dm_next_rev(db), msg_id))
+        db.commit()
+    return {"ok": True}
+
+
+def dm_delete(code: str, msg_id: int) -> dict:
+    """Удалить своё сообщение у обоих. Чужое удалить нельзя никому, даже администратору."""
+    with _dm_lock:
+        db = _dm_db()
+        r = db.execute("SELECT * FROM dm WHERE id=? AND deleted=0", (msg_id,)).fetchone()
+        if not r:
+            raise ValueError("Сообщение уже удалено")
+        if r["a"] != code:
+            raise ValueError("Удалять можно только свои сообщения")
+        db.execute("UPDATE dm SET text='', photo='', deleted=1, rev=? WHERE id=?", (_dm_next_rev(db), msg_id))
+        db.commit()
+        photo = r["photo"]
+    if photo and re.fullmatch(r"[A-Za-z0-9_-]{20,40}\.(jpg|png|webp)", photo):
+        try:
+            (photo_dir() / photo).unlink()
+        except OSError:
+            pass
+    return {"ok": True}
+
+
+def chat_photo(token: str, data: bytes, caption: str, reply: int, peer: str = "") -> tuple:
     if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token or ""):
         return 400, {"error": "Нет ключа телефона"}
     code = code_for(token)
@@ -603,8 +791,15 @@ def chat_photo(token: str, data: bytes, caption: str, reply: int) -> tuple:
     if not ext or (ext == ".webp" and data[8:12] != b"WEBP"):
         return 400, {"error": "Это не фото (нужен JPG, PNG или WEBP)"}
     name = secrets.token_urlsafe(18) + ext  # длинное случайное имя: по ссылке фото не подобрать
+    if peer:
+        try:
+            _peer(code, peer)
+        except ValueError as e:
+            return 400, {"error": str(e)}
     (photo_dir() / name).write_bytes(data)
     try:
+        if peer:
+            return 200, dm_send(code, me, peer, caption, reply, name)
         return 200, chat_send(caption, {**me, "role": role_of(code, me)}, code, reply, name)
     except ValueError as e:
         return 400, {"error": str(e)}
@@ -1592,8 +1787,27 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
                                   chat=body["chat"] if isinstance(body.get("chat"), bool) else None)
     if path == "/api/push/settings":
         return 200, push_register(code)
+    if path.startswith("/api/dm"):
+        try:
+            if path == "/api/dm/list":
+                return 200, dm_dialogs(code)
+            if path == "/api/dm":
+                return 200, dm_thread(code, str(body.get("peer") or ""), _int(body.get("since"), 0))
+            if method == "POST" and path == "/api/dm/send":
+                return 200, dm_send(code, me, str(body.get("peer") or ""), str(body.get("text") or ""), _int(body.get("reply"), 0))
+            if method == "POST" and path == "/api/dm/edit":
+                return 200, dm_edit(code, _int(body.get("id"), 0), str(body.get("text") or ""))
+            if method == "POST" and path == "/api/dm/delete":
+                return 200, dm_delete(code, _int(body.get("id"), 0))
+        except ValueError as e:
+            return 400, {"error": str(e)}
     if path == "/api/chat":
-        return 200, chat_list(_int(body.get("since"), 0), code)
+        res = chat_list(_int(body.get("since"), 0), code)
+        try:
+            res["dm_unread"] = dm_unread(code)  # непрочитанные личные — для значка на вкладке «Чат»
+        except Exception:
+            log.exception("Личные сообщения: счётчик непрочитанных")
+        return 200, res
     if method == "POST" and path == "/api/chat/edit":
         try:
             return 200, chat_edit(_int(body.get("id"), 0), str(body.get("text") or ""), code)
@@ -1940,7 +2154,8 @@ class Handler(BaseHTTPRequestHandler):
             from urllib.parse import unquote
             try:
                 code, res = chat_photo(self.headers.get("X-Token") or "", data,
-                                       unquote(self.headers.get("X-Caption") or ""), _int(self.headers.get("X-Reply"), 0))
+                                       unquote(self.headers.get("X-Caption") or ""), _int(self.headers.get("X-Reply"), 0),
+                                       self.headers.get("X-Peer") or "")
             except Exception:
                 log.exception("Приложение: фото в чат")
                 code, res = 500, {"error": "Не получилось сохранить фото"}

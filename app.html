@@ -176,6 +176,22 @@ tr.short .ch{color:inherit}
 .sh .hd{font-weight:700;font-size:17px}
 .sh .ft{display:flex;align-items:center;font-weight:600}
 .sh .ft span{flex:1}
+/* ---------- личные сообщения */
+.chat-sw{margin-bottom:10px}
+.chat-sw button{font-size:15px}
+.dm-badge{display:inline-block;background:var(--warn);color:#fff;font-size:12px;font-weight:700;min-width:20px;height:20px;line-height:20px;
+  border-radius:10px;padding:0 6px;text-align:center;margin-left:4px;vertical-align:1px}
+.dm-badge:empty{display:none}
+.dm-row{display:flex;align-items:center;gap:12px;padding:12px 14px;margin-bottom:8px}
+.dm-ava{width:44px;height:44px;border-radius:50%;background:var(--accent);color:var(--accent-ink);display:flex;align-items:center;
+  justify-content:center;font-weight:700;font-size:19px;flex:none}
+.dm-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dm-last{color:var(--muted);font-size:14px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:block}
+.dm-last.new{color:var(--ink);font-weight:600}
+.dm-head{display:flex;align-items:center;gap:10px;margin-bottom:10px}
+.dm-head .btn{padding:10px 14px;flex:none}
+.dm-head b{display:block;font-size:17px}
+.dm-head small{color:var(--muted);font-size:13px}
 /* ---------- чат */
 nav button{position:relative}
 nav .dot{position:absolute;top:2px;left:calc(50% + 8px);background:var(--warn);color:#fff;font-size:11px;font-weight:700;
@@ -392,6 +408,8 @@ function open(k){
   document.body.classList.remove("emoji");
   document.querySelectorAll(".composer").forEach(e => e.remove());
   $("#main").style.paddingBottom = "";
+  if (k !== "chat" && chat !== CHAT_ALL) { clearTimeout(chat.timer); chat = CHAT_ALL; }
+  chatView = "feed"; clearTimeout(window._dmListT);
   if (k === "chat") return chatOpen();
   load(true);
 }
@@ -1588,7 +1606,13 @@ window.onUpdatePermission = () => { const n = $("#upd-note"); if (n) n.textConte
 /* ------------------------------ чат
    Все сообщения храним здесь (chat.msgs) и раз в несколько секунд спрашиваем у сервера только новые.
    Открыт чат — проверяем каждые 3 сек, иначе раз в 20 сек, чтобы показать число непрочитанных на вкладке. */
-const chat = {msgs: [], rev: 0, last: 0, epoch: "", busy: false, timer: null, sending: false, reply: 0, photo: null};
+let chat = {msgs: [], rev: 0, last: 0, epoch: "", busy: false, timer: null, sending: false, reply: 0, photo: null};
+/* Личные сообщения: у каждого диалога своё такое же состояние, chat указывает на открытый (общий — CHAT_ALL).
+   chatView: "feed" — лента (общая или личная), "list" — список людей для личной переписки */
+const CHAT_ALL = chat, dmRooms = {};
+let chatView = "feed";
+const chatUrl = sub => (chat.peer ? "/api/dm" : "/api/chat") + sub;
+const draftKey = () => "ark_chat_draft" + (chat.peer ? "_" + chat.peer : "");
 function chatSeen(v){
   try { if (v !== undefined) localStorage.setItem("ark_chat_seen", String(v)); return +localStorage.getItem("ark_chat_seen") || 0; }
   catch(e) { return v || 0; }
@@ -1600,7 +1624,11 @@ async function chatPoll(){
     chat.busy = true;
     try {
       let since = chat.rev;
-      const d = await call("/api/chat?since=" + (chat.epoch ? since : 0));
+      const room = chat;
+      const d = await call(room.peer ? `/api/dm?peer=${encodeURIComponent(room.peer)}&since=${room.epoch ? since : 0}`
+                                     : "/api/chat?since=" + (chat.epoch ? since : 0));
+      if (room !== chat) return;  // пока ждали ответ, человек открыл другой диалог
+      if (!room.peer && "dm_unread" in d) window._dmUnread = d.dm_unread;
       if (d.epoch !== chat.epoch) { chat.msgs = []; chat.rev = 0; chat.epoch = d.epoch; }  // сервер перезапустился — берём всё заново
       // приходят и новые, и отредактированные сообщения: новые дописываем, изменённые заменяем
       const added = [], changed = [];
@@ -1613,24 +1641,35 @@ async function chatPoll(){
       if (added.length || changed.length) {
         chat.msgs = chat.msgs.concat(added).sort((a, b) => a.id - b.id).slice(-500);
         chat.last = chat.msgs.length ? chat.msgs[chat.msgs.length - 1].id : 0;
-        if (tab === "chat") chatDraw(changed.length ? null : added, !!changed.length);
-      } else if (tab === "chat" && !document.querySelector(".chat-list")) chatDraw();
+        if (tab === "chat" && chatView === "feed") chatDraw(changed.length ? null : added, !!changed.length);
+      } else if (tab === "chat" && chatView === "feed" && !document.querySelector(".chat-list")) chatDraw();
     } catch(e) {
-      if (tab === "chat" && !document.querySelector(".chat-list")) $("#main").innerHTML = `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="chatOpen()">Повторить</button></div>`;
+      if (tab === "chat" && chatView === "feed" && !document.querySelector(".chat-list")) $("#main").innerHTML = `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="chatOpen()">Повторить</button></div>`;
     } finally { chat.busy = false; }
   }
-  if (tab === "chat") chatSeen(chat.last);
+  if (tab === "chat" && !chat.peer && chatView === "feed") chatSeen(chat.last);
   chatBadge();
+  if (tab === "chat" && chatView === "list") return;  // в списке людей свой опрос — dmListPoll
   chat.timer = setTimeout(chatPoll, tab === "chat" ? 3000 : 20000);
 }
 function chatBadge(){
-  const dot = document.getElementById("chatdot"); if (!dot) return;
-  const seen = chatSeen(), n = tab === "chat" ? 0 : chat.msgs.filter(m => m.id > seen && !m.mine).length;
-  dot.textContent = n ? (n > 99 ? "99+" : n) : "";
+  const dot = document.getElementById("chatdot");
+  const seen = chatSeen(), all = tab === "chat" ? 0 : CHAT_ALL.msgs.filter(m => m.id > seen && !m.mine).length;
+  const dm = window._dmUnread || 0, n = all + (tab === "chat" ? 0 : dm);
+  if (dot) dot.textContent = n ? (n > 99 ? "99+" : n) : "";
+  const b = document.getElementById("dm-badge"); if (b) b.textContent = dm ? (dm > 99 ? "99+" : dm) : "";
+}
+function chatTop(){
+  if (chat.peer) return `<div class="dm-head"><button class="btn" onclick="dmListOpen()">←</button>
+    <div class="grow"><b>${esc(chat.name)}</b><small>${esc(chat.label || "")} · видите только вы двое</small></div></div>`;
+  return `<div class="ob-sw chat-sw"><button class="on">💬 Общий чат</button>
+    <button onclick="dmListOpen()">✉️ Личные <b class="dm-badge" id="dm-badge">${window._dmUnread || ""}</b></button></div>`;
 }
 function chatOpen(){
   clearInterval(timer); ++nav; onPage = false; window._pageAgain = null;
-  $("#main").innerHTML = chat.msgs.length ? "" : `<div class="empty">Загрузка…</div>`;
+  chatView = "feed"; clearTimeout(window._dmListT);
+  document.querySelectorAll(".composer").forEach(e => e.remove());
+  $("#main").innerHTML = chat.msgs.length ? "" : chatTop() + `<div class="empty">Загрузка…</div>`;
   if (chat.msgs.length) chatDraw();
   document.body.classList.remove("emoji");
   document.body.insertAdjacentHTML("beforeend", `<div class="composer">
@@ -1647,9 +1686,10 @@ function chatOpen(){
     <textarea id="chat-in" rows="1" maxlength="1000" placeholder="Сообщение для всех…" enterkeyhint="send"></textarea>
     <button id="chat-go" aria-label="Отправить">➤</button></div></div>`);
   const ta = $("#chat-in");
-  let draft = ""; try { draft = localStorage.getItem("ark_chat_draft") || ""; } catch(e) {}
+  let draft = ""; try { draft = localStorage.getItem(draftKey()) || ""; } catch(e) {}
   ta.value = draft; grow(ta);
-  ta.oninput = () => { grow(ta); try { localStorage.setItem("ark_chat_draft", ta.value); } catch(e) {} };
+  if (chat.peer) ta.placeholder = "Личное сообщение…";
+  ta.oninput = () => { grow(ta); try { localStorage.setItem(draftKey(), ta.value); } catch(e) {} };
   ta.onkeydown = e => {  // на компьютере Enter отправляет, Shift+Enter — новая строка; на телефоне Enter — новая строка
     if (e.key === "Enter" && !e.shiftKey && !("ontouchstart" in window)) { e.preventDefault(); chatSend(); }
   };
@@ -1679,7 +1719,7 @@ function msgHtml(m, prev){
   const big = onlyEmoji(m.text);
   return (day !== pday ? `<div class="chat-day">${esc(day)}</div>` : "") +
     `<div class="msg${m.mine ? " mine" : ""}${cont && !m.reply ? " cont" : ""}${big && !m.photo && !m.reply ? " big" : ""}" data-id="${m.id}" onclick="msgMenu(event, ${m.id})">
-      ${m.mine ? "" : `<div class="who">${esc(m.name)} <small>· ${esc(m.label)}</small></div>`}
+      ${m.mine || chat.peer ? "" : `<div class="who">${esc(m.name)} <small>· ${esc(m.label)}</small></div>`}
       ${m.reply ? `<div class="q" onclick="event.stopPropagation();jumpTo(${m.reply.id})"><b>${esc(m.reply.name || "Ответ")}</b><span>${m.reply.photo ? "📷 " : ""}${esc(m.reply.text || (m.reply.photo ? "Фото" : ""))}</span></div>` : ""}
       ${m.photo ? `<img class="ph" loading="lazy" src="/chat-photo/${esc(m.photo)}" alt="Фото" onclick="event.stopPropagation();viewPhoto(this.src)"
         onerror="this.classList.add('bad');this.alt='Фото недоступно';this.onclick=null">` : ""}
@@ -1694,8 +1734,10 @@ function chatDraw(fresh, keepScroll){
     return window.scrollTo(0, atBottom ? document.body.scrollHeight : y);
   }
   if (!list || !fresh) {
-    $("#main").innerHTML = `<div class="chat-note" id="chat-note"></div>` + (chat.msgs.length ? `<div class="chat-list"></div>`
-      : `<div class="chat-list"></div><div class="empty" id="chat-empty">Здесь пока тихо.<br>Напишите первое сообщение — его увидят все сотрудники.</div>`);
+    $("#main").innerHTML = chatTop() + `<div class="chat-note" id="chat-note"></div>` + (chat.msgs.length ? `<div class="chat-list"></div>`
+      : `<div class="chat-list"></div><div class="empty" id="chat-empty">${chat.peer
+          ? `Здесь пока пусто.<br>Напишите первое сообщение — его увидит только ${esc(chat.name)}.`
+          : "Здесь пока тихо.<br>Напишите первое сообщение — его увидят все сотрудники."}</div>`);
     chatNote();
     list = document.querySelector(".chat-list");
     list.innerHTML = chat.msgs.map((m, i) => msgHtml(m, chat.msgs[i - 1])).join("");
@@ -1729,7 +1771,7 @@ function editMsg(id){
     if (!text && !m.photo) return toast("Сообщение не может быть пустым");
     if (text === m.text) return closeSheet();
     btn.disabled = true;
-    try { await call("/api/chat/edit", {id, text}); closeSheet(); toast("Сохранено"); chat.busy ? setTimeout(chatPoll, 400) : chatPoll(); }
+    try { await call(chatUrl("/edit"), {id, text}); closeSheet(); toast("Сохранено"); chat.busy ? setTimeout(chatPoll, 400) : chatPoll(); }
     catch(e) { toast(e.message); btn.disabled = false; }
   };
 }
@@ -1776,15 +1818,15 @@ function msgMenu(ev, id){
     <button class="btn" onclick="closeSheet();chatReply(${id})">↩️ Ответить</button>
     ${m.mine ? `<button class="btn" onclick="closeSheet();editMsg(${id})">✏️ Изменить</button>` : ""}
     ${m.text ? `<button class="btn" onclick="copyMsg(${id})">📋 Скопировать</button>` : ""}
-    ${m.mine || me.admin ? `<button class="btn" style="color:var(--warn)" onclick="deleteMsg(${id})">🗑 Удалить${m.mine ? "" : " (админ)"}</button>` : ""}
+    ${m.mine || (me.admin && !chat.peer) ? `<button class="btn" style="color:var(--warn)" onclick="deleteMsg(${id})">🗑 Удалить${m.mine ? "" : " (админ)"}</button>` : ""}
     ${m.photo ? `<button class="btn" onclick="closeSheet();viewPhoto('/chat-photo/${esc(m.photo)}')">🔍 Открыть фото</button>` : ""}
     <button class="btn" onclick="closeSheet()">Отмена</button></div>`);
 }
 async function deleteMsg(id){
   const m = chat.msgs.find(x => x.id === id); closeSheet(); if (!m) return;
   const who = m.mine ? "своё сообщение" : `сообщение от ${m.name}`;
-  if (!confirm(`Удалить ${who} у всех? Вернуть его будет нельзя.`)) return;
-  try { await call("/api/chat/delete", {id}); toast("🗑 Удалено"); chat.busy ? setTimeout(chatPoll, 400) : chatPoll(); }
+  if (!confirm(`Удалить ${who} ${chat.peer ? "у вас обоих" : "у всех"}? Вернуть его будет нельзя.`)) return;
+  try { await call(chatUrl("/delete"), {id}); toast("🗑 Удалено"); chat.busy ? setTimeout(chatPoll, 400) : chatPoll(); }
   catch(e) { toast(e.message); }
 }
 async function copyMsg(id){
@@ -1833,6 +1875,58 @@ async function photoPick(input){
 }
 function photoClear(){ chat.photo = null; const b = $("#photo-bar"); if (b) b.hidden = true; }
 
+/* ------------------------------ личные сообщения: список людей */
+async function dmListOpen(){
+  clearTimeout(chat.timer); clearInterval(timer); ++nav; onPage = false;
+  chat = CHAT_ALL; chatView = "list";
+  document.querySelectorAll(".composer").forEach(e => e.remove());
+  document.body.classList.remove("emoji"); $("#main").style.paddingBottom = "";
+  const top = `<div class="ob-sw chat-sw"><button onclick="dmBack()">💬 Общий чат</button><button class="on">✉️ Личные</button></div>`;
+  if (!window._dmList) $("#main").innerHTML = top + `<div class="empty">Загрузка…</div>`;
+  else dmListDraw(top);
+  await dmListPoll(top);
+}
+function dmBack(){ chat = CHAT_ALL; chatView = "feed"; clearTimeout(window._dmListT); chatOpen(); }
+async function dmListPoll(top){
+  clearTimeout(window._dmListT);
+  if (tab !== "chat" || chatView !== "list") return;
+  try { window._dmList = await call("/api/dm/list"); } catch(e) { if (!window._dmList) { $("#main").innerHTML = top + `<div class="empty">${esc(e.message)}</div>`; } }
+  if (tab !== "chat" || chatView !== "list") return;
+  if (window._dmList) {
+    window._dmUnread = window._dmList.people.reduce((a, p) => a + p.unread, 0);
+    dmListDraw(top); chatBadge();
+  }
+  window._dmListT = setTimeout(() => dmListPoll(top), 5000);
+}
+function dmListDraw(top){
+  const d = window._dmList, y = window.scrollY;
+  const time = t => { const day = chatDay(t); return day === "Сегодня" ? (t || "").slice(11, 16) : day; };
+  const row = p => `<div class="card tap dm-row" onclick="dmOpen('${esc(p.code)}')">
+      <div class="dm-ava">${esc((p.name || "?").trim().charAt(0).toUpperCase())}</div>
+      <div class="grow" style="min-width:0"><div class="row"><b class="grow dm-name">${esc(p.name)}</b>
+        ${p.last ? `<small class="muted" style="margin:0">${esc(time(p.last.t))}</small>` : ""}</div>
+        <div class="row"><span class="grow dm-last ${p.unread ? "new" : ""}">${p.last ? (p.last.mine ? "Вы: " : "") + esc(p.last.text) : `<span class="muted">${esc(p.label)}</span>`}</span>
+        ${p.unread ? `<b class="dm-badge">${p.unread}</b>` : ""}</div></div></div>`;
+  const talk = d.people.filter(p => p.last), rest = d.people.filter(p => !p.last);
+  $("#main").innerHTML = top +
+    (me.admin && !d.persistent ? `<div class="card late" style="font-size:14px">⚠️ На Bothost не подключено постоянное хранилище — личная переписка пропадёт при следующем обновлении бота. Включите его на карточке бота.</div>` : "") +
+    (talk.length ? talk.map(row).join("") : "") +
+    (rest.length ? `<h2>${talk.length ? "Написать" : "Кому написать"}</h2>` + rest.map(row).join("") : "") +
+    (d.people.length ? "" : `<div class="empty">В приложении пока нет других сотрудников</div>`) +
+    `<p class="muted" style="text-align:center;margin-top:14px">Личную переписку видите только вы и собеседник</p>`;
+  window.scrollTo(0, y);
+}
+function dmOpen(code){
+  const p = (window._dmList ? window._dmList.people : []).find(x => x.code === code); if (!p) return;
+  clearTimeout(window._dmListT);
+  const r = dmRooms[code] || (dmRooms[code] = {msgs: [], rev: 0, last: 0, epoch: "", busy: false, timer: null, sending: false,
+                                               reply: 0, photo: null, peer: code});
+  r.name = p.name; r.label = p.label;
+  chat = r; chatView = "feed";
+  if (p.unread) { window._dmUnread = Math.max(0, (window._dmUnread || 0) - p.unread); p.unread = 0; }
+  chatOpen();
+}
+
 async function chatSend(){
   const ta = $("#chat-in"), btn = $("#chat-go"), text = ta.value.trim();
   if ((!text && !chat.photo) || chat.sending) return;
@@ -1842,15 +1936,15 @@ async function chatSend(){
       toast("Отправляю фото…");
       const r = await fetch("/api/chat/photo", {method: "POST", body: chat.photo,
         headers: {"X-Token": TOKEN, "Content-Type": chat.photo.type || "image/jpeg",
-                  "X-Caption": encodeURIComponent(text), "X-Reply": String(chat.reply || 0)}});
+                  "X-Caption": encodeURIComponent(text), "X-Reply": String(chat.reply || 0), "X-Peer": chat.peer || ""}});
       let d = {}; try { d = await r.json(); } catch(e) {}
       if (!r.ok || d.error) throw new Error(d.error || "Не получилось отправить фото");
       photoClear();
     } else {
-      await call("/api/chat/send", {text, reply: chat.reply || 0});
+      await call(chatUrl("/send"), {text, reply: chat.reply || 0, peer: chat.peer || ""});
     }
     chatReply(0);
-    ta.value = ""; grow(ta); try { localStorage.removeItem("ark_chat_draft"); } catch(e) {}
+    ta.value = ""; grow(ta); try { localStorage.removeItem(draftKey()); } catch(e) {}
     if (chat.busy) setTimeout(chatPoll, 400); else await chatPoll();
   } catch(e) { toast(e.message); }
   finally { chat.sending = false; btn.disabled = false; if (!("ontouchstart" in window) || $("#emoji").hidden) ta.focus(); }
