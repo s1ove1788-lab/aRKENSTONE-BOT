@@ -1856,7 +1856,7 @@ def bonus_decide(row: int, ok: bool, comment: str, who: str) -> dict:
 # --------------------------------------------------------------- запросы
 ROLE_TABS = {"manager": ["courier", "prod", "keeper", "manager", "chat"], "courier": ["courier", "chat"],
              "prod": ["prod", "chat"], "keeper": ["keeper", "chat"],
-             "techdir": ["tech", "prod", "keeper", "chat"],
+             "techdir": ["tech", "prod", "keeper", "manager", "chat"],
              "gendir": ["courier", "prod", "keeper", "manager", "reports", "chat"],
              "admin": ["courier", "prod", "keeper", "manager", "tech", "reports", "chat"]}
 
@@ -1901,8 +1901,8 @@ def blanks_post(body: dict, who: str) -> tuple:
 
 def upload_pdf(token: str, filename: str, data: bytes) -> tuple:
     me = devices().get(code_for(token)) if re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token or "") else None
-    if not me or me["role"] != "manager":
-        return 403, {"error": "Загружать файлы может только менеджер"}
+    if not me or "manager" not in ROLE_TABS.get(role_of(code_for(token), me), []):
+        return 403, {"error": "Загружать файлы можно только со вкладки «Менеджер»"}
     if not data.startswith(b"%PDF"):
         return 400, {"error": "Нужен именно PDF-файл"}
     said = []
