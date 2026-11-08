@@ -412,7 +412,7 @@ function open(k){
   if (k !== "chat" && chat !== CHAT_ALL) { clearTimeout(chat.timer); chat = CHAT_ALL; }
   chatView = "feed"; clearTimeout(window._dmListT);
   if (k === "chat") return chatOpen();
-  setTimeout(() => chatPoll(CHAT_ALL), 300);  // вне чата — проверка раз в 20 сек ради значка
+  setTimeout(() => chatPoll(CHAT_ALL), 300);  // вне чата тоже ждём новое — ради значка на вкладке «Чат»
   load(true);
 }
 
@@ -460,7 +460,11 @@ function quietRefresh(){
   load();
 }
 $("#refresh").onclick = () => !(me && me.ok) ? boot() : tab === "chat" ? chatOpen() : (onPage && window._pageAgain ? window._pageAgain() : load());
-document.addEventListener("visibilitychange", () => { if (!document.hidden && me && me.ok) quietRefresh(); });
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden || !(me && me.ok)) return;
+  quietRefresh();
+  if (tab !== "chat") chatPoll();  // вернулись в приложение — сразу узнаём, что пришло, пока было свёрнуто
+});
 
 /* ------------------------------ тема: как в телефоне / светлая / тёмная (запоминается на этом телефоне) */
 function themeSet(t){
@@ -1619,8 +1623,9 @@ function chatSeen(v){
   try { if (v !== undefined) localStorage.setItem("ark_chat_seen", String(v)); return +localStorage.getItem("ark_chat_seen") || 0; }
   catch(e) { return v || 0; }
 }
-/* Новые сообщения. Пока чат открыт, сервер держит запрос до 25 сек и отвечает, как только что-то появилось
-   («долгий запрос») — сообщение приходит сразу. Вне чата — обычная проверка раз в 20 сек ради значка. */
+/* Новые сообщения. Пока приложение на экране, сервер держит запрос до 25 сек и отвечает, как только что-то
+   появилось («долгий запрос»): в чате сообщение приходит сразу, на других вкладках сразу обновляется значок.
+   Свёрнутое приложение запросов не держит — там работают пуш-уведомления. */
 async function chatPoll(room){
   room = room || chat;
   if (room !== chat) return;  // сработал таймер старого диалога
@@ -1628,11 +1633,10 @@ async function chatPoll(room){
   if (!(me && me.ok) || room.busy) return;  // запрос уже идёт — он сам запланирует следующий
   if (tab === "chat" && chatView === "list") return;  // в списке людей свой опрос — dmListPoll
   if (document.hidden) { room.timer = setTimeout(() => chatPoll(room), 5000); return; }
-  const live = tab === "chat" && chatView === "feed";
   let ok = false;
   room.busy = true;
   try {
-    const since = room.epoch ? room.rev : 0, w = live && since ? "&wait=1" : "";
+    const since = room.epoch ? room.rev : 0, w = since ? "&wait=1" : "";
     const d = await call(room.peer ? `/api/dm?peer=${encodeURIComponent(room.peer)}&since=${since}${w}`
                                    : `/api/chat?since=${since}${w}${w ? `&du=${window._dmUnread || 0}&ep=${encodeURIComponent(room.epoch)}` : ""}`);
     ok = true;
@@ -1660,8 +1664,7 @@ async function chatPoll(room){
   if (tab === "chat" && !room.peer && chatView === "feed") chatSeen(room.last);
   chatBadge();
   if (tab === "chat" && chatView === "list") return;
-  const liveNow = tab === "chat" && chatView === "feed";
-  room.timer = setTimeout(() => chatPoll(room), liveNow ? (ok ? 100 : 3000) : 20000);
+  room.timer = setTimeout(() => chatPoll(room), ok ? 100 : 3000);
 }
 /* Своё сообщение показываем сразу, с часиками, пока сервер не подтвердит; потом его заменяет настоящее */
 function pendingHtml(p){
