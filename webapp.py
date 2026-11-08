@@ -190,6 +190,64 @@ def _chat_ws():
 def _chat_bump(m: dict) -> None:
     _chat["rev"] += 1
     m["rev"] = _chat["rev"]
+    wake()
+
+
+# Телефон с открытым чатом спрашивает «что нового?» и сервер держит вопрос до 25 сек, пока что-нибудь не случится
+# (новое сообщение, правка, личное). Так сообщение приходит сразу, а не через 3 сек опроса.
+_wake = threading.Condition()
+_wake_n = [0]
+LONG_POLL_SEC = 25
+
+
+def wake() -> None:
+    with _wake:
+        _wake_n[0] += 1
+        _wake.notify_all()
+
+
+def wait_change(check, timeout: float = LONG_POLL_SEC):
+    """Ждёт, пока check() не вернёт правду, но не дольше timeout. Проверяет после каждого события."""
+    end = time.time() + timeout
+    while True:
+        with _wake:
+            seen = _wake_n[0]
+        if check():
+            return True
+        left = end - time.time()
+        if left <= 0:
+            return False
+        with _wake:
+            if _wake_n[0] == seen:
+                _wake.wait(min(left, 5))
+
+
+# Запись чата в Google Таблицу — в фоне, по очереди: телефону отвечаем сразу, не дожидаясь Google (1–3 сек).
+import queue
+
+_sheet_q: "queue.Queue" = queue.Queue()
+_sheet_worker_on = [False]
+
+
+def _sheet_later(job, what: str) -> None:
+    if not _sheet_worker_on[0]:
+        _sheet_worker_on[0] = True
+        threading.Thread(target=_sheet_worker, daemon=True).start()
+    _sheet_q.put((job, what))
+
+
+def _sheet_worker() -> None:
+    while True:
+        job, what = _sheet_q.get()
+        for attempt in range(6):
+            try:
+                job()
+                break
+            except Exception as e:
+                if attempt < 5:
+                    time.sleep(5 * (attempt + 1) if "429" in str(e) else 2)
+                    continue
+                log.exception("Чат: не смог записать в таблицу (%s)", what)
 
 
 def _chat_load() -> None:
@@ -197,23 +255,36 @@ def _chat_load() -> None:
         return
     labels = {v.lower(): k for k, v in ROLE_LABELS.items()}
     msgs = []
-    for i, v in enumerate(_chat_ws().get_all_values()[1:], start=2):
+    values = _chat_ws().get_all_values()
+    for i, v in enumerate(values[1:], start=2):
         v = list(v) + [""] * 9
         text, photo = v[4].strip(), v[7].strip()
         if (not text and not photo) or v[8].strip():  # пустое или удалённое
             continue
-        msgs.append({"id": i, "t": v[0].strip(), "code": norm_code(v[1]), "name": v[2].strip() or "сотрудник",
+        msgs.append({"id": i, "row": i, "t": v[0].strip(), "code": norm_code(v[1]), "name": v[2].strip() or "сотрудник",
                      "role": labels.get(v[3].strip().lower(), ""), "text": text, "edited": v[5].strip(),
                      "reply": _int(v[6], 0), "photo": photo})
     msgs = msgs[-CHAT_KEEP:]
     for m in msgs:
         _chat_bump(m)
-    _chat.update(loaded=True, msgs=msgs)
+    # номер нового сообщения — следующий за последней строкой листа; строку в таблице узнаём, когда запишем
+    _chat.update(loaded=True, msgs=msgs, next=max([m["id"] for m in msgs] + [len(values)]) + 1)
 
 
-def chat_list(since: int, code: str) -> dict:
+def chat_list(since: int, code: str, wait: bool = False, du: int = -1, ep: str = "") -> dict:
     with _chat_lock:
         _chat_load()
+    if wait and since > 0 and ep == _chat["epoch"]:  # ждём нового в общем чате или нового личного
+        # (после перезапуска сервера номера другие — тогда отвечаем сразу, телефон загрузит чат заново)
+        def changed():
+            if _chat["rev"] > since:
+                return True
+            try:
+                return du >= 0 and dm_unread(code) != du
+            except Exception:
+                return False
+        wait_change(changed)
+    with _chat_lock:
         msgs = [m for m in _chat["msgs"] if m["rev"] > since]
         if since <= 0:  # телефон загружает чат с нуля — удалённые ему не нужны
             msgs = [m for m in msgs if not m.get("deleted")]
@@ -254,20 +325,25 @@ def chat_send(text: str, me: dict, code: str, reply: int = 0, photo: str = "") -
     with _chat_lock:
         _chat_load()
         # RAW: таблица сохраняет текст как есть, «=2+2» или «+7…» не превратятся в формулу
-        if reply and not any(m["id"] == reply and not m.get("deleted") for m in _chat["msgs"]):
-            reply = 0
-        res = _chat_ws().append_row([now, code, name, ROLE_LABELS[me["role"]], text, "", reply or "", photo],
-                                    value_input_option="RAW")
-        # номер строки, куда легло сообщение, — по нему потом находим сообщение для правки
-        hit = re.search(r"!A(\d+)", str(((res or {}).get("updates") or {}).get("updatedRange") or ""))
-        new_id = int(hit.group(1)) if hit else ((_chat["msgs"][-1]["id"] + 1) if _chat["msgs"] else 2)
-        m = {"id": new_id, "t": now, "code": code, "name": name, "role": me["role"], "text": text, "edited": "",
-             "reply": reply, "photo": photo}
-        _chat_bump(m)
+        rm = next((m for m in _chat["msgs"] if reply and m["id"] == reply and not m.get("deleted")), None)
+        new_id = _chat["next"]
+        _chat["next"] += 1
+        m = {"id": new_id, "row": None, "t": now, "code": code, "name": name, "role": me["role"], "text": text,
+             "edited": "", "reply": reply if rm else 0, "photo": photo}
         _chat["msgs"].append(m)
         del _chat["msgs"][:-CHAT_KEEP]
-        replied = next((x["code"] for x in _chat["msgs"] if reply and x["id"] == reply), None)
-    _chat_push(name, text, photo, code, replied)
+        _chat_bump(m)  # с этого момента сообщение уже видят все — таблица запишется следом
+        replied = rm["code"] if rm else None
+        values = [now, code, name, ROLE_LABELS[me["role"]], text, "", (rm.get("row") or "") if rm else "", photo]
+
+    def write():
+        # RAW: таблица сохраняет текст как есть, «=2+2» или «+7…» не превратятся в формулу
+        res = _chat_ws().append_row(values, value_input_option="RAW")
+        hit = re.search(r"!A(\d+)", str(((res or {}).get("updates") or {}).get("updatedRange") or ""))
+        if hit:
+            m["row"] = int(hit.group(1))  # по строке потом правим и удаляем сообщение в таблице
+    _sheet_later(write, f"новое сообщение {name}")
+    threading.Thread(target=_chat_push, args=(name, text, photo, code, replied), daemon=True).start()
     return {"ok": True, "id": new_id}
 
 
@@ -298,14 +374,20 @@ def chat_edit(msg_id: int, text: str, code: str) -> dict:
             raise PermissionError("Можно менять только свои сообщения")
         if m["text"] == text:
             return {"ok": True}
-        ws = _chat_ws()
-        row = ws.row_values(msg_id) + [""] * 6
-        if norm_code(row[1]) != code or row[0].strip() != m["t"]:  # строки в таблице сдвинули вручную — не трогаем чужую
-            raise ValueError("В таблице чата поменялись строки, правка не сохранена")
         now = datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m.%Y %H:%M")
-        ws.update(values=[[text, now]], range_name=f"E{msg_id}:F{msg_id}", value_input_option="RAW")
         m.update(text=text, edited=now)
         _chat_bump(m)
+
+    def write():
+        r = m.get("row")
+        if not r:
+            return log.warning("Чат: правка не записана в таблицу — у сообщения нет строки")
+        ws = _chat_ws()
+        row = ws.row_values(r) + [""] * 6
+        if norm_code(row[1]) != m["code"] or row[0].strip() != m["t"]:  # строки в таблице сдвинули вручную
+            return log.warning("Чат: строки в таблице поменялись, правка сообщения %s записана только в приложении", r)
+        ws.update(values=[[text, now]], range_name=f"E{r}:F{r}", value_input_option="RAW")
+    _sheet_later(write, "правка сообщения")
     return {"ok": True}
 
 
@@ -569,16 +651,22 @@ def chat_delete(msg_id: int, code: str, is_admin: bool, who: str) -> dict:
             raise ValueError("Сообщение уже удалено или слишком старое")
         if m["code"] != code and not is_admin:
             raise PermissionError("Удалять чужие сообщения может только администратор")
-        ws = _chat_ws()
-        row = ws.row_values(msg_id) + [""] * 9
-        if norm_code(row[1]) != m["code"] or row[0].strip() != m["t"]:
-            raise ValueError("В таблице чата поменялись строки, сообщение не удалено")
         mark = f"{_stamp()} · {who}" + (" (админ)" if m["code"] != code else "")
-        ws.update(values=[[""]], range_name=f"E{msg_id}", value_input_option="RAW")
-        ws.update(values=[["", mark]], range_name=f"H{msg_id}:I{msg_id}", value_input_option="RAW")
         photo = m.get("photo")
         m.update(deleted=True, text="", photo="")
         _chat_bump(m)
+
+    def write():
+        r = m.get("row")
+        if not r:
+            return log.warning("Чат: удаление не записано в таблицу — у сообщения нет строки")
+        ws = _chat_ws()
+        row = ws.row_values(r) + [""] * 9
+        if norm_code(row[1]) != m["code"] or row[0].strip() != m["t"]:
+            return log.warning("Чат: строки в таблице поменялись, удаление сообщения %s — только в приложении", r)
+        ws.update(values=[[""]], range_name=f"E{r}", value_input_option="RAW")
+        ws.update(values=[["", mark]], range_name=f"H{r}:I{r}", value_input_option="RAW")
+    _sheet_later(write, "удаление сообщения")
     if photo and re.fullmatch(r"[A-Za-z0-9_-]{20,40}\.(jpg|png|webp)", photo):
         try:
             (photo_dir() / photo).unlink()
@@ -671,10 +759,17 @@ def _dm_public(r, code: str, names: dict, quotes: dict) -> dict:
             "mine": r["a"] == code, "reply": q, "photo": r["photo"] or ""}
 
 
-def dm_thread(code: str, peer: str, since: int) -> dict:
-    """Переписка двоих. since — номер последнего изменения у телефона: отдаём новые, исправленные и удалённые."""
+def dm_thread(code: str, peer: str, since: int, wait: bool = False) -> dict:
+    """Переписка двоих. since — номер последнего изменения у телефона: отдаём новые, исправленные и удалённые.
+    wait — подождать до 25 сек, пока в переписке что-то не появится (мгновенная доставка)."""
     _peer(code, peer)
     peer = norm_code(peer)
+    if wait and since > 0:
+        def changed():
+            with _dm_lock:
+                return (_dm_db().execute("SELECT COALESCE(MAX(rev), 0) FROM dm WHERE (a=? AND b=?) OR (a=? AND b=?)",
+                                         (code, peer, peer, code)).fetchone()[0] or 0) > since
+        wait_change(changed)
     with _dm_lock:
         db = _dm_db()
         where = "((a=? AND b=?) OR (a=? AND b=?))"
@@ -742,6 +837,7 @@ def dm_send(code: str, me: dict, peer: str, text: str, reply: int = 0, photo: st
                          (_stamp(), code, peer, text, photo, reply or 0, _dm_next_rev(db)))
         db.commit()
         new_id = cur.lastrowid
+    wake()
     body = (("📷 " if photo else "") + (text or ("Фото" if photo else ""))).strip()
     push_safe("dm", f"✉️ {me['name'] or 'Сотрудник'}", body, {peer}, "chat")  # личное приходит всегда, даже если общий чат выключен
     return {"ok": True, "id": new_id}
@@ -758,6 +854,7 @@ def dm_edit(code: str, msg_id: int, text: str) -> dict:
         text = _clean(text, empty_ok=bool(r["photo"]))
         db.execute("UPDATE dm SET text=?, edited=?, rev=? WHERE id=?", (text, _stamp(), _dm_next_rev(db), msg_id))
         db.commit()
+    wake()
     return {"ok": True}
 
 
@@ -773,6 +870,7 @@ def dm_delete(code: str, msg_id: int) -> dict:
         db.execute("UPDATE dm SET text='', photo='', deleted=1, rev=? WHERE id=?", (_dm_next_rev(db), msg_id))
         db.commit()
         photo = r["photo"]
+    wake()
     if photo and re.fullmatch(r"[A-Za-z0-9_-]{20,40}\.(jpg|png|webp)", photo):
         try:
             (photo_dir() / photo).unlink()
@@ -1793,7 +1891,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
             if path == "/api/dm/list":
                 return 200, dm_dialogs(code)
             if path == "/api/dm":
-                return 200, dm_thread(code, str(body.get("peer") or ""), _int(body.get("since"), 0))
+                return 200, dm_thread(code, str(body.get("peer") or ""), _int(body.get("since"), 0), body.get("wait") == "1")
             if method == "POST" and path == "/api/dm/send":
                 return 200, dm_send(code, me, str(body.get("peer") or ""), str(body.get("text") or ""), _int(body.get("reply"), 0))
             if method == "POST" and path == "/api/dm/edit":
@@ -1803,7 +1901,8 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         except ValueError as e:
             return 400, {"error": str(e)}
     if path == "/api/chat":
-        res = chat_list(_int(body.get("since"), 0), code)
+        res = chat_list(_int(body.get("since"), 0), code, body.get("wait") == "1", _int(body.get("du"), -1),
+                        str(body.get("ep") or ""))
         try:
             res["dm_unread"] = dm_unread(code)  # непрочитанные личные — для значка на вкладке «Чат»
         except Exception:

@@ -192,6 +192,7 @@ tr.short .ch{color:inherit}
 .dm-head .btn{padding:10px 14px;flex:none}
 .dm-head b{display:block;font-size:17px}
 .dm-head small{color:var(--muted);font-size:13px}
+.msg.pending{opacity:.65}
 /* ---------- чат */
 nav button{position:relative}
 nav .dot{position:absolute;top:2px;left:calc(50% + 8px);background:var(--warn);color:#fff;font-size:11px;font-weight:700;
@@ -411,6 +412,7 @@ function open(k){
   if (k !== "chat" && chat !== CHAT_ALL) { clearTimeout(chat.timer); chat = CHAT_ALL; }
   chatView = "feed"; clearTimeout(window._dmListT);
   if (k === "chat") return chatOpen();
+  setTimeout(() => chatPoll(CHAT_ALL), 300);  // вне чата — проверка раз в 20 сек ради значка
   load(true);
 }
 
@@ -1617,40 +1619,63 @@ function chatSeen(v){
   try { if (v !== undefined) localStorage.setItem("ark_chat_seen", String(v)); return +localStorage.getItem("ark_chat_seen") || 0; }
   catch(e) { return v || 0; }
 }
-async function chatPoll(){
-  clearTimeout(chat.timer);
-  if (!(me && me.ok)) return;
-  if (!chat.busy && !document.hidden) {
-    chat.busy = true;
-    try {
-      let since = chat.rev;
-      const room = chat;
-      const d = await call(room.peer ? `/api/dm?peer=${encodeURIComponent(room.peer)}&since=${room.epoch ? since : 0}`
-                                     : "/api/chat?since=" + (chat.epoch ? since : 0));
-      if (room !== chat) return;  // пока ждали ответ, человек открыл другой диалог
-      if (!room.peer && "dm_unread" in d) window._dmUnread = d.dm_unread;
-      if (d.epoch !== chat.epoch) { chat.msgs = []; chat.rev = 0; chat.epoch = d.epoch; }  // сервер перезапустился — берём всё заново
-      // приходят и новые, и отредактированные сообщения: новые дописываем, изменённые заменяем
-      const added = [], changed = [];
-      for (const m of d.msgs) {
-        const i = chat.msgs.findIndex(x => x.id === m.id);
-        if (m.deleted) { if (i >= 0) { chat.msgs.splice(i, 1); changed.push(m); if (chat.reply === m.id) chatReply(0); } continue; }
-        if (i >= 0) { chat.msgs[i] = m; changed.push(m); } else added.push(m);
-      }
-      chat.rev = Math.max(chat.rev, d.rev || 0);
-      if (added.length || changed.length) {
-        chat.msgs = chat.msgs.concat(added).sort((a, b) => a.id - b.id).slice(-500);
-        chat.last = chat.msgs.length ? chat.msgs[chat.msgs.length - 1].id : 0;
-        if (tab === "chat" && chatView === "feed") chatDraw(changed.length ? null : added, !!changed.length);
-      } else if (tab === "chat" && chatView === "feed" && !document.querySelector(".chat-list")) chatDraw();
-    } catch(e) {
-      if (tab === "chat" && chatView === "feed" && !document.querySelector(".chat-list")) $("#main").innerHTML = `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="chatOpen()">Повторить</button></div>`;
-    } finally { chat.busy = false; }
-  }
-  if (tab === "chat" && !chat.peer && chatView === "feed") chatSeen(chat.last);
-  chatBadge();
+/* Новые сообщения. Пока чат открыт, сервер держит запрос до 25 сек и отвечает, как только что-то появилось
+   («долгий запрос») — сообщение приходит сразу. Вне чата — обычная проверка раз в 20 сек ради значка. */
+async function chatPoll(room){
+  room = room || chat;
+  if (room !== chat) return;  // сработал таймер старого диалога
+  clearTimeout(room.timer);
+  if (!(me && me.ok) || room.busy) return;  // запрос уже идёт — он сам запланирует следующий
   if (tab === "chat" && chatView === "list") return;  // в списке людей свой опрос — dmListPoll
-  chat.timer = setTimeout(chatPoll, tab === "chat" ? 3000 : 20000);
+  if (document.hidden) { room.timer = setTimeout(() => chatPoll(room), 5000); return; }
+  const live = tab === "chat" && chatView === "feed";
+  let ok = false;
+  room.busy = true;
+  try {
+    const since = room.epoch ? room.rev : 0, w = live && since ? "&wait=1" : "";
+    const d = await call(room.peer ? `/api/dm?peer=${encodeURIComponent(room.peer)}&since=${since}${w}`
+                                   : `/api/chat?since=${since}${w}${w ? `&du=${window._dmUnread || 0}&ep=${encodeURIComponent(room.epoch)}` : ""}`);
+    ok = true;
+    if (room !== chat) return;  // пока ждали ответ, человек открыл другой диалог
+    if (!room.peer && "dm_unread" in d) window._dmUnread = d.dm_unread;
+    if (d.epoch !== room.epoch) { room.msgs = []; room.rev = 0; room.epoch = d.epoch; }  // сервер перезапустился — берём всё заново
+    // приходят и новые, и отредактированные сообщения: новые дописываем, изменённые заменяем
+    const added = [], changed = [];
+    for (const m of d.msgs) {
+      const i = room.msgs.findIndex(x => x.id === m.id);
+      if (m.deleted) { if (i >= 0) { room.msgs.splice(i, 1); changed.push(m); if (room.reply === m.id) chatReply(0); } continue; }
+      if (i >= 0) { room.msgs[i] = m; changed.push(m); } else added.push(m);
+    }
+    room.rev = Math.max(room.rev, d.rev || 0);
+    if (added.length || changed.length) {
+      room.msgs = room.msgs.concat(added).sort((a, b) => a.id - b.id).slice(-500);
+      room.last = room.msgs.length ? room.msgs[room.msgs.length - 1].id : 0;
+      if (tab === "chat" && chatView === "feed") chatDraw(changed.length ? null : added, !!changed.length);
+    } else if (tab === "chat" && chatView === "feed" && !document.querySelector(".chat-list")) chatDraw();
+  } catch(e) {
+    if (room === chat && tab === "chat" && chatView === "feed" && !document.querySelector(".chat-list"))
+      $("#main").innerHTML = chatTop() + `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="chatOpen()">Повторить</button></div>`;
+  } finally { room.busy = false; }
+  if (room !== chat) return;
+  if (tab === "chat" && !room.peer && chatView === "feed") chatSeen(room.last);
+  chatBadge();
+  if (tab === "chat" && chatView === "list") return;
+  const liveNow = tab === "chat" && chatView === "feed";
+  room.timer = setTimeout(() => chatPoll(room), liveNow ? (ok ? 100 : 3000) : 20000);
+}
+/* Своё сообщение показываем сразу, с часиками, пока сервер не подтвердит; потом его заменяет настоящее */
+function pendingHtml(p){
+  return `<div class="msg mine pending" data-tmp="${p.tmp}">${p.photo ? `<div class="txt">📷 Фото</div>` : ""}${p.text ? `<div class="txt">${esc(p.text)}</div>` : ""}
+    <div class="tm">${p.failed ? "⚠️ не отправлено" : "⏳"}</div></div>`;
+}
+function pendingSync(){
+  const list = document.querySelector(".chat-list"); if (!list) return;
+  chat.pending = (chat.pending || []).filter(p => !(p.real && chat.msgs.some(m => m.id === p.real)));
+  list.querySelectorAll(".msg.pending").forEach(e => e.remove());
+  if (chat.pending.length) {
+    list.insertAdjacentHTML("beforeend", chat.pending.map(pendingHtml).join(""));
+    const e = $("#chat-empty"); if (e) e.remove();
+  }
 }
 function chatBadge(){
   const dot = document.getElementById("chatdot");
@@ -1731,6 +1756,7 @@ function chatDraw(fresh, keepScroll){
   if (keepScroll && list) {  // кто-то отредактировал сообщение — перерисовываем, не прыгая по ленте
     const y = window.scrollY;
     list.innerHTML = chat.msgs.map((m, i) => msgHtml(m, chat.msgs[i - 1])).join("");
+    pendingSync();
     return window.scrollTo(0, atBottom ? document.body.scrollHeight : y);
   }
   if (!list || !fresh) {
@@ -1741,11 +1767,14 @@ function chatDraw(fresh, keepScroll){
     chatNote();
     list = document.querySelector(".chat-list");
     list.innerHTML = chat.msgs.map((m, i) => msgHtml(m, chat.msgs[i - 1])).join("");
+    pendingSync();
     return window.scrollTo(0, document.body.scrollHeight);
   }
   const e = $("#chat-empty"); if (e) e.remove();
   const start = chat.msgs.length - fresh.length;
+  list.querySelectorAll(".msg.pending").forEach(e => e.remove());  // настоящие встают перед «часиками»
   list.insertAdjacentHTML("beforeend", fresh.map((m, i) => msgHtml(m, chat.msgs[start + i - 1])).join(""));
+  pendingSync();
   if (atBottom || fresh.some(m => m.mine)) window.scrollTo(0, document.body.scrollHeight);
   else toast("Новое сообщение ↓");
 }
@@ -1771,7 +1800,7 @@ function editMsg(id){
     if (!text && !m.photo) return toast("Сообщение не может быть пустым");
     if (text === m.text) return closeSheet();
     btn.disabled = true;
-    try { await call(chatUrl("/edit"), {id, text}); closeSheet(); toast("Сохранено"); chat.busy ? setTimeout(chatPoll, 400) : chatPoll(); }
+    try { await call(chatUrl("/edit"), {id, text}); closeSheet(); toast("Сохранено"); chatPoll(); }
     catch(e) { toast(e.message); btn.disabled = false; }
   };
 }
@@ -1826,7 +1855,7 @@ async function deleteMsg(id){
   const m = chat.msgs.find(x => x.id === id); closeSheet(); if (!m) return;
   const who = m.mine ? "своё сообщение" : `сообщение от ${m.name}`;
   if (!confirm(`Удалить ${who} ${chat.peer ? "у вас обоих" : "у всех"}? Вернуть его будет нельзя.`)) return;
-  try { await call(chatUrl("/delete"), {id}); toast("🗑 Удалено"); chat.busy ? setTimeout(chatPoll, 400) : chatPoll(); }
+  try { await call(chatUrl("/delete"), {id}); toast("🗑 Удалено"); chatPoll(); }
   catch(e) { toast(e.message); }
 }
 async function copyMsg(id){
@@ -1896,7 +1925,7 @@ async function dmListPoll(top){
     window._dmUnread = window._dmList.people.reduce((a, p) => a + p.unread, 0);
     dmListDraw(top); chatBadge();
   }
-  window._dmListT = setTimeout(() => dmListPoll(top), 5000);
+  window._dmListT = setTimeout(() => dmListPoll(top), 3000);
 }
 function dmListDraw(top){
   const d = window._dmList, y = window.scrollY;
@@ -1928,26 +1957,36 @@ function dmOpen(code){
 }
 
 async function chatSend(){
-  const ta = $("#chat-in"), btn = $("#chat-go"), text = ta.value.trim();
-  if ((!text && !chat.photo) || chat.sending) return;
-  chat.sending = true; btn.disabled = true;
+  const ta = $("#chat-in"), text = ta.value.trim(), room = chat, photo = room.photo, reply = room.reply || 0;
+  if (!text && !photo) return;
+  // в ленту сразу, с часиками; поле ввода очищается — можно писать следующее, не дожидаясь сервера
+  const p = {tmp: "t" + Date.now() + Math.random().toString(36).slice(2, 6), text, photo: !!photo};
+  (room.pending = room.pending || []).push(p);
+  ta.value = ""; grow(ta); try { localStorage.removeItem(draftKey()); } catch(e) {}
+  chatReply(0); if (photo) photoClear();
+  pendingSync(); window.scrollTo(0, document.body.scrollHeight);
+  if (!("ontouchstart" in window) || $("#emoji").hidden) ta.focus();
   try {
-    if (chat.photo) {
-      toast("Отправляю фото…");
-      const r = await fetch("/api/chat/photo", {method: "POST", body: chat.photo,
-        headers: {"X-Token": TOKEN, "Content-Type": chat.photo.type || "image/jpeg",
-                  "X-Caption": encodeURIComponent(text), "X-Reply": String(chat.reply || 0), "X-Peer": chat.peer || ""}});
-      let d = {}; try { d = await r.json(); } catch(e) {}
-      if (!r.ok || d.error) throw new Error(d.error || "Не получилось отправить фото");
-      photoClear();
+    let r;
+    if (photo) {
+      const res = await fetch("/api/chat/photo", {method: "POST", body: photo,
+        headers: {"X-Token": TOKEN, "Content-Type": photo.type || "image/jpeg",
+                  "X-Caption": encodeURIComponent(text), "X-Reply": String(reply), "X-Peer": room.peer || ""}});
+      try { r = await res.json(); } catch(e) { r = {}; }
+      if (!res.ok || r.error) throw new Error(r.error || "Не получилось отправить фото");
     } else {
-      await call(chatUrl("/send"), {text, reply: chat.reply || 0, peer: chat.peer || ""});
+      r = await call((room.peer ? "/api/dm" : "/api/chat") + "/send", {text, reply, peer: room.peer || ""});
     }
-    chatReply(0);
-    ta.value = ""; grow(ta); try { localStorage.removeItem(draftKey()); } catch(e) {}
-    if (chat.busy) setTimeout(chatPoll, 400); else await chatPoll();
-  } catch(e) { toast(e.message); }
-  finally { chat.sending = false; btn.disabled = false; if (!("ontouchstart" in window) || $("#emoji").hidden) ta.focus(); }
+    p.real = r.id;
+    if (room === chat) { pendingSync(); if (!room.busy) chatPoll(room); }  // долгий запрос и так вернётся сразу
+  } catch(e) {
+    room.pending = room.pending.filter(x => x !== p);
+    if (room === chat) {
+      pendingSync();
+      if (!ta.value.trim()) { ta.value = text; grow(ta); }  // текст не теряем — можно нажать «Отправить» ещё раз
+    }
+    toast(e.message);
+  }
 }
 
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
