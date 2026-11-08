@@ -177,7 +177,18 @@ tr.short .ch{color:inherit}
 .sh .ft{display:flex;align-items:center;font-weight:600}
 .sh .ft span{flex:1}
 /* ---------- личные сообщения */
-.chat-sw{margin-bottom:10px}
+/* шапка чата прилипает под верхней панелью и не уезжает при прокрутке */
+.chat-top{position:sticky;top:var(--hdr, 56px);z-index:4;background:var(--bg);margin:-8px -16px 8px;padding:8px 16px}
+body.xmas .chat-top{margin-top:-22px;padding-top:20px}
+.chat-top .ob-sw{margin-bottom:0}
+.chat-top .dm-head{margin-bottom:0}
+.on-dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#22c55e;margin-right:5px;vertical-align:1px}
+#dm-status.online,.dm-st.online{color:#16a34a}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]) #dm-status.online, :root:not([data-theme="light"]) .dm-st.online{color:#4ade80} }
+:root[data-theme="dark"] #dm-status.online, :root[data-theme="dark"] .dm-st.online{color:#4ade80}
+.dm-st{font-size:13px;color:var(--muted);margin:1px 0 2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.dm-ava{position:relative}
+.ava-on{position:absolute;right:0;bottom:0;width:12px;height:12px;border-radius:50%;background:#22c55e;border:2px solid var(--card)}
 .chat-sw button{font-size:15px}
 .dm-badge{display:inline-block;background:var(--warn);color:#fff;font-size:12px;font-weight:700;min-width:20px;height:20px;line-height:20px;
   border-radius:10px;padding:0 6px;text-align:center;margin-left:4px;vertical-align:1px}
@@ -455,13 +466,18 @@ async function load(fromTab){
 }
 /* Фоновое обновление: не трогаем открытую страницу, окошко или форму, в которую что-то вводят */
 function quietRefresh(){
+  if (document.hidden) return;  // свёрнуто — не дёргаем сервер (и не держим статус «в сети»)
   if (tab === "chat") return chatPoll();
   if (onPage || document.querySelector(".open-form, .sheet-bg")) return;
   load();
 }
 $("#refresh").onclick = () => !(me && me.ok) ? boot() : tab === "chat" ? chatOpen() : (onPage && window._pageAgain ? window._pageAgain() : load());
 document.addEventListener("visibilitychange", () => {
-  if (document.hidden || !(me && me.ok)) return;
+  if (!(me && me.ok)) return;
+  if (document.hidden) {  // свернули — собеседники сразу увидят «не в сети»
+    try { fetch("/api/away", {method: "POST", keepalive: true, headers: {"X-Token": TOKEN}}); } catch(e) {}
+    return;
+  }
   quietRefresh();
   if (tab !== "chat") chatPoll();  // вернулись в приложение — сразу узнаём, что пришло, пока было свёрнуто
 });
@@ -497,10 +513,16 @@ function xmasSet(on){
   document.querySelectorAll("#xm-seg button").forEach(b => b.classList.toggle("on", b.dataset.k === (on ? "1" : "0")));
   xmasDraw();
 }
+function hdrVar(){  // высота верхней панели — под ней «прилипает» переключатель чата
+  const h = document.querySelector("header"); if (!h) return;
+  document.documentElement.style.setProperty("--hdr", h.offsetHeight + "px");
+}
 function xmasDraw(){
   const h = document.querySelector("header"); if (!h) return;
   h.querySelector(".xmas-svg")?.remove();
   h.classList.toggle("xmas", xmasOn());
+  document.body.classList.toggle("xmas", xmasOn());
+  hdrVar();
   if (!xmasOn()) return;
   const W = h.clientWidth, step = 34, n = Math.max(4, Math.round(W / step)), dx = W / n;
   const colors = ["#ff4d4d", "#ffd23f", "#4ade80", "#4fa3ff", "#ff7ad9"];
@@ -528,6 +550,7 @@ function xmasDraw(){
 }
 xmasDraw();
 let _xmT; window.addEventListener("resize", () => { clearTimeout(_xmT); _xmT = setTimeout(xmasDraw, 200); });
+if (window.ResizeObserver) new ResizeObserver(hdrVar).observe(document.querySelector("header"));
 
 /* ------------------------------ окно-форма снизу */
 function sheet(html){
@@ -1637,11 +1660,12 @@ async function chatPoll(room){
   room.busy = true;
   try {
     const since = room.epoch ? room.rev : 0, w = since ? "&wait=1" : "";
-    const d = await call(room.peer ? `/api/dm?peer=${encodeURIComponent(room.peer)}&since=${since}${w}`
+    const d = await call(room.peer ? `/api/dm?peer=${encodeURIComponent(room.peer)}&since=${since}${w}${room.presence ? "&on=" + (room.presence.online ? 1 : 0) : ""}`
                                    : `/api/chat?since=${since}${w}${w ? `&du=${window._dmUnread || 0}&ep=${encodeURIComponent(room.epoch)}` : ""}`);
     ok = true;
     if (room !== chat) return;  // пока ждали ответ, человек открыл другой диалог
     if (!room.peer && "dm_unread" in d) window._dmUnread = d.dm_unread;
+    if (room.peer && d.peer) { room.presence = d.peer; if (tab === "chat" && chatView === "feed") dmStatus(); }
     if (d.epoch !== room.epoch) { room.msgs = []; room.rev = 0; room.epoch = d.epoch; }  // сервер перезапустился — берём всё заново
     // приходят и новые, и отредактированные сообщения: новые дописываем, изменённые заменяем
     const added = [], changed = [];
@@ -1687,11 +1711,20 @@ function chatBadge(){
   if (dot) dot.textContent = n ? (n > 99 ? "99+" : n) : "";
   const b = document.getElementById("dm-badge"); if (b) b.textContent = dm ? (dm > 99 ? "99+" : dm) : "";
 }
+function presenceHtml(p){
+  if (!p) return "";
+  return p.online ? `<span class="on-dot"></span>В сети` : `Не в сети${p.seen ? ` · был(а) ${esc(p.seen)}` : ""}`;
+}
 function chatTop(){
-  if (chat.peer) return `<div class="dm-head"><button class="btn" onclick="dmListOpen()">←</button>
-    <div class="grow"><b>${esc(chat.name)}</b><small>${esc(chat.label || "")} · видите только вы двое</small></div></div>`;
-  return `<div class="ob-sw chat-sw"><button class="on">💬 Общий чат</button>
-    <button onclick="dmListOpen()">✉️ Личные <b class="dm-badge" id="dm-badge">${window._dmUnread || ""}</b></button></div>`;
+  if (chat.peer) return `<div class="chat-top"><div class="dm-head"><button class="btn" onclick="dmListOpen()">←</button>
+    <div class="grow"><b>${esc(chat.name)}</b><small id="dm-status" class="${chat.presence && chat.presence.online ? "online" : ""}">${presenceHtml(chat.presence) || esc(chat.label || "")}</small></div></div></div>`;
+  return `<div class="chat-top"><div class="ob-sw chat-sw"><button class="on">💬 Общий чат</button>
+    <button onclick="dmListOpen()">✉️ Личные <b class="dm-badge" id="dm-badge">${window._dmUnread || ""}</b></button></div></div>`;
+}
+function dmStatus(){  // обновить строку статуса в шапке открытого диалога
+  const e = document.getElementById("dm-status"); if (!e || !chat.peer) return;
+  e.innerHTML = presenceHtml(chat.presence) || esc(chat.label || "");
+  e.classList.toggle("online", !!(chat.presence && chat.presence.online));
 }
 function chatOpen(){
   clearInterval(timer); ++nav; onPage = false; window._pageAgain = null;
@@ -1913,7 +1946,7 @@ async function dmListOpen(){
   chat = CHAT_ALL; chatView = "list";
   document.querySelectorAll(".composer").forEach(e => e.remove());
   document.body.classList.remove("emoji"); $("#main").style.paddingBottom = "";
-  const top = `<div class="ob-sw chat-sw"><button onclick="dmBack()">💬 Общий чат</button><button class="on">✉️ Личные</button></div>`;
+  const top = `<div class="chat-top"><div class="ob-sw chat-sw"><button onclick="dmBack()">💬 Общий чат</button><button class="on">✉️ Личные</button></div></div>`;
   if (!window._dmList) $("#main").innerHTML = top + `<div class="empty">Загрузка…</div>`;
   else dmListDraw(top);
   await dmListPoll(top);
@@ -1934,10 +1967,11 @@ function dmListDraw(top){
   const d = window._dmList, y = window.scrollY;
   const time = t => { const day = chatDay(t); return day === "Сегодня" ? (t || "").slice(11, 16) : day; };
   const row = p => `<div class="card tap dm-row" onclick="dmOpen('${esc(p.code)}')">
-      <div class="dm-ava">${esc((p.name || "?").trim().charAt(0).toUpperCase())}</div>
+      <div class="dm-ava">${esc((p.name || "?").trim().charAt(0).toUpperCase())}${p.online ? `<i class="ava-on"></i>` : ""}</div>
       <div class="grow" style="min-width:0"><div class="row"><b class="grow dm-name">${esc(p.name)}</b>
         ${p.last ? `<small class="muted" style="margin:0">${esc(time(p.last.t))}</small>` : ""}</div>
-        <div class="row"><span class="grow dm-last ${p.unread ? "new" : ""}">${p.last ? (p.last.mine ? "Вы: " : "") + esc(p.last.text) : `<span class="muted">${esc(p.label)}</span>`}</span>
+        <div class="dm-st ${p.online ? "online" : ""}">${presenceHtml(p)}${p.label ? ` · ${esc(p.label)}` : ""}</div>
+        <div class="row"><span class="grow dm-last ${p.unread ? "new" : ""}">${p.last ? (p.last.mine ? "Вы: " : "") + esc(p.last.text) : ""}</span>
         ${p.unread ? `<b class="dm-badge">${p.unread}</b>` : ""}</div></div></div>`;
   const talk = d.people.filter(p => p.last), rest = d.people.filter(p => !p.last);
   $("#main").innerHTML = top +
@@ -1953,7 +1987,7 @@ function dmOpen(code){
   clearTimeout(window._dmListT);
   const r = dmRooms[code] || (dmRooms[code] = {msgs: [], rev: 0, last: 0, epoch: "", busy: false, timer: null, sending: false,
                                                reply: 0, photo: null, peer: code});
-  r.name = p.name; r.label = p.label;
+  r.name = p.name; r.label = p.label; r.presence = {online: p.online, seen: p.seen};
   chat = r; chatView = "feed";
   if (p.unread) { window._dmUnread = Math.max(0, (window._dmUnread || 0) - p.unread); p.unread = 0; }
   chatOpen();

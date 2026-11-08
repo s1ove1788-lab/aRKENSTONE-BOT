@@ -222,6 +222,59 @@ def wait_change(check, timeout: float = LONG_POLL_SEC):
                 _wake.wait(min(left, 5))
 
 
+# «В сети»: у человека открыто приложение. Открытое приложение всегда держит «долгий запрос» или шлёт запросы;
+# свёрнутое — молчит (уведомления APK сюда не считаются). Нет запросов 40 сек — «не в сети».
+ONLINE_SEC = 35
+_seen: dict = {}      # код телефона -> время последнего запроса
+_holding: dict = {}   # код телефона -> сколько «долгих запросов» сейчас ждёт
+_away: dict = {}      # код телефона -> когда приложение свернули (телефон сам сообщает)
+
+
+def touch(code: str) -> None:
+    was = is_online(code)
+    _seen[code] = time.time()
+    if not was:
+        wake()  # человек появился в сети — у собеседников статус обновится сразу
+
+
+def is_online(code: str) -> bool:
+    if _away.get(code, 0) >= _seen.get(code, 0):  # свернули после последнего запроса — сразу «не в сети»
+        return False
+    return _holding.get(code, 0) > 0 or time.time() - _seen.get(code, 0) < ONLINE_SEC
+
+
+def away(code: str) -> None:
+    was = is_online(code)
+    _away[code] = time.time()
+    if was:
+        wake()
+
+
+def presence(code: str) -> dict:
+    t = _seen.get(code)
+    if is_online(code):
+        return {"online": True, "seen": ""}
+    if not t:
+        return {"online": False, "seen": ""}
+    d = datetime.fromtimestamp(t, ZoneInfo(config.TIMEZONE))
+    today = now_date()
+    when = (d.strftime("%H:%M") if d.date() == today else
+            "вчера в " + d.strftime("%H:%M") if (today - d.date()).days == 1 else d.strftime("%d.%m в %H:%M"))
+    return {"online": False, "seen": when}
+
+
+def hold_wait(code: str, check) -> None:
+    """Долгий запрос: пока ждём — человек в сети."""
+    _holding[code] = _holding.get(code, 0) + 1
+    start = time.time()
+    try:
+        wait_change(check)
+    finally:
+        _holding[code] = max(0, _holding.get(code, 1) - 1)
+        if _away.get(code, 0) < start:  # пока ждали, приложение не сворачивали
+            _seen[code] = time.time()
+
+
 # Запись чата в Google Таблицу — в фоне, по очереди: телефону отвечаем сразу, не дожидаясь Google (1–3 сек).
 import queue
 
@@ -283,7 +336,7 @@ def chat_list(since: int, code: str, wait: bool = False, du: int = -1, ep: str =
                 return du >= 0 and dm_unread(code) != du
             except Exception:
                 return False
-        wait_change(changed)
+        hold_wait(code, changed)
     with _chat_lock:
         msgs = [m for m in _chat["msgs"] if m["rev"] > since]
         if since <= 0:  # телефон загружает чат с нуля — удалённые ему не нужны
@@ -759,17 +812,19 @@ def _dm_public(r, code: str, names: dict, quotes: dict) -> dict:
             "mine": r["a"] == code, "reply": q, "photo": r["photo"] or ""}
 
 
-def dm_thread(code: str, peer: str, since: int, wait: bool = False) -> dict:
+def dm_thread(code: str, peer: str, since: int, wait: bool = False, on: int = -1) -> dict:
     """Переписка двоих. since — номер последнего изменения у телефона: отдаём новые, исправленные и удалённые.
     wait — подождать до 25 сек, пока в переписке что-то не появится (мгновенная доставка)."""
     _peer(code, peer)
     peer = norm_code(peer)
     if wait and since > 0:
         def changed():
+            if on >= 0 and is_online(peer) != bool(on):  # собеседник вошёл или вышел — показать сразу
+                return True
             with _dm_lock:
                 return (_dm_db().execute("SELECT COALESCE(MAX(rev), 0) FROM dm WHERE (a=? AND b=?) OR (a=? AND b=?)",
                                          (code, peer, peer, code)).fetchone()[0] or 0) > since
-        wait_change(changed)
+        hold_wait(code, changed)
     with _dm_lock:
         db = _dm_db()
         where = "((a=? AND b=?) OR (a=? AND b=?))"
@@ -789,7 +844,8 @@ def dm_thread(code: str, peer: str, since: int, wait: bool = False) -> dict:
                        (code, peer, last))
             db.commit()
     names = devices()
-    return {"epoch": _dm["epoch"] + peer, "rev": rev, "msgs": [_dm_public(r, code, names, quotes) for r in rows]}
+    return {"epoch": _dm["epoch"] + peer, "rev": rev, "msgs": [_dm_public(r, code, names, quotes) for r in rows],
+            "peer": presence(peer)}
 
 
 def dm_unread(code: str) -> int:
@@ -815,12 +871,12 @@ def dm_dialogs(code: str) -> dict:
             continue
         m = last.get(c)
         role = role_of(c, d)
-        people.append({"code": c, "name": d["name"] or "без имени", "label": ROLE_LABELS.get(role, ""),
+        people.append({"code": c, "name": d["name"] or "без имени", "label": ROLE_LABELS.get(role, ""), **presence(c),
                        "last": ({"t": m["t"], "id": m["id"], "mine": m["a"] == code,
                                  "text": ("📷 " if m["photo"] else "") + ((m["text"] or "") if m["text"] else ("Фото" if m["photo"] else ""))[:80]}
                                 if m else None),
                        "unread": unread.get(c, 0)})
-    people.sort(key=lambda p: (p["last"] is None, -(p["last"]["id"] if p["last"] else 0), p["name"].lower()))
+    people.sort(key=lambda p: (p["last"] is None, -(p["last"]["id"] if p["last"] else 0), not p["online"], p["name"].lower()))
     return {"people": people, "persistent": dm_persistent()}
 
 
@@ -1877,6 +1933,11 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
     pay = code in pay_codes()
     who = me["name"] or "сотрудник"
     today = now_date()
+    if path == "/api/away":
+        away(code)
+        return 200, {"ok": True}
+    if not path.startswith("/api/push"):
+        touch(code)
 
     if path == "/api/push/inbox":
         return 200, push_inbox(code, _int(body.get("after"), 0))
@@ -1891,7 +1952,8 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
             if path == "/api/dm/list":
                 return 200, dm_dialogs(code)
             if path == "/api/dm":
-                return 200, dm_thread(code, str(body.get("peer") or ""), _int(body.get("since"), 0), body.get("wait") == "1")
+                return 200, dm_thread(code, str(body.get("peer") or ""), _int(body.get("since"), 0), body.get("wait") == "1",
+                                      _int(body.get("on"), -1))
             if method == "POST" and path == "/api/dm/send":
                 return 200, dm_send(code, me, str(body.get("peer") or ""), str(body.get("text") or ""), _int(body.get("reply"), 0))
             if method == "POST" and path == "/api/dm/edit":
