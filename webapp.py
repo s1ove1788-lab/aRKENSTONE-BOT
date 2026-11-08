@@ -2244,8 +2244,12 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header(k, v)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", cache)
-        self.end_headers()
-        self.wfile.write(data)
+        try:
+            self.end_headers()
+            self.wfile.write(data)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # телефон не дождался ответа (свернули приложение, сменили диалог, пропала связь) — это нормально
+            self.close_connection = True
 
     def _json(self, code: int, payload: dict) -> None:
         self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8",
@@ -2391,11 +2395,21 @@ def _prewarm() -> None:
     log.info("Прогрев таблицы: готово за %.1f сек", time.time() - t0)
 
 
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+
+    def handle_error(self, request, client_address):
+        import sys
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, TimeoutError)):
+            return  # оборванное телефоном соединение — не ошибка, в лог не пишем
+        log.exception("Приложение: ошибка соединения с %s", client_address[0] if client_address else "?")
+
+
 def start(**hooks) -> None:
     """Запускает веб-сервер в отдельном потоке: приложение на /, Алиса на /alice/<секрет>.
     hooks — функции бота, которые делают то же, что кнопки в MAX."""
     _deps.update(hooks)
-    srv = ThreadingHTTPServer(("0.0.0.0", config.ALICE_PORT), Handler)
+    srv = _Server(("0.0.0.0", config.ALICE_PORT), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     log.info("Приложение для сотрудников: слушаю порт %d", config.ALICE_PORT)
     threading.Thread(target=_update_watch, daemon=True).start()
