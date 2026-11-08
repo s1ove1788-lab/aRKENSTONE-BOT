@@ -1909,7 +1909,7 @@ function dmListDraw(top){
         ${p.unread ? `<b class="dm-badge">${p.unread}</b>` : ""}</div></div></div>`;
   const talk = d.people.filter(p => p.last), rest = d.people.filter(p => !p.last);
   $("#main").innerHTML = top +
-    (me.admin && !d.persistent ? `<div class="card late" style="font-size:14px">⚠️ На Bothost не подключено постоянное хранилище — личная переписка пропадёт при следующем обновлении бота. Включите его на карточке бота.</div>` : "") +
+    (me.admin && !d.persistent ? `<div class="card late" style="font-size:14px">⚠️ Личная переписка сейчас хранится во временной папке и пропадёт при обновлении бота.</div>` : "") +
     (talk.length ? talk.map(row).join("") : "") +
     (rest.length ? `<h2>${talk.length ? "Написать" : "Кому написать"}</h2>` + rest.map(row).join("") : "") +
     (d.people.length ? "" : `<div class="empty">В приложении пока нет других сотрудников</div>`) +

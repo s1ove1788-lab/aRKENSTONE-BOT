@@ -169,11 +169,9 @@ MAX_PHOTO = 8 * 1024 * 1024
 
 
 def photo_dir() -> Path:
-    """Куда класть фото из чата. /app/shared — постоянное хранилище Bothost (включается кнопкой на карточке бота),
-    оно переживает обновления. Без него фото лежат в папке бота и могут пропасть при обновлении из Git."""
+    """Куда класть фото из чата: в постоянную папку (см. data_dir) — она переживает «Обновить из Git»."""
     import os
-    d = os.getenv("CHAT_PHOTO_DIR") or ("/app/shared/chat_photos" if Path("/app/shared").is_dir() else str(HERE / "chat_photos"))
-    p = Path(d)
+    p = Path(os.getenv("CHAT_PHOTO_DIR") or (data_dir() / "chat_photos"))
     p.mkdir(parents=True, exist_ok=True)
     return p
 
@@ -603,6 +601,9 @@ _dm = {"db": None, "epoch": ""}
 
 
 def data_dir() -> Path:
+    """Постоянная папка бота. На Bothost сохраняется при «Обновить из Git» папка /app/data (так ответила поддержка),
+    а /app/shared — только если включено «Общее хранилище» (Bothost сбрасывает эту галочку при обновлении).
+    Остальное в папке бота (/app) при обновлении стирается."""
     import os
     d = os.getenv("DATA_DIR") or ("/app/shared/arkenstone" if Path("/app/shared").is_dir() else str(HERE / "data"))
     p = Path(d)
@@ -611,7 +612,8 @@ def data_dir() -> Path:
 
 
 def dm_persistent() -> bool:
-    return str(data_dir()).startswith("/app/shared")
+    d = str(data_dir())
+    return d.startswith("/app/shared") or d.startswith("/app/data")
 
 
 def _dm_db():
@@ -635,8 +637,7 @@ def _dm_db():
             row = db.execute("SELECT v FROM meta WHERE k='epoch'").fetchone()
         _dm.update(db=db, epoch=row[0])
         if not dm_persistent():
-            log.warning("Личные сообщения: %s — постоянное хранилище Bothost не подключено, переписка пропадёт при обновлении",
-                        data_dir())
+            log.warning("Личные сообщения: %s — папка не постоянная, переписка пропадёт при обновлении", data_dir())
     return _dm["db"]
 
 
@@ -2225,9 +2226,31 @@ def start(**hooks) -> None:
     threading.Thread(target=_prewarm, daemon=True).start()
     try:
         d = photo_dir()
-        if str(d).startswith("/app/shared"):
-            log.info("Фото чата: %s (постоянное хранилище)", d)
+        old = HERE / "chat_photos"
+        if old.is_dir() and old.resolve() != d.resolve():
+            import shutil
+            n = 0
+            for f in old.iterdir():
+                if f.is_file() and not (d / f.name).exists():
+                    shutil.copy2(f, d / f.name)
+                    n += 1
+            if n:
+                log.info("Фото чата: перенёс %d фото из %s в %s", n, old, d)
+        try:
+            with _dm_lock:
+                db = _dm_db()
+                made = db.execute("SELECT v FROM meta WHERE k='created'").fetchone()
+                if not made:
+                    db.execute("INSERT INTO meta VALUES('created', ?)", (_stamp(),))
+                    db.commit()
+                    made = (_stamp(),)
+                n = db.execute("SELECT COUNT(*) FROM dm").fetchone()[0]
+            log.info("Личные сообщения: база %s, создана %s, сообщений %d", data_dir() / "messages.sqlite3", made[0], n)
+        except Exception:
+            log.exception("Личные сообщения: не открыл базу")
+        if dm_persistent():
+            log.info("Фото чата: %s (постоянная папка)", d)
         else:
-            log.warning("Фото чата: %s — постоянное хранилище Bothost не подключено, фото могут пропасть при обновлении", d)
+            log.warning("Фото чата: %s — папка не постоянная, фото могут пропасть при обновлении", d)
     except Exception:
         log.exception("Фото чата: не смог создать папку")
