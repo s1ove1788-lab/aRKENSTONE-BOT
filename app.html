@@ -354,6 +354,7 @@ async function call(path, body){
   const r = await fetch(path, {method: body ? "POST" : "GET",
     headers: {"X-Token": TOKEN, "Content-Type": "application/json"},
     body: body ? JSON.stringify(body) : undefined});
+  buildCheck(r.headers.get("X-App-Build"));
   let data = {};
   try { data = await r.json(); } catch(e) {}
   if (r.status === 403) { me = null; boot(); throw new Error(data.error || "Нет доступа"); }
@@ -361,6 +362,41 @@ async function call(path, body){
   if (!data || typeof data !== "object" || data.error) throw new Error((data && data.error) || "Нет связи с сервером, повторите");
   return data;
 }
+
+/* Автообновление: сервер в каждом ответе сообщает версию экранов. Бот обновили — версия другая, и приложение
+   само перезагружается, как только это никому не помешает: не во время набора, не при открытом окне или форме. */
+let BUILD = "__APP_BUILD__", _reloadT = null;
+function buildCheck(v){
+  if (!v) return;
+  if (!BUILD || BUILD.startsWith("__")) { BUILD = v; return; }
+  if (v !== BUILD && !_reloadT) reloadWhenSafe();
+}
+function reloadSafe(){
+  if (document.hidden) return true;  // свёрнуто — человек ничего не заметит
+  const a = document.activeElement;
+  if (a && /^(INPUT|TEXTAREA|SELECT)$/.test(a.tagName)) return false;   // что-то набирают
+  if (document.querySelector(".sheet-bg")) return false;              // открыто окно снизу
+  if (document.querySelector("#re-list")) return false;               // правка отчёта
+  if (typeof techDirty === "function" && techDirty()) return false;   // несохранённые часы
+  const ci = document.getElementById("chat-in"); if (ci && ci.value.trim()) return false;
+  if (typeof chat !== "undefined" && (chat.pending || []).length) return false;   // сообщение ещё отправляется
+  if (document.querySelector(".open-form input:not([type=search])")?.value) return false;  // заполняют форму
+  return true;
+}
+function reloadWhenSafe(){
+  clearTimeout(_reloadT);
+  if (reloadSafe()) {
+    try { sessionStorage.setItem("ark_reloaded", "1"); } catch(e) {}
+    location.reload();
+    return;
+  }
+  _reloadT = setTimeout(reloadWhenSafe, 3000);
+}
+document.addEventListener("visibilitychange", () => { if (_reloadT) reloadWhenSafe(); });
+setTimeout(() => {
+  let was = null; try { was = sessionStorage.getItem("ark_reloaded"); sessionStorage.removeItem("ark_reloaded"); } catch(e) {}
+  if (was) toast("🔄 Приложение обновилось");
+}, 900);
 
 function toast(text){
   const t = $("#toast"); t.textContent = text; t.classList.add("show");

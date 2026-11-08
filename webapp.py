@@ -2237,16 +2237,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.rfile.readline()
         return self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 100_000))
 
-    def _send(self, code: int, data: bytes, ctype: str, cache: str = "no-store") -> None:
+    def _send(self, code: int, data: bytes, ctype: str, cache: str = "no-store", extra: dict = None) -> None:
         self.send_response(code)
         self.send_header("Content-Type", ctype)
+        for k, v in (extra or {}).items():
+            self.send_header(k, v)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("Cache-Control", cache)
         self.end_headers()
         self.wfile.write(data)
 
     def _json(self, code: int, payload: dict) -> None:
-        self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
+        self._send(code, json.dumps(payload, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8",
+                   extra={"X-App-Build": app_build()})
 
     def _api(self, method: str, body: dict) -> None:
         path = self.path.split("?")[0].rstrip("/")
@@ -2290,6 +2293,8 @@ class Handler(BaseHTTPRequestHandler):
             data = (HERE / name).read_bytes()
         except OSError:
             return self._send(200, b"ok", "text/plain")
+        if name == "app.html":  # страница знает свою версию — по ней видно, что сервер уже новее
+            data = data.replace(b"__APP_BUILD__", app_build().encode())
         self._send(200, data, ctype, "no-cache")
 
     def do_POST(self):
@@ -2344,6 +2349,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, *a):
         pass
+
+
+_build = {"v": ""}
+
+
+def app_build() -> str:
+    """Версия экранов приложения — отпечаток app.html. Телефон видит её в каждом ответе сервера: поменялась после
+    обновления бота — приложение само перезагружается в удобный момент (не посреди набора текста)."""
+    if not _build["v"]:
+        try:
+            _build["v"] = hashlib.sha1((HERE / "app.html").read_bytes()).hexdigest()[:12]
+        except OSError:
+            _build["v"] = "0"
+    return _build["v"]
 
 
 def _prewarm() -> None:
