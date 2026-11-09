@@ -1335,13 +1335,14 @@ def _tt(title: str, headers: list):
             _tb.update(id=sid, book=None, tabs={})
         ws = _tb["tabs"].get(title)
         if ws is None:
-            import gspread
             if _tb["book"] is None:
                 _tb["book"] = sheets.get_client().open_by_key(sid)
-            try:
-                raw = _tb["book"].worksheet(title)
-            except gspread.WorksheetNotFound:
-                raw = _tb["book"].add_worksheet(title=title, rows=200, cols=max(len(headers), 4))
+                _tb["have"] = None
+            if _tb.get("have") is None:  # список листов читаем один раз, а не по запросу на каждый лист — бережём лимит Google
+                _tb["have"] = {w.title: w for w in _tb["book"].worksheets()}
+            raw = _tb["have"].get(title)
+            if raw is None:
+                raw = _tb["have"][title] = _tb["book"].add_worksheet(title=title, rows=200, cols=max(len(headers), 4))
             sheets._ensure_header(raw, headers)
             # свой кэш, не общий: фоновое пакетное чтение общей таблицы ищет листы по названию в ней
             ws = _tb["tabs"][title] = sheets._CachedSheet(raw)

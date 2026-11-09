@@ -1583,10 +1583,20 @@ function moneyCards(list, fn){
 async function moneyPage(keep){
   if (techDirty() && !confirm("Часы за день не сохранены. Уйти без сохранения?")) return;
   const old = keep && $("#m-name") ? {day: $("#m-day").value} : {};
-  page("Подотчётные финансы", `<div class="empty">Загружаю…</div>`, () => moneyPage());
+  clearTimeout(window._moneyT);
+  const my = nav;
+  page("Подотчётные финансы", `<div class="empty" id="m-wait">Загружаю…</div>`, () => moneyPage());
   let d;
-  try { d = await call("/api/tech/money"); } catch(e) { return toast(e.message); }
-  if (!onPage) return;
+  try { d = await call("/api/tech/money"); }
+  catch(e) {  // Google не ответил (бывает сразу после обновления бота) — не висим на «Загружаю…», а пробуем сами
+    if (my !== nav || !document.getElementById("m-wait")) return;
+    const busy = /перегружена/.test(e.message);
+    page("Подотчётные финансы", `<div class="empty" id="m-wait">${esc(e.message)}${busy ? "<br>Попробую сам через 20 секунд." : ""}<br><br>
+      <button class="btn" onclick="moneyPage()">Повторить сейчас</button></div>`, () => moneyPage());
+    if (busy) window._moneyT = setTimeout(() => { if (my === nav && document.getElementById("m-wait")) moneyPage(); }, 20000);
+    return;
+  }
+  if (my !== nav || !onPage) return;
   window._money = d; window._adv = d.adv; window._advAgain = () => moneyPage(true);
   page("Подотчётные финансы", moneyBalance(d.adv) + `
     <button class="btn" style="width:100%;margin-bottom:12px" onclick="issueForm(() => moneyPage(true))">💵 Получил под отчёт</button>
