@@ -1227,6 +1227,7 @@ function drawTech(d){
     <div class="toolbar" style="margin-top:12px"><button class="btn" onclick="techMonthPage('${iso(new Date(m.getFullYear(), m.getMonth(), 1))}')">📅 Итоги месяца</button>
       <button class="btn" onclick="techSendPage()">📤 Отправить директору</button></div>
     <button class="btn" style="width:100%;margin-top:8px" onclick="bonusPage()">🎁 Премия на согласование</button>
+    <button class="btn" style="width:100%;margin-top:8px" onclick="moneyPage()">💰 Подотчётные финансы</button>
     <p class="muted" style="text-align:center">За ${MONTHS1[m.getMonth()].toLowerCase()}: ${hh(d.month_hours)} ч${d.month_beds ? ` · ${d.month_beds} кроватей` : ""}</p>`;
 }
 /* Отдельная таблица табеля. Пока табель в общей таблице с заказами — администратор видит предупреждение и перенос */
@@ -1447,9 +1448,126 @@ async function techSend(btn){
   catch(e) { toast(e.message); btn.disabled = false; }
 }
 
+/* ------------------------------ подотчётные финансы (тех. директор вносит траты и отправляет ген. директору) */
+const rub2 = n => (+n || 0).toLocaleString("ru-RU", {maximumFractionDigits: 2}) + " ₽";
+const dm = s => { const d = fromIso(s); return `${d.getDate()} ${MONTHS[d.getMonth()]}`; };
+/* Таблица трат: Наименование | Кол-во | Сумма. del — показывать крестик удаления (только у тех. директора) */
+function moneyTable(items, total, del){
+  if (!items.length) return `<div class="empty">Трат нет</div>`;
+  return `<div class="card" style="padding:6px 10px"><table>
+    <tr><th>Наименование</th><th class="n">Кол-во</th><th class="n">Сумма</th>${del ? "<th></th>" : ""}</tr>
+    ${items.map((e, i) => `<tr><td><b>${esc(e.name)}</b><div class="ch">${esc(dm(e.day))}${del && e.sent ? " · уже отправлялось" : ""}</div></td>
+      <td class="n">${hh(e.qty)}</td><td class="n" style="white-space:nowrap"><b>${rub2(e.amount)}</b></td>
+      ${del ? `<td class="n" style="width:1%"><button class="btn" style="padding:8px 10px" onclick="moneyDel(${i})" aria-label="Удалить">✕</button></td>` : ""}</tr>`).join("")}
+    <tr><td><b>Итого</b></td><td class="n">${items.length} поз.</td><td class="n" style="white-space:nowrap"><b>${rub2(total)}</b></td>${del ? "<td></td>" : ""}</tr>
+  </table></div>`;
+}
+function moneyCards(list, fn){
+  return list.map((r, i) => `<div class="card tap" onclick="${fn}(${i})"><div class="top">
+    <div class="title">${esc(fmtPeriod(r.from, r.to))}</div><span class="badge">${rub2(r.total)}</span></div>
+    <div class="sub">${r.items.length} поз. · отправил ${esc(r.who || "—")}, ${esc(r.sent)}</div></div>`).join("");
+}
+async function moneyPage(keep){
+  if (techDirty() && !confirm("Часы за день не сохранены. Уйти без сохранения?")) return;
+  const old = keep && $("#m-name") ? {day: $("#m-day").value} : {};
+  page("Подотчётные финансы", `<div class="empty">Загружаю…</div>`, () => moneyPage());
+  let d;
+  try { d = await call("/api/tech/money"); } catch(e) { return toast(e.message); }
+  if (!onPage) return;
+  window._money = d;
+  page("Подотчётные финансы", `
+    <div class="card open-form">
+      <div class="title" style="margin-bottom:8px">Добавить трату</div>
+      <label class="l">Наименование</label><input id="m-name" maxlength="120" placeholder="Например: краска белая 10 л" autocomplete="off">
+      <div class="toolbar"><div><label class="l">Количество</label><input id="m-qty" type="text" inputmode="decimal" placeholder="1" autocomplete="off"></div>
+        <div><label class="l">Сумма, ₽</label><input id="m-sum" type="text" inputmode="decimal" placeholder="0" autocomplete="off" style="font-weight:700"></div></div>
+      <label class="l">Дата покупки</label><input id="m-day" type="date" value="${esc(old.day || d.today)}" max="${esc(d.today)}">
+      <button class="btn main" style="width:100%" onclick="moneyAdd(this)">➕ Добавить</button>
+      <p class="muted" style="margin:8px 2px 0">Сумма — сколько заплатили за всю позицию, а не за штуку.</p>
+    </div>
+    <h2>Ещё не отправлено${d.unsent.length ? ` · ${rub2(d.total)}` : ""}</h2>
+    ${d.unsent.length ? moneyTable(d.unsent, d.total, true) : `<div class="empty">Всё отправлено. Новые траты появятся здесь.</div>`}
+    <button class="btn main big" style="width:100%;margin-top:8px" onclick="moneySendPage()">📤 Отправить ген. директору</button>
+    <h2>Отправленные отчёты</h2>
+    ${d.reports.length ? moneyCards(d.reports, "moneyMine") : `<div class="muted">Пока ничего</div>`}`, () => moneyPage());
+}
+async function moneyAdd(btn){
+  const name = $("#m-name").value.trim(), qty = $("#m-qty").value.trim(), amount = $("#m-sum").value.replace(/\s/g, "");
+  if (!name) { $("#m-name").focus(); return toast("Впишите наименование"); }
+  if (qty && !(+qty.replace(",", ".") > 0)) { $("#m-qty").focus(); return toast("Количество — число, например 3 или 2,5"); }
+  if (!(+amount.replace(",", ".") > 0)) { $("#m-sum").focus(); return toast("Впишите сумму"); }
+  btn.disabled = true;
+  try { await call("/api/tech/money/add", {day: $("#m-day").value, name, qty, amount}); toast("✅ Добавлено"); moneyPage(true); }
+  catch(e) { toast(e.message); btn.disabled = false; }
+}
+async function moneyDel(i){
+  const e = (window._money || {}).unsent[i]; if (!e) return;
+  if (!confirm(`Удалить «${e.name}» на ${rub2(e.amount)}?`)) return;
+  try { await call("/api/tech/money/remove", {id: e.id}); toast("Удалено"); moneyPage(true); }
+  catch(err) { toast(err.message); }
+}
+function moneyMine(i){
+  const r = window._money.reports[i];
+  page(esc(fmtPeriod(r.from, r.to)), `<p class="muted">Отправил ${esc(r.who || "—")}, ${esc(r.sent)}</p>` + moneyTable(r.items, r.total), null, "moneyPage()");
+}
+function moneySendPage(){
+  const d = window._money || {}, t = iso(new Date());
+  const k = window._moneyK || (d.unsent && d.unsent.length ? "new" : "month");
+  const per = x => x === "new" ? [d.first || t, t] : periodOf(x);
+  const [a, b] = per(k);
+  page("Отправить подотчёт", `
+    <div class="open-form">
+    ${seg("mper", {new: "Неотправленное", month: "Этот месяц", prev: "Прошлый месяц"}, k)}
+    <div class="toolbar"><div><label class="l">С</label><input type="date" id="mp-from" value="${a}" max="${t}"></div>
+      <div><label class="l">По</label><input type="date" id="mp-to" value="${b}" max="${t}"></div></div>
+    <div id="mp-sum"><div class="empty">Считаю…</div></div>
+    <button class="btn main big" style="width:100%;margin-top:8px" id="mp-send" onclick="moneySend(this)" disabled>📤 Отправить ген. директору</button>
+    <p class="muted">Директор увидит список трат и общую сумму в своей вкладке «Отчёты». В отчёт попадают все траты с датой покупки в выбранном периоде.</p></div>`,
+    null, "moneyPage()");
+  document.querySelectorAll("#mper button").forEach(btn => btn.addEventListener("click", () => {
+    window._moneyK = btn.dataset.k; const [x, y] = per(btn.dataset.k);
+    $("#mp-from").value = x; $("#mp-to").value = y; moneyPreview();
+  }));
+  $("#mp-from").onchange = $("#mp-to").onchange = () => { document.querySelectorAll("#mper button").forEach(x => x.classList.remove("on")); moneyPreview(); };
+  moneyPreview();
+}
+async function moneyPreview(){
+  const a = $("#mp-from").value, b = $("#mp-to").value, box = $("#mp-sum"), btn = $("#mp-send");
+  btn.disabled = true; box.innerHTML = `<div class="empty">Считаю…</div>`;
+  try {
+    const s = await call(`/api/tech/money/summary?from=${a}&to=${b}`);
+    if (!$("#mp-sum")) return;
+    box.innerHTML = `<h2>${esc(fmtPeriod(s.from, s.to))}</h2>` + (s.items.length ? moneyTable(s.items, s.total)
+      + (s.items.some(e => e.sent) ? `<p class="muted">Часть этих трат уже отправлялась раньше — они попадут в отчёт повторно.</p>` : "")
+      : `<div class="empty">За этот период трат нет</div>`);
+    btn.disabled = !s.items.length;
+  } catch(e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+async function moneySend(btn){
+  const a = $("#mp-from").value, b = $("#mp-to").value;
+  if (!confirm(`Отправить ген. директору подотчёт за ${fmtPeriod(a <= b ? a : b, a <= b ? b : a)}?`)) return;
+  btn.disabled = true;
+  try { const r = await call("/api/tech/money/send", {from: a, to: b}); window._moneyK = null; toast(`✅ Отправлено: ${rub2(r.total)}`); moneyPage(); }
+  catch(e) { toast(e.message); btn.disabled = false; }
+}
+/* Ген. директор: присланный подотчёт */
+function moneyReport(i){
+  const r = window._moneyReports[i], can = (window._rateInfo || {}).can_rate;
+  page(esc(fmtPeriod(r.from, r.to)), `<p class="muted">Подотчётные финансы · отправил ${esc(r.who || "—")}, ${esc(r.sent)}</p>` + moneyTable(r.items, r.total)
+    + (can ? `<button class="btn" style="width:100%;margin-top:12px;color:var(--warn)" onclick="moneyReportDelete(this, ${i})">🗑 Удалить отчёт</button>` : ""),
+    null, "load(true)");
+}
+async function moneyReportDelete(btn, i){
+  const r = window._moneyReports[i];
+  if (!confirm(`Удалить подотчёт за ${fmtPeriod(r.from, r.to)}? Сами траты у тех. директора останутся, он сможет отправить их снова.`)) return;
+  btn.disabled = true;
+  try { await call("/api/reports/money/delete", {id: r.id, sent: r.sent}); toast("Удалено"); load(true); }
+  catch(e) { toast(e.message); btn.disabled = false; }
+}
+
 /* ------------------------------ отчёты табеля (ген. директор) */
 function drawReports(d){
-  window._reports = d.reports; window._rateInfo = d; window._pending = d.pending || [];
+  window._reports = d.reports; window._rateInfo = d; window._pending = d.pending || []; window._moneyReports = d.money || [];
   $("#main").innerHTML = (window._pending.length ? `<h2>🎁 Премии на согласовании · ${window._pending.length}</h2>` + window._pending.map((b, i) => `
     <div class="card bonus"><div class="row"><div class="grow"><div class="title">${esc(b.name)}</div>
         <div class="sub">${esc(b.reason)}</div><div class="muted" style="margin:4px 0 0">Предложил(а) ${esc(b.by)}, ${esc(b.created)}</div></div>
@@ -1465,6 +1583,8 @@ function drawReports(d){
       <div class="title">${esc(fmtPeriod(r.from, r.to))}</div><span class="badge">${rub(r.total_pay ?? r.pay)}</span></div>
       <div class="sub">${hh(r.total)} ч${r.beds ? ` · ${r.beds} кров.` : ""}${r.bonus ? ` · премии ${rub(r.bonus)}` : ""} · ${r.people.length} чел. · отправил ${esc(r.who || "—")}, ${esc(r.sent)}${r.edited ? " · ✏️ изменён" : ""}</div></div>`).join("")
     : `<div class="empty">Пока ничего не присылали.<br>Отчёт появится здесь, когда тех. директор нажмёт «Отправить директору».</div>`)
+    + `<h2>Подотчётные финансы от тех. директора</h2>` + (window._moneyReports.length ? moneyCards(window._moneyReports, "moneyReport")
+    : `<div class="empty">Пока ничего не присылали.</div>`)
     + ((d.decided || []).length ? `<h2>Решённые премии</h2><div class="card" style="padding:6px 10px"><table>${d.decided.map(b =>
       `<tr><td><b>${esc(b.name)}</b><div class="ch">${esc(b.reason)}</div><div class="ch">${esc(b.decided)}${b.comment ? " · " + esc(b.comment) : ""}</div></td>
        <td class="n" style="white-space:nowrap">${rub(b.amount)}<div><span class="pill ${b.status === "Согласовано" ? "ok" : ""}">${esc(b.status)}</span></div></td></tr>`).join("")}</table></div>` : "");

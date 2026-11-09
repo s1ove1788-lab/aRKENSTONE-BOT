@@ -1210,6 +1210,12 @@ BONUS_WAIT, BONUS_OK, BONUS_NO = "На согласовании", "Соглас�
 PAINT_WORDS = ("покрас", "маляр", "окрас", "краск")
 REPORTS_TAB = "Отчёты табеля"
 REPORTS_HEADERS = ["Отправлено", "Кто отправил", "С", "По", "Всего часов", "Данные", "Ставка ₽/ч", "К выплате ₽"]
+# «Подотчёт» — на что тех. директор потратил выданные под отчёт деньги: по строке на покупку.
+# «Отчёты подотчёта» — траты за период, отправленные ген. директору (снимок на момент отправки).
+ADV_TAB = "Подотчёт"
+ADV_HEADERS = ["ID", "Дата", "Наименование", "Количество", "Сумма ₽", "Кто внёс", "Внесено", "Отправлено"]
+ADV_REPORTS_TAB = "Отчёты подотчёта"
+ADV_REPORTS_HEADERS = ["Отправлено", "Кто отправил", "С", "По", "Сумма ₽", "Данные"]
 DEFAULT_RATE = 625      # ₽ за час, пока ген. директор не поставил другую ставку в приложении
 DEFAULT_BED_RATE = 300  # ₽ маляру за покрашенную кровать
 
@@ -1221,7 +1227,7 @@ DEFAULT_BED_RATE = 300  # ₽ маляру за покрашенную кров�
 RATES_TAB = "Ставки"
 RATES_HEADERS = ["Ключ", "Значение"]
 TABEL_BOOK_TABS = [(WORKERS_TAB, WORKERS_HEADERS), (TABEL_TAB, TABEL_HEADERS), (BONUS_TAB, BONUS_HEADERS),
-                   (REPORTS_TAB, REPORTS_HEADERS)]
+                   (REPORTS_TAB, REPORTS_HEADERS), (ADV_TAB, ADV_HEADERS), (ADV_REPORTS_TAB, ADV_REPORTS_HEADERS)]
 _tb = {"id": "", "book": None, "tabs": {}}
 _tb_lock = threading.Lock()
 
@@ -1853,6 +1859,134 @@ def bonus_decide(row: int, ok: bool, comment: str, who: str) -> dict:
     return {"ok": True, "status": status}
 
 
+# ------------------------------------------------------------ подотчётные финансы (тех. директор → ген. директор)
+def _adv_num(x, what: str, top: float):
+    try:
+        n = round(float(str(x if x is not None else "").replace(" ", "").replace("\u00a0", "").replace(",", ".")), 2)
+    except ValueError:
+        raise ValueError(f"{what} — число, например 3 или 2,5")
+    if not 0 < n <= top:
+        raise ValueError(f"{what}: нужно число больше нуля")
+    return int(n) if n == int(n) else n
+
+
+def expenses() -> list:
+    out = []
+    for i, v in enumerate(_tt(ADV_TAB, ADV_HEADERS).get_all_values()[1:], start=2):
+        v = list(v) + [""] * 8
+        try:
+            day = _d(v[1])
+            qty = _adv_num(v[3] or 1, "Количество", 1e9)
+            amount = _adv_num(v[4], "Сумма", 1e12)
+        except ValueError:
+            continue  # строку поправили руками так, что её не разобрать, — пропускаем, а не роняем экран
+        out.append({"row": i, "id": v[0].strip(), "day": day, "name": v[2].strip(), "qty": qty, "amount": amount,
+                    "by": v[5].strip(), "created": v[6].strip(), "sent": v[7].strip()})
+    return out
+
+
+def _adv_public(e: dict) -> dict:
+    return {"id": e["id"], "day": e["day"].isoformat(), "name": e["name"], "qty": e["qty"], "amount": e["amount"],
+            "by": e["by"], "sent": e["sent"]}
+
+
+def _adv_total(items: list) -> float:
+    t = round(sum(e["amount"] for e in items), 2)
+    return int(t) if t == int(t) else t
+
+
+def expense_add(day: date, name: str, qty, amount, who: str) -> dict:
+    if day > now_date():
+        raise ValueError("Дата покупки ещё не наступила")
+    name = " ".join((name or "").split())[:120]
+    if not name:
+        raise ValueError("Впишите наименование")
+    qty = _adv_num(qty if str(qty or "").strip() else 1, "Количество", 1_000_000)
+    amount = _adv_num(amount, "Сумма", 100_000_000)
+    _tt(ADV_TAB, ADV_HEADERS).append_row([secrets.token_hex(4), day.strftime("%d.%m.%Y"), name, qty, amount, who,
+                                          _stamp(), ""], value_input_option="RAW")
+    return {"ok": True}
+
+
+def expense_remove(eid: str, who: str) -> dict:
+    ws = _tt(ADV_TAB, ADV_HEADERS)
+    rows = ws.get_all_values(fresh=True)
+    for i, v in enumerate(rows[1:], start=2):
+        if v and v[0].strip() == eid and eid:
+            ws.delete_rows(i)
+            log.info("Подотчёт: строка удалена (%s): %s", who, " | ".join(v[1:5]))
+            return {"ok": True}
+    raise ValueError("Строка не найдена, обновите экран")
+
+
+def expense_data() -> dict:
+    rows = expenses()
+    unsent = sorted((e for e in rows if not e["sent"]), key=lambda e: (e["day"], e["row"]), reverse=True)
+    return {"today": now_date().isoformat(), "unsent": [_adv_public(e) for e in unsent], "total": _adv_total(unsent),
+            "first": min((e["day"] for e in unsent), default=now_date()).isoformat(),
+            "reports": expense_reports()[:20]}
+
+
+def expense_summary(d1: date, d2: date) -> dict:
+    if d2 < d1:
+        d1, d2 = d2, d1
+    if (d2 - d1).days > 366:
+        raise ValueError("Период не больше года")
+    items = sorted((e for e in expenses() if d1 <= e["day"] <= d2), key=lambda e: (e["day"], e["row"]))
+    return {"from": d1.isoformat(), "to": d2.isoformat(), "items": [_adv_public(e) for e in items],
+            "total": _adv_total(items)}
+
+
+def expense_send(d1: date, d2: date, who: str, code: str) -> dict:
+    summ = expense_summary(d1, d2)
+    if not summ["items"]:
+        raise ValueError("За этот период трат нет")
+    stamp = _stamp()
+    snap = {**summ, "items": [{k: e[k] for k in ("day", "name", "qty", "amount")} for e in summ["items"]]}
+    a, b = _d(summ["from"]), _d(summ["to"])
+    _tt(ADV_REPORTS_TAB, ADV_REPORTS_HEADERS).append_row(
+        [stamp, who, a.strftime("%d.%m.%Y"), b.strftime("%d.%m.%Y"), summ["total"], json.dumps(snap, ensure_ascii=False)],
+        value_input_option="RAW")
+    # помечаем строки отправленными — по ID и по свежему чтению: строки в таблице могли сдвинуть руками
+    ids = {e["id"] for e in summ["items"]}
+    ws = _tt(ADV_TAB, ADV_HEADERS)
+    ups = [{"range": f"H{i}", "values": [[stamp]]} for i, v in enumerate(ws.get_all_values(fresh=True)[1:], start=2)
+           if v and v[0].strip() in ids]
+    if ups:
+        ws.batch_update(ups, value_input_option="RAW")
+    period = a.strftime("%d.%m") + ("" if a == b else "–" + b.strftime("%d.%m.%Y"))
+    money = f"{summ['total']:,}".replace(",", " ").replace(".", ",")
+    push_safe("reports", f"💰 Подотчёт за {period}: {money} ₽",
+              f"{len(summ['items'])} поз. Отправил(а) {who}", _codes({"gendir", "admin"}, skip=code), "reports")
+    return {"ok": True, "total": summ["total"], "count": len(summ["items"])}
+
+
+def expense_reports() -> list:
+    out = []
+    for i, v in enumerate(_tt(ADV_REPORTS_TAB, ADV_REPORTS_HEADERS).get_all_values()[1:], start=2):
+        v = list(v) + [""] * 6
+        try:
+            data = json.loads(v[5])
+            data["items"], data["from"], data["to"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        data.update(id=i, sent=v[0].strip(), who=v[1].strip())
+        out.append(data)
+    return out[::-1][:60]
+
+
+def expense_report_delete(rid: int, sent: str, who: str) -> dict:
+    ws = _tt(ADV_REPORTS_TAB, ADV_REPORTS_HEADERS)
+    rows = ws.get_all_values(fresh=True)
+    if not 2 <= rid <= len(rows) or rows[rid - 1][0].strip() != (sent or "").strip():
+        raise ValueError("Отчёты в таблице поменялись, обновите экран и повторите")
+    row = rows[rid - 1]
+    ws.delete_rows(rid)
+    log.info("Отчёт подотчёта удалён (%s): %s–%s, отправлен %s", who, row[2] if len(row) > 2 else "",
+             row[3] if len(row) > 3 else "", sent)
+    return {"ok": True}
+
+
 # --------------------------------------------------------------- запросы
 ROLE_TABS = {"manager": ["courier", "prod", "keeper", "manager", "chat"], "courier": ["courier", "chat"],
              "prod": ["prod", "chat"], "keeper": ["keeper", "chat"],
@@ -2013,6 +2147,10 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
             if path == "/api/tech/sent":  # тех. директору — только часы, без денег
                 return 200, {"reports": [{k: r[k] for k in ("from", "to", "total", "sent", "who")}
                                          for r in reports() if r.get("who") == who][:20]}
+            if path == "/api/tech/money":
+                return 200, expense_data()
+            if path == "/api/tech/money/summary":
+                return 200, expense_summary(_d(body.get("from")), _d(body.get("to")))
             if path == "/api/tech/bonuses":  # свои предложенные премии и их статус
                 return 200, {"bonuses": [_bonus_public(b) for b in bonuses()[::-1] if b["by"] == who][:40]}
             if method == "POST":
@@ -2020,6 +2158,13 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
                     if path == "/api/tech/day":
                         n = tech_day_save(_d(body.get("day")), body.get("hours") or {}, who, body.get("beds") or {})
                         return 200, {"ok": True, "changed": n}
+                    if path == "/api/tech/money/add":
+                        return 200, expense_add(_d(body.get("day")) if body.get("day") else today,
+                                                str(body.get("name") or ""), body.get("qty"), body.get("amount"), who)
+                    if path == "/api/tech/money/remove":
+                        return 200, expense_remove(str(body.get("id") or "").strip(), who)
+                    if path == "/api/tech/money/send":
+                        return 200, expense_send(_d(body.get("from")), _d(body.get("to")), who, code)
                     if path == "/api/tech/bonus":
                         return 200, bonus_propose(str(body.get("worker") or ""), body.get("amount"),
                                                   str(body.get("reason") or ""), who, code)
@@ -2041,7 +2186,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
     if path == "/api/reports" and "reports" in tabs:
         bl = bonuses()
         return 200, {"reports": reports(), "rate": hour_rate(), "bed_rate": bed_rate(),
-                     "can_rate": me["role"] in ("gendir", "admin"),
+                     "can_rate": me["role"] in ("gendir", "admin"), "money": expense_reports(),
                      "pending": [_bonus_public(b) for b in bl if b["status"] == BONUS_WAIT],
                      "decided": [_bonus_public(b) for b in bl[::-1] if b["status"] != BONUS_WAIT][:20]}
     if method == "POST" and path == "/api/reports/rate" and me["role"] in ("gendir", "admin"):
@@ -2061,6 +2206,12 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
                 if path.endswith("delete"):
                     return 200, report_delete(_int(body.get("id"), 0), str(body.get("sent") or ""), who)
                 return 200, report_edit(_int(body.get("id"), 0), str(body.get("sent") or ""), body, who)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+    if method == "POST" and path == "/api/reports/money/delete" and me["role"] in ("gendir", "admin"):
+        try:
+            with _lock:
+                return 200, expense_report_delete(_int(body.get("id"), 0), str(body.get("sent") or ""), who)
         except ValueError as e:
             return 400, {"error": str(e)}
     if method == "POST" and path == "/api/reports/bonus" and me["role"] in ("gendir", "admin"):
@@ -2376,7 +2527,7 @@ def _prewarm() -> None:
     t0, today = time.time(), now_date()
     todo = [("курьер", lambda: courier_data(today)), ("производство", lambda: prod_data(today)),
             ("склад", keeper_data), ("менеджер", lambda: manager_data(today)),
-            ("табель", lambda: tech_data(today)), ("отчёты", reports), ("чат", lambda: chat_list(0, ""))]
+            ("табель", lambda: tech_data(today)), ("отчёты", reports), ("подотчёт", expense_data), ("чат", lambda: chat_list(0, ""))]
     for attempt in (1, 2):
         left = []
         for name, f in todo:
