@@ -324,16 +324,79 @@ def _chat_load() -> None:
     _chat.update(loaded=True, msgs=msgs, next=max([m["id"] for m in msgs] + [len(values)]) + 1)
 
 
-def chat_list(since: int, code: str, wait: bool = False, du: int = -1, ep: str = "") -> dict:
+# Кто до какого сообщения дочитал общий чат: по этому у своих сообщений рисуются галочки «прочитано».
+# Хранится в базе на сервере (рядом с личными сообщениями), чтобы галочки не сбрасывались при обновлении бота.
+_reads = {"loaded": False, "by": {}}
+
+
+def _reads_load() -> None:
+    if _reads["loaded"]:
+        return
+    try:
+        with _dm_lock:
+            _reads["by"] = {r[0]: int(r[1] or 0) for r in _dm_db().execute("SELECT code, last FROM chat_read").fetchall()}
+    except Exception:
+        log.exception("Чат: не смог прочитать отметки «прочитано»")
+    _reads["loaded"] = True
+
+
+def chat_mark(code: str, last: int) -> None:
+    """Телефон сообщает, до какого сообщения человек дочитал общий чат."""
+    _reads_load()
     with _chat_lock:
         _chat_load()
+        last = min(last, max((m["id"] for m in _chat["msgs"]), default=0))
+    if last <= _reads["by"].get(code, 0):
+        return
+    _reads["by"][code] = last
+    try:
+        with _dm_lock:
+            db = _dm_db()
+            db.execute("INSERT INTO chat_read VALUES(?,?) ON CONFLICT(code) DO UPDATE SET last=MAX(last, excluded.last)", (code, last))
+            db.commit()
+    except Exception:
+        log.exception("Чат: не смог записать отметку «прочитано»")
+    wake()  # у авторов сообщений галочки обновятся сразу
+
+
+def chat_read_by_others(code: str) -> int:
+    """До какого сообщения дочитал хоть кто-то, кроме самого человека."""
+    _reads_load()
+    return max((v for c, v in _reads["by"].items() if c != code), default=0)
+
+
+def online_count() -> tuple:
+    devs = devices()
+    return sum(1 for c in devs if is_online(c)), len(devs)
+
+
+def chat_unread(code: str, seen: int) -> dict:
+    """Общий чат для списка чатов: последнее сообщение и сколько чужих сообщений новее, чем seen."""
+    with _chat_lock:
+        _chat_load()
+        live = [m for m in _chat["msgs"] if not m.get("deleted")]
+    m = live[-1] if live else None
+    on, total = online_count()
+    return {"unread": sum(1 for x in live if x["id"] > seen and x["code"] != code), "online": on, "total": total,
+            "last": ({"t": m["t"], "id": m["id"], "mine": m["code"] == code, "name": m["name"],
+                      "text": ("📷 " if m.get("photo") else "") + (m["text"] or ("Фото" if m.get("photo") else ""))[:80]}
+                     if m else None)}
+
+
+def chat_list(since: int, code: str, wait: bool = False, du: int = -1, ep: str = "", seen: int = 0, rd: int = -1,
+              on: int = -1) -> dict:
+    with _chat_lock:
+        _chat_load()
+    if seen > 0:
+        chat_mark(code, seen)
     if wait and since > 0 and ep == _chat["epoch"]:  # ждём нового в общем чате или нового личного
         # (после перезапуска сервера номера другие — тогда отвечаем сразу, телефон загрузит чат заново)
         def changed():
             if _chat["rev"] > since:
                 return True
             try:
-                return du >= 0 and dm_unread(code) != du
+                return (du >= 0 and dm_unread(code) != du) or (rd >= 0 and chat_read_by_others(code) != rd) \
+                    or (on >= 0 and online_count()[0] != on)
             except Exception:
                 return False
         hold_wait(code, changed)
@@ -361,7 +424,8 @@ def chat_list(since: int, code: str, wait: bool = False, du: int = -1, ep: str =
                     "label": ROLE_LABELS.get(m["role"], ""), "text": m["text"],
                     "edited": bool(m.get("edited")), "mine": m["code"] == code,
                     "reply": quote(m.get("reply")), "photo": m.get("photo") or ""})
-    return {"epoch": _chat["epoch"], "rev": rev, "msgs": out}
+    n_on, n_all = online_count()
+    return {"epoch": _chat["epoch"], "rev": rev, "msgs": out, "read": chat_read_by_others(code), "online": n_on, "total": n_all}
 
 
 def _clean(text: str, empty_ok: bool = False) -> str:
@@ -770,6 +834,7 @@ def _dm_db():
             CREATE INDEX IF NOT EXISTS dm_rev ON dm(rev);
             CREATE TABLE IF NOT EXISTS dm_read(code TEXT, peer TEXT, last INTEGER, PRIMARY KEY(code, peer));
             CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+            CREATE TABLE IF NOT EXISTS chat_read(code TEXT PRIMARY KEY, last INTEGER);
         """)
         row = db.execute("SELECT v FROM meta WHERE k='epoch'").fetchone()
         if not row:
@@ -812,7 +877,13 @@ def _dm_public(r, code: str, names: dict, quotes: dict) -> dict:
             "mine": r["a"] == code, "reply": q, "photo": r["photo"] or ""}
 
 
-def dm_thread(code: str, peer: str, since: int, wait: bool = False, on: int = -1) -> dict:
+def _dm_read_by(db, reader: str, author: str) -> int:
+    """До какого сообщения от author дочитал reader."""
+    r = db.execute("SELECT last FROM dm_read WHERE code=? AND peer=?", (reader, author)).fetchone()
+    return int(r[0] or 0) if r else 0
+
+
+def dm_thread(code: str, peer: str, since: int, wait: bool = False, on: int = -1, rd: int = -1, seen: int = 0) -> dict:
     """Переписка двоих. since — номер последнего изменения у телефона: отдаём новые, исправленные и удалённые.
     wait — подождать до 25 сек, пока в переписке что-то не появится (мгновенная доставка)."""
     _peer(code, peer)
@@ -822,9 +893,12 @@ def dm_thread(code: str, peer: str, since: int, wait: bool = False, on: int = -1
             if on >= 0 and is_online(peer) != bool(on):  # собеседник вошёл или вышел — показать сразу
                 return True
             with _dm_lock:
+                if rd >= 0 and _dm_read_by(_dm_db(), peer, code) != rd:  # собеседник прочитал — показать галочки
+                    return True
                 return (_dm_db().execute("SELECT COALESCE(MAX(rev), 0) FROM dm WHERE (a=? AND b=?) OR (a=? AND b=?)",
                                          (code, peer, peer, code)).fetchone()[0] or 0) > since
         hold_wait(code, changed)
+    woke = False
     with _dm_lock:
         db = _dm_db()
         where = "((a=? AND b=?) OR (a=? AND b=?))"
@@ -839,13 +913,18 @@ def dm_thread(code: str, peer: str, since: int, wait: bool = False, on: int = -1
             f"SELECT * FROM dm WHERE {where} AND id IN ({','.join('?' * len(ids)) or '0'})", args + tuple(ids)).fetchall()}
         rev = db.execute(f"SELECT COALESCE(MAX(rev), 0) FROM dm WHERE {where}", args).fetchone()[0]
         last = db.execute(f"SELECT COALESCE(MAX(id), 0) FROM dm WHERE a=? AND b=?", (peer, code)).fetchone()[0]
-        if last:  # открыл переписку — всё от собеседника прочитано
+        if last and last > _dm_read_by(db, code, peer):  # открыл переписку — всё от собеседника прочитано
             db.execute("INSERT INTO dm_read VALUES(?,?,?) ON CONFLICT(code, peer) DO UPDATE SET last=MAX(last, excluded.last)",
                        (code, peer, last))
             db.commit()
+            woke = True
+        read = _dm_read_by(db, peer, code)
+    if woke:
+        wake()  # у собеседника сразу появятся галочки «прочитано», а у меня на других экранах обнулится счётчик
     names = devices()
     return {"epoch": _dm["epoch"] + peer, "rev": rev, "msgs": [_dm_public(r, code, names, quotes) for r in rows],
-            "peer": presence(peer)}
+            "peer": presence(peer), "read": read, "dm_unread": dm_unread(code),
+            "all_unread": chat_unread(code, seen)["unread"] if seen >= 0 else 0}
 
 
 def dm_unread(code: str) -> int:
@@ -855,7 +934,7 @@ def dm_unread(code: str) -> int:
                           "WHERE m.b=? AND m.deleted=0 AND m.id>COALESCE(r.last, 0)", (code,)).fetchone()[0]
 
 
-def dm_dialogs(code: str) -> dict:
+def dm_dialogs(code: str, seen: int = 0) -> dict:
     """Список людей: с кем уже переписывались — сверху (по последнему сообщению), остальные — по имени."""
     with _dm_lock:
         db = _dm_db()
@@ -877,7 +956,7 @@ def dm_dialogs(code: str) -> dict:
                                 if m else None),
                        "unread": unread.get(c, 0)})
     people.sort(key=lambda p: (p["last"] is None, -(p["last"]["id"] if p["last"] else 0), not p["online"], p["name"].lower()))
-    return {"people": people, "persistent": dm_persistent()}
+    return {"people": people, "persistent": dm_persistent(), "general": chat_unread(code, seen)}
 
 
 def dm_send(code: str, me: dict, peer: str, text: str, reply: int = 0, photo: str = "") -> dict:
@@ -1216,6 +1295,9 @@ ADV_TAB = "Подотчёт"
 ADV_HEADERS = ["ID", "Дата", "Наименование", "Количество", "Сумма ₽", "Кто внёс", "Внесено", "Отправлено"]
 ADV_REPORTS_TAB = "Отчёты подотчёта"
 ADV_REPORTS_HEADERS = ["Отправлено", "Кто отправил", "С", "По", "Сумма ₽", "Данные"]
+# «Выдано под отчёт» — сколько денег выдали тех. директору. Остаток на руках = всё выданное − все траты.
+ADV_ISSUED_TAB = "Выдано под отчёт"
+ADV_ISSUED_HEADERS = ["ID", "Дата", "Сумма ₽", "Комментарий", "Кто внёс", "Внесено"]
 DEFAULT_RATE = 625      # ₽ за час, пока ген. директор не поставил другую ставку в приложении
 DEFAULT_BED_RATE = 300  # ₽ маляру за покрашенную кровать
 
@@ -1227,7 +1309,8 @@ DEFAULT_BED_RATE = 300  # ₽ маляру за покрашенную кров�
 RATES_TAB = "Ставки"
 RATES_HEADERS = ["Ключ", "Значение"]
 TABEL_BOOK_TABS = [(WORKERS_TAB, WORKERS_HEADERS), (TABEL_TAB, TABEL_HEADERS), (BONUS_TAB, BONUS_HEADERS),
-                   (REPORTS_TAB, REPORTS_HEADERS), (ADV_TAB, ADV_HEADERS), (ADV_REPORTS_TAB, ADV_REPORTS_HEADERS)]
+                   (REPORTS_TAB, REPORTS_HEADERS), (ADV_TAB, ADV_HEADERS), (ADV_REPORTS_TAB, ADV_REPORTS_HEADERS),
+                   (ADV_ISSUED_TAB, ADV_ISSUED_HEADERS)]
 _tb = {"id": "", "book": None, "tabs": {}}
 _tb_lock = threading.Lock()
 
@@ -1895,6 +1978,62 @@ def _adv_total(items: list) -> float:
     return int(t) if t == int(t) else t
 
 
+def advances() -> list:
+    """Выданные под отчёт деньги."""
+    out = []
+    for i, v in enumerate(_tt(ADV_ISSUED_TAB, ADV_ISSUED_HEADERS).get_all_values()[1:], start=2):
+        v = list(v) + [""] * 6
+        try:
+            day, amount = _d(v[1]), _adv_num(v[2], "Сумма", 1e12)
+        except ValueError:
+            continue
+        out.append({"row": i, "id": v[0].strip(), "day": day, "amount": amount, "note": v[3].strip(), "by": v[4].strip(),
+                    "created": v[5].strip()})
+    return out
+
+
+def advance_add(day: date, amount, note: str, who: str, code: str, from_boss: bool) -> dict:
+    if day > now_date():
+        raise ValueError("Эта дата ещё не наступила")
+    amount = _adv_num(amount, "Сумма", 100_000_000)
+    note = " ".join((note or "").split())[:120]
+    _tt(ADV_ISSUED_TAB, ADV_ISSUED_HEADERS).append_row(
+        [secrets.token_hex(4), day.strftime("%d.%m.%Y"), amount, note, who, _stamp()], value_input_option="RAW")
+    money = f"{amount:,}".replace(",", " ").replace(".", ",")
+    # выдал директор — узнаёт тех. директор; записал тех. директор — узнаёт директор
+    push_safe("reports", f"💵 Под отчёт выдано {money} ₽", (note + ". " if note else "") + f"Записал(а) {who}",
+              _codes({"techdir", "admin"} if from_boss else {"gendir", "admin"}, skip=code), "tech" if from_boss else "reports")
+    return {"ok": True}
+
+
+def advance_remove(aid: str, who: str, any_row: bool) -> dict:
+    """Убрать запись о выдаче. Тех. директор убирает только то, что внёс сам; ген. директор и администратор — любую."""
+    ws = _tt(ADV_ISSUED_TAB, ADV_ISSUED_HEADERS)
+    for i, v in enumerate(ws.get_all_values(fresh=True)[1:], start=2):
+        if aid and v and v[0].strip() == aid:
+            if not any_row and (list(v) + [""] * 5)[4].strip() != who:
+                raise ValueError("Эту выдачу записал другой человек — убрать её может он или ген. директор")
+            ws.delete_rows(i)
+            log.info("Подотчёт: выдача удалена (%s): %s", who, " | ".join(v[1:5]))
+            return {"ok": True}
+    raise ValueError("Запись не найдена, обновите экран")
+
+
+def _adv_r(x: float):
+    x = round(x, 2)
+    return int(x) if x == int(x) else x
+
+
+def advance_state(who: str = "", any_row: bool = False) -> dict:
+    """Сколько выдано, потрачено и сколько осталось на руках — за всё время."""
+    adv = advances()
+    issued, spent = sum(a["amount"] for a in adv), sum(e["amount"] for e in expenses())
+    last = sorted(adv, key=lambda a: (a["day"], a["row"]), reverse=True)[:30]
+    return {"issued": _adv_r(issued), "spent": _adv_r(spent), "balance": _adv_r(issued - spent),
+            "issues": [{"id": a["id"], "day": a["day"].isoformat(), "amount": a["amount"], "note": a["note"], "by": a["by"],
+                        "can_remove": any_row or a["by"] == who} for a in last]}
+
+
 def expense_add(day: date, name: str, qty, amount, who: str) -> dict:
     if day > now_date():
         raise ValueError("Дата покупки ещё не наступила")
@@ -1919,10 +2058,10 @@ def expense_remove(eid: str, who: str) -> dict:
     raise ValueError("Строка не найдена, обновите экран")
 
 
-def expense_data() -> dict:
+def expense_data(who: str = "", any_row: bool = False) -> dict:
     rows = expenses()
     unsent = sorted((e for e in rows if not e["sent"]), key=lambda e: (e["day"], e["row"]), reverse=True)
-    return {"today": now_date().isoformat(), "unsent": [_adv_public(e) for e in unsent], "total": _adv_total(unsent),
+    return {"today": now_date().isoformat(), "adv": advance_state(who, any_row), "unsent": [_adv_public(e) for e in unsent], "total": _adv_total(unsent),
             "first": min((e["day"] for e in unsent), default=now_date()).isoformat(),
             "reports": expense_reports()[:20]}
 
@@ -1932,9 +2071,15 @@ def expense_summary(d1: date, d2: date) -> dict:
         d1, d2 = d2, d1
     if (d2 - d1).days > 366:
         raise ValueError("Период не больше года")
-    items = sorted((e for e in expenses() if d1 <= e["day"] <= d2), key=lambda e: (e["day"], e["row"]))
-    return {"from": d1.isoformat(), "to": d2.isoformat(), "items": [_adv_public(e) for e in items],
-            "total": _adv_total(items)}
+    rows, adv = expenses(), advances()
+    items = sorted((e for e in rows if d1 <= e["day"] <= d2), key=lambda e: (e["day"], e["row"]))
+    # остаток на начало периода = всё выданное до него − всё потраченное до него
+    start = sum(a["amount"] for a in adv if a["day"] < d1) - sum(e["amount"] for e in rows if e["day"] < d1)
+    got = sorted((a for a in adv if d1 <= a["day"] <= d2), key=lambda a: (a["day"], a["row"]))
+    issued, total = sum(a["amount"] for a in got), _adv_total(items)
+    return {"from": d1.isoformat(), "to": d2.isoformat(), "items": [_adv_public(e) for e in items], "total": total,
+            "start": _adv_r(start), "issued": _adv_r(issued), "end": _adv_r(start + issued - total),
+            "issues": [{"day": a["day"].isoformat(), "amount": a["amount"], "note": a["note"]} for a in got]}
 
 
 def expense_send(d1: date, d2: date, who: str, code: str) -> dict:
@@ -1956,8 +2101,9 @@ def expense_send(d1: date, d2: date, who: str, code: str) -> dict:
         ws.batch_update(ups, value_input_option="RAW")
     period = a.strftime("%d.%m") + ("" if a == b else "–" + b.strftime("%d.%m.%Y"))
     money = f"{summ['total']:,}".replace(",", " ").replace(".", ",")
+    left = f"{abs(summ['end']):,}".replace(",", " ").replace(".", ",")
     push_safe("reports", f"💰 Подотчёт за {period}: {money} ₽",
-              f"{len(summ['items'])} поз. Отправил(а) {who}", _codes({"gendir", "admin"}, skip=code), "reports")
+              f"{len(summ['items'])} поз. · {'остаток' if summ['end'] >= 0 else 'перерасход'} {left} ₽. Отправил(а) {who}", _codes({"gendir", "admin"}, skip=code), "reports")
     return {"ok": True, "total": summ["total"], "count": len(summ["items"])}
 
 
@@ -2084,10 +2230,10 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
     if path.startswith("/api/dm"):
         try:
             if path == "/api/dm/list":
-                return 200, dm_dialogs(code)
+                return 200, dm_dialogs(code, _int(body.get("seen"), 0))
             if path == "/api/dm":
                 return 200, dm_thread(code, str(body.get("peer") or ""), _int(body.get("since"), 0), body.get("wait") == "1",
-                                      _int(body.get("on"), -1))
+                                      _int(body.get("on"), -1), _int(body.get("rd"), -1), _int(body.get("seen"), 0))
             if method == "POST" and path == "/api/dm/send":
                 return 200, dm_send(code, me, str(body.get("peer") or ""), str(body.get("text") or ""), _int(body.get("reply"), 0))
             if method == "POST" and path == "/api/dm/edit":
@@ -2098,7 +2244,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
             return 400, {"error": str(e)}
     if path == "/api/chat":
         res = chat_list(_int(body.get("since"), 0), code, body.get("wait") == "1", _int(body.get("du"), -1),
-                        str(body.get("ep") or ""))
+                        str(body.get("ep") or ""), _int(body.get("seen"), 0), _int(body.get("rd"), -1), _int(body.get("on"), -1))
         try:
             res["dm_unread"] = dm_unread(code)  # непрочитанные личные — для значка на вкладке «Чат»
         except Exception:
@@ -2148,7 +2294,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
                 return 200, {"reports": [{k: r[k] for k in ("from", "to", "total", "sent", "who")}
                                          for r in reports() if r.get("who") == who][:20]}
             if path == "/api/tech/money":
-                return 200, expense_data()
+                return 200, expense_data(who, me["role"] in ("gendir", "admin"))
             if path == "/api/tech/money/summary":
                 return 200, expense_summary(_d(body.get("from")), _d(body.get("to")))
             if path == "/api/tech/bonuses":  # свои предложенные премии и их статус
@@ -2187,6 +2333,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         bl = bonuses()
         return 200, {"reports": reports(), "rate": hour_rate(), "bed_rate": bed_rate(),
                      "can_rate": me["role"] in ("gendir", "admin"), "money": expense_reports(),
+                     "adv": advance_state(who, me["role"] in ("gendir", "admin")), "today": today.isoformat(),
                      "pending": [_bonus_public(b) for b in bl if b["status"] == BONUS_WAIT],
                      "decided": [_bonus_public(b) for b in bl[::-1] if b["status"] != BONUS_WAIT][:20]}
     if method == "POST" and path == "/api/reports/rate" and me["role"] in ("gendir", "admin"):
@@ -2206,6 +2353,17 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
                 if path.endswith("delete"):
                     return 200, report_delete(_int(body.get("id"), 0), str(body.get("sent") or ""), who)
                 return 200, report_edit(_int(body.get("id"), 0), str(body.get("sent") or ""), body, who)
+        except ValueError as e:
+            return 400, {"error": str(e)}
+    if method == "POST" and path in ("/api/money/issue", "/api/money/issue/remove") \
+            and ("tech" in tabs or me["role"] in ("gendir", "admin")):
+        boss = me["role"] in ("gendir", "admin")
+        try:
+            with _lock:
+                if path.endswith("remove"):
+                    return 200, advance_remove(str(body.get("id") or "").strip(), who, boss)
+                return 200, advance_add(_d(body.get("day")) if body.get("day") else today, body.get("amount"),
+                                        str(body.get("note") or ""), who, code, boss)
         except ValueError as e:
             return 400, {"error": str(e)}
     if method == "POST" and path == "/api/reports/money/delete" and me["role"] in ("gendir", "admin"):
@@ -2441,8 +2599,6 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, data, ctype, "private, max-age=31536000, immutable")
         if path in ("/health", "/ok"):
             return self._send(200, b"ok", "text/plain")
-        if path.startswith("/alice"):
-            return self._send(200, b"ok", "text/plain")  # проверка «жив ли адрес»
         name, ctype = STATIC.get(path, STATIC["/"])
         try:
             data = (HERE / name).read_bytes()
@@ -2454,20 +2610,6 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0].rstrip("/")
-        if path.startswith("/alice/"):
-            import alice
-            if not config.ALICE_SECRET or path != f"/alice/{config.ALICE_SECRET}":
-                log.warning("Алиса: запрос на неверный адрес — проверьте секрет в адресе навыка")
-                return self._json(404, {"error": "not found"})
-            try:
-                body = json.loads(self._body() or b"{}")
-                res = alice.handle(body)
-                log.info("Алиса: запрос «%s» -> ответ отправлен", ((body.get("request") or {}).get("command") or "")[:60])
-                return self._json(200, res)
-            except Exception:
-                log.exception("Алиса: не смог обработать запрос")
-                return self._json(200, {"response": {"text": "Что-то пошло не так, попробуйте ещё раз.",
-                                                     "end_session": False}, "version": "1.0"})
         if path == "/api/chat/photo":
             size = int(self.headers.get("Content-Length") or 0)
             if size > MAX_PHOTO:
@@ -2557,12 +2699,12 @@ class _Server(ThreadingHTTPServer):
 
 
 def start(**hooks) -> None:
-    """Запускает веб-сервер в отдельном потоке: приложение на /, Алиса на /alice/<секрет>.
+    """Запускает веб-сервер в отдельном потоке: приложение на /.
     hooks — функции бота, которые делают то же, что кнопки в MAX."""
     _deps.update(hooks)
-    srv = _Server(("0.0.0.0", config.ALICE_PORT), Handler)
+    srv = _Server(("0.0.0.0", config.APP_PORT), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
-    log.info("Приложение для сотрудников: слушаю порт %d", config.ALICE_PORT)
+    log.info("Приложение для сотрудников: слушаю порт %d", config.APP_PORT)
     threading.Thread(target=_update_watch, daemon=True).start()
     try:
         sheets.start_warmer()  # таблица в памяти сервера: кнопки не ждут Google

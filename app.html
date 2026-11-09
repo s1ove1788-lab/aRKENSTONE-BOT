@@ -307,6 +307,68 @@ nav.lots button span{font-size:20px}
 body.chat.emoji main{padding-bottom:calc(400px + env(safe-area-inset-bottom))}
 .sheet textarea{width:100%;font:inherit;padding:12px;border-radius:12px;border:1px solid var(--line);
   background:var(--bg);color:var(--ink);min-height:110px;resize:vertical;margin-bottom:8px}
+/* ---------- чат в стиле мессенджера: обои, аватарки, пузыри с временем и галочками внутри */
+:root{--mine:linear-gradient(25deg,#3d5cf5 0%,#7d45e6 58%,#d9608a 112%)}
+body.chat{background-color:var(--bg);background-size:220px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='220' height='220' fill='none' stroke='%23808080' stroke-opacity='.16' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='28' cy='30' r='9'/%3E%3Cpath d='M92 18v18M83 27h18M150 22l12 20h-24zM196 60q8-10 16 0t16 0M20 96l14 14M34 96l-14 14M78 84h22v22H78zM138 92a10 10 0 1 0 20 0M186 118v16M178 126h16M30 160a12 12 0 0 1 24 0q0 8-12 16q-12-8-12-16M96 150l8 8l14-16M150 156h26M150 166h18M196 176a8 8 0 1 0 .1 0M60 204q8-10 16 0t16 0M124 196l10 10M134 196l-10 10'/%3E%3C/svg%3E")}
+.chat-top{background:var(--card);border-bottom:1px solid var(--line);padding:8px 12px}
+.chat-head{display:flex;align-items:center;gap:10px;min-height:44px}
+.chat-head .grow{flex:1;min-width:0}
+.chat-head b{display:block;font-size:17px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat-head small{display:block;color:var(--muted);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.chat-head .ttl{font-size:20px;padding:0 4px}
+.cbk{position:relative;background:none;border:0;color:var(--ink);width:40px;height:44px;padding:0;cursor:pointer;flex:none;display:flex;align-items:center;justify-content:center}
+.cbk .dm-badge{position:absolute;top:0;left:20px;margin:0;font-size:11px;min-width:18px;height:18px;line-height:18px;padding:0 5px}
+.ava{width:40px;height:40px;border-radius:50%;flex:none;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:700;font-size:16px;position:relative}
+.ava.all{background:linear-gradient(135deg,#3d8bf5,#5b5fe9)}
+.chat-list{gap:3px}
+.mrow{display:flex;align-items:flex-start;gap:8px}
+.mrow.mine{justify-content:flex-end}
+.mrow.first{margin-top:7px}
+.mrow .ava{width:34px;height:34px;font-size:14px}
+.mrow .ava.no{visibility:hidden;height:1px}
+.msg{max-width:min(80%,440px);align-self:auto;border:0;border-radius:18px;padding:7px 12px 6px;box-shadow:0 1px 1.5px rgba(0,0,0,.1);min-width:74px}
+.msg.mine{background:var(--mine);color:#fff;border-radius:18px;cursor:pointer}
+.msg:not(.mine){cursor:pointer}
+.msg .who{display:flex;justify-content:space-between;align-items:baseline;gap:14px;font-size:14px;margin-bottom:1px;color:inherit}
+.msg .who small{font-size:12px;color:var(--muted);font-weight:400;white-space:nowrap}
+.msg .body::after{content:"";display:block;clear:both}
+.msg .txt{display:inline}
+.msg .tm{float:right;display:flex;align-items:center;gap:3px;margin:6px 0 0 12px;font-size:11px;color:var(--muted);white-space:nowrap;line-height:15px}
+.msg .tm i{margin:0;font-style:normal}
+.msg.mine .tm{color:rgba(255,255,255,.78)}
+.msg.mine a{color:#fff;text-decoration:underline}
+.msg.mine .q{border-left-color:#fff;background:rgba(255,255,255,.17)}
+.msg.mine .q b{color:#fff}
+.msg.mine .q span{color:rgba(255,255,255,.82)}
+.msg .ck{display:inline-flex;margin-left:1px}
+.msg .ck svg{display:block}
+.msg.big{background:none;box-shadow:none}
+.msg.mine.big .tm,.msg.big .tm{color:var(--muted)}
+.msg.cont{margin-top:0}
+.chat-day{background:rgba(0,0,0,.42);color:#fff;font-size:13px;padding:3px 12px;margin:10px 0 4px}
+.chat-new{margin:10px -16px 6px;padding:5px 0;text-align:center;font-size:13px;font-weight:600;color:var(--ink);background:color-mix(in srgb,#5b5fe9 26%,var(--card))}
+.composer{background:var(--bg);border-top:0;padding:6px 8px 8px}
+.composer .in{background:var(--card);border-radius:24px;padding:3px 5px;gap:2px;box-shadow:0 1px 2px rgba(0,0,0,.08)}
+.composer textarea{border:0;background:none;padding:11px 4px;min-height:44px;border-radius:0}
+.composer textarea:focus{border:0}
+.composer .ic,.composer button.ic.emo{width:40px;height:44px;border-radius:50%;background:none;color:var(--muted);border:0;display:flex;align-items:center;justify-content:center;cursor:pointer;flex:none;padding:0}
+.composer button.ic.emo.on{background:none;color:#5b5fe9}
+.composer #chat-go{width:40px;height:40px;margin:2px;background:var(--mine);color:#fff;display:flex;align-items:center;justify-content:center;padding:0}
+.composer #chat-go[hidden]{display:none}
+.chat-down{position:absolute;right:12px;top:-54px;width:44px;height:44px;border-radius:50%;border:1px solid var(--line);background:var(--card);color:var(--ink);
+  display:flex;align-items:center;justify-content:center;box-shadow:0 2px 8px rgba(0,0,0,.18);cursor:pointer;padding:0}
+.composer .chat-down{width:44px;height:44px;background:var(--card);color:var(--ink)}
+.chat-down[hidden]{display:none}
+.chat-down b{position:absolute;top:-7px;right:-3px;background:#5b5fe9;color:#fff;font-size:11px;min-width:19px;height:19px;line-height:19px;border-radius:10px;padding:0 5px}
+.chat-down b:empty{display:none}
+.clist{background:var(--card);border-radius:16px;overflow:hidden;margin-bottom:10px}
+.clist .dm-row{margin:0;border:0;border-radius:0;background:none;border-top:1px solid var(--line);padding:11px 12px;cursor:pointer}
+.clist .dm-row:first-child{border-top:0}
+.clist .dm-row .grow{flex:1;min-width:0}
+.clist .dm-row:active{background:var(--chip)}
+.clist .ava{width:48px;height:48px;font-size:19px}
+.clist .ava-on{border-color:var(--card)}
+.clist .dm-badge{background:#5b5fe9}
 </style>
 </head>
 <body>
@@ -450,6 +512,7 @@ function showCode(){
 }
 
 function open(k){
+  chatMarkSeen();  // уходим из чата (или возвращаемся в него) — увиденное больше не считается непрочитанным
   tab = k; try { localStorage.setItem("ark_tab", k); } catch(e) {}
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === k));
   document.body.classList.toggle("chat", k === "chat");
@@ -459,6 +522,7 @@ function open(k){
   if (k !== "chat" && chat !== CHAT_ALL) { clearTimeout(chat.timer); chat = CHAT_ALL; }
   chatView = "feed"; clearTimeout(window._dmListT);
   if (k === "chat") return chatOpen();
+  chatBadge();
   setTimeout(() => chatPoll(CHAT_ALL), 300);  // вне чата тоже ждём новое — ради значка на вкладке «Чат»
   load(true);
 }
@@ -1462,10 +1526,59 @@ function moneyTable(items, total, del){
     <tr><td><b>Итого</b></td><td class="n">${items.length} поз.</td><td class="n" style="white-space:nowrap"><b>${rub2(total)}</b></td>${del ? "<td></td>" : ""}</tr>
   </table></div>`;
 }
+/* Остаток на руках: всё выданное − все траты. Минус — потратил больше, чем выдали (перерасход) */
+function moneyBalance(a){
+  if (!a) return "";
+  return `<div class="stats" style="grid-template-columns:1fr 1fr 1fr">
+    <div class="stat"><b style="font-size:17px;white-space:nowrap;line-height:32px">${rub2(a.issued)}</b><small>выдано</small></div>
+    <div class="stat"><b style="font-size:17px;white-space:nowrap;line-height:32px">${rub2(a.spent)}</b><small>потрачено</small></div>
+    <div class="stat"><b style="font-size:17px;white-space:nowrap;line-height:32px;${a.balance < 0 ? "color:var(--warn)" : ""}">${rub2(Math.abs(a.balance))}</b><small>${a.balance < 0 ? "перерасход" : "остаток"}</small></div></div>`;
+}
+function moneyIssues(a){
+  if (!a || !a.issues.length) return `<div class="muted">Пока ничего не выдавали</div>`;
+  return `<div class="card" style="padding:6px 10px"><table>${a.issues.map((x, i) => `<tr><td><b>${esc(dm(x.day))}</b>${x.note ? ` · ${esc(x.note)}` : ""}<div class="ch">записал(а) ${esc(x.by || "—")}</div></td>
+    <td class="n" style="white-space:nowrap"><b>${rub2(x.amount)}</b></td>
+    <td class="n" style="width:1%">${x.can_remove ? `<button class="btn" style="padding:8px 10px" onclick="issueDel(${i})" aria-label="Убрать выдачу">✕</button>` : ""}</td></tr>`).join("")}</table></div>`;
+}
+/* Сводка периода в отчёте: остаток на начало → выдано → потрачено → остаток на конец. В старых отчётах её нет */
+function moneyFlow(r){
+  if (r.end === undefined) return "";
+  const line = (k, v, bold) => `<tr><td>${bold ? `<b>${k}</b>` : k}</td><td class="n" style="white-space:nowrap">${bold ? `<b>${v}</b>` : v}</td></tr>`;
+  const bal = x => (x < 0 ? "−" : "") + rub2(Math.abs(x));
+  return `<div class="card" style="padding:6px 10px"><table>
+    ${line("Остаток на начало", bal(r.start))}
+    ${line("Выдано за период", "+" + rub2(r.issued))}
+    ${(r.issues || []).map(x => `<tr><td class="muted" style="border-top:0;padding-top:0" colspan="2">${esc(dm(x.day))}: ${rub2(x.amount)}${x.note ? ` — ${esc(x.note)}` : ""}</td></tr>`).join("")}
+    ${line("Потрачено за период", "−" + rub2(r.total))}
+    ${line(r.end < 0 ? "Перерасход на конец" : "Остаток на конец", `<span style="${r.end < 0 ? "color:var(--warn)" : ""}">${rub2(Math.abs(r.end))}</span>`, true)}
+  </table></div>`;
+}
+/* Записать выдачу денег под отчёт. Тех. директор — «получил», ген. директор — «выдал»; попадает в один список */
+function issueForm(again){
+  const boss = !!(me.admin || me.role === "gendir"), t = iso(new Date());
+  sheet(`<h3>${boss ? "Выдать под отчёт" : "Получил под отчёт"}</h3><div class="muted">${boss ? "Тех. директор увидит выдачу, остаток у него вырастет." : "Ген. директор увидит эту запись."}</div>
+    <label class="l">Сумма, ₽</label><input id="i-sum" type="text" inputmode="decimal" placeholder="Например, 20000" style="font-size:22px;text-align:center;font-weight:700">
+    <label class="l">Дата</label><input id="i-day" type="date" value="${t}" max="${t}">
+    <label class="l">Комментарий (необязательно)</label><input id="i-note" maxlength="120" placeholder="Например: на материалы">
+    <div class="actions"><button class="btn" onclick="closeSheet()">Отмена</button><button class="btn main" id="i-go">Записать</button></div>`);
+  $("#i-go").onclick = async () => {
+    const amount = $("#i-sum").value.replace(/\s/g, "");
+    if (!(+amount.replace(",", ".") > 0)) { $("#i-sum").focus(); return toast("Впишите сумму"); }
+    const btn = $("#i-go"); btn.disabled = true;
+    try { await call("/api/money/issue", {amount, day: $("#i-day").value, note: $("#i-note").value}); closeSheet(); toast("✅ Записано"); again(); }
+    catch(e) { toast(e.message); btn.disabled = false; }
+  };
+}
+async function issueDel(i){
+  const a = window._adv, x = a && a.issues[i]; if (!x) return;
+  if (!confirm(`Убрать запись о выдаче ${rub2(x.amount)} от ${dm(x.day)}? Остаток уменьшится.`)) return;
+  try { await call("/api/money/issue/remove", {id: x.id}); toast("Убрано"); (window._advAgain || load)(); }
+  catch(e) { toast(e.message); }
+}
 function moneyCards(list, fn){
   return list.map((r, i) => `<div class="card tap" onclick="${fn}(${i})"><div class="top">
     <div class="title">${esc(fmtPeriod(r.from, r.to))}</div><span class="badge">${rub2(r.total)}</span></div>
-    <div class="sub">${r.items.length} поз. · отправил ${esc(r.who || "—")}, ${esc(r.sent)}</div></div>`).join("");
+    <div class="sub">${r.items.length} поз.${r.end === undefined ? "" : ` · ${r.end < 0 ? "перерасход" : "остаток"} ${rub2(Math.abs(r.end))}`} · отправил ${esc(r.who || "—")}, ${esc(r.sent)}</div></div>`).join("");
 }
 async function moneyPage(keep){
   if (techDirty() && !confirm("Часы за день не сохранены. Уйти без сохранения?")) return;
@@ -1474,8 +1587,9 @@ async function moneyPage(keep){
   let d;
   try { d = await call("/api/tech/money"); } catch(e) { return toast(e.message); }
   if (!onPage) return;
-  window._money = d;
-  page("Подотчётные финансы", `
+  window._money = d; window._adv = d.adv; window._advAgain = () => moneyPage(true);
+  page("Подотчётные финансы", moneyBalance(d.adv) + `
+    <button class="btn" style="width:100%;margin-bottom:12px" onclick="issueForm(() => moneyPage(true))">💵 Получил под отчёт</button>
     <div class="card open-form">
       <div class="title" style="margin-bottom:8px">Добавить трату</div>
       <label class="l">Наименование</label><input id="m-name" maxlength="120" placeholder="Например: краска белая 10 л" autocomplete="off">
@@ -1488,6 +1602,7 @@ async function moneyPage(keep){
     <h2>Ещё не отправлено${d.unsent.length ? ` · ${rub2(d.total)}` : ""}</h2>
     ${d.unsent.length ? moneyTable(d.unsent, d.total, true) : `<div class="empty">Всё отправлено. Новые траты появятся здесь.</div>`}
     <button class="btn main big" style="width:100%;margin-top:8px" onclick="moneySendPage()">📤 Отправить ген. директору</button>
+    <h2>Выдано под отчёт</h2>${moneyIssues(d.adv)}
     <h2>Отправленные отчёты</h2>
     ${d.reports.length ? moneyCards(d.reports, "moneyMine") : `<div class="muted">Пока ничего</div>`}`, () => moneyPage());
 }
@@ -1508,7 +1623,7 @@ async function moneyDel(i){
 }
 function moneyMine(i){
   const r = window._money.reports[i];
-  page(esc(fmtPeriod(r.from, r.to)), `<p class="muted">Отправил ${esc(r.who || "—")}, ${esc(r.sent)}</p>` + moneyTable(r.items, r.total), null, "moneyPage()");
+  page(esc(fmtPeriod(r.from, r.to)), `<p class="muted">Отправил ${esc(r.who || "—")}, ${esc(r.sent)}</p>` + moneyFlow(r) + moneyTable(r.items, r.total), null, "moneyPage()");
 }
 function moneySendPage(){
   const d = window._money || {}, t = iso(new Date());
@@ -1522,7 +1637,7 @@ function moneySendPage(){
       <div><label class="l">По</label><input type="date" id="mp-to" value="${b}" max="${t}"></div></div>
     <div id="mp-sum"><div class="empty">Считаю…</div></div>
     <button class="btn main big" style="width:100%;margin-top:8px" id="mp-send" onclick="moneySend(this)" disabled>📤 Отправить ген. директору</button>
-    <p class="muted">Директор увидит список трат и общую сумму в своей вкладке «Отчёты». В отчёт попадают все траты с датой покупки в выбранном периоде.</p></div>`,
+    <p class="muted">Директор увидит список трат, сколько выдано и остаток в своей вкладке «Отчёты». В отчёт попадают все траты с датой покупки в выбранном периоде.</p></div>`,
     null, "moneyPage()");
   document.querySelectorAll("#mper button").forEach(btn => btn.addEventListener("click", () => {
     window._moneyK = btn.dataset.k; const [x, y] = per(btn.dataset.k);
@@ -1537,7 +1652,7 @@ async function moneyPreview(){
   try {
     const s = await call(`/api/tech/money/summary?from=${a}&to=${b}`);
     if (!$("#mp-sum")) return;
-    box.innerHTML = `<h2>${esc(fmtPeriod(s.from, s.to))}</h2>` + (s.items.length ? moneyTable(s.items, s.total)
+    box.innerHTML = `<h2>${esc(fmtPeriod(s.from, s.to))}</h2>` + (s.items.length ? moneyFlow(s) + moneyTable(s.items, s.total)
       + (s.items.some(e => e.sent) ? `<p class="muted">Часть этих трат уже отправлялась раньше — они попадут в отчёт повторно.</p>` : "")
       : `<div class="empty">За этот период трат нет</div>`);
     btn.disabled = !s.items.length;
@@ -1553,7 +1668,7 @@ async function moneySend(btn){
 /* Ген. директор: присланный подотчёт */
 function moneyReport(i){
   const r = window._moneyReports[i], can = (window._rateInfo || {}).can_rate;
-  page(esc(fmtPeriod(r.from, r.to)), `<p class="muted">Подотчётные финансы · отправил ${esc(r.who || "—")}, ${esc(r.sent)}</p>` + moneyTable(r.items, r.total)
+  page(esc(fmtPeriod(r.from, r.to)), `<p class="muted">Подотчётные финансы · отправил ${esc(r.who || "—")}, ${esc(r.sent)}</p>` + moneyFlow(r) + moneyTable(r.items, r.total)
     + (can ? `<button class="btn" style="width:100%;margin-top:12px;color:var(--warn)" onclick="moneyReportDelete(this, ${i})">🗑 Удалить отчёт</button>` : ""),
     null, "load(true)");
 }
@@ -1568,6 +1683,7 @@ async function moneyReportDelete(btn, i){
 /* ------------------------------ отчёты табеля (ген. директор) */
 function drawReports(d){
   window._reports = d.reports; window._rateInfo = d; window._pending = d.pending || []; window._moneyReports = d.money || [];
+  window._adv = d.adv; window._advAgain = () => load();
   $("#main").innerHTML = (window._pending.length ? `<h2>🎁 Премии на согласовании · ${window._pending.length}</h2>` + window._pending.map((b, i) => `
     <div class="card bonus"><div class="row"><div class="grow"><div class="title">${esc(b.name)}</div>
         <div class="sub">${esc(b.reason)}</div><div class="muted" style="margin:4px 0 0">Предложил(а) ${esc(b.by)}, ${esc(b.created)}</div></div>
@@ -1583,7 +1699,10 @@ function drawReports(d){
       <div class="title">${esc(fmtPeriod(r.from, r.to))}</div><span class="badge">${rub(r.total_pay ?? r.pay)}</span></div>
       <div class="sub">${hh(r.total)} ч${r.beds ? ` · ${r.beds} кров.` : ""}${r.bonus ? ` · премии ${rub(r.bonus)}` : ""} · ${r.people.length} чел. · отправил ${esc(r.who || "—")}, ${esc(r.sent)}${r.edited ? " · ✏️ изменён" : ""}</div></div>`).join("")
     : `<div class="empty">Пока ничего не присылали.<br>Отчёт появится здесь, когда тех. директор нажмёт «Отправить директору».</div>`)
-    + `<h2>Подотчётные финансы от тех. директора</h2>` + (window._moneyReports.length ? moneyCards(window._moneyReports, "moneyReport")
+    + `<h2>Подотчётные финансы от тех. директора</h2>` + moneyBalance(d.adv)
+    + (d.can_rate ? `<button class="btn" style="width:100%;margin-bottom:10px" onclick="issueForm(() => load())">💵 Выдать под отчёт</button>` : "")
+    + (d.adv && d.adv.issues.length ? `<details style="margin-bottom:10px"><summary class="muted" style="cursor:pointer;margin:0 4px 8px">Выдачи · ${d.adv.issues.length}</summary>${moneyIssues(d.adv)}</details>` : "")
+    + (window._moneyReports.length ? moneyCards(window._moneyReports, "moneyReport")
     : `<div class="empty">Пока ничего не присылали.</div>`)
     + ((d.decided || []).length ? `<h2>Решённые премии</h2><div class="card" style="padding:6px 10px"><table>${d.decided.map(b =>
       `<tr><td><b>${esc(b.name)}</b><div class="ch">${esc(b.reason)}</div><div class="ch">${esc(b.decided)}${b.comment ? " · " + esc(b.comment) : ""}</div></td>
@@ -1790,7 +1909,7 @@ window.onUpdatePermission = () => { const n = $("#upd-note"); if (n) n.textConte
 
 /* ------------------------------ чат
    Все сообщения храним здесь (chat.msgs) и раз в несколько секунд спрашиваем у сервера только новые.
-   Открыт чат — проверяем каждые 3 сек, иначе раз в 20 сек, чтобы показать число непрочитанных на вкладке. */
+   Сервер держит запрос, пока не появится новое («долгий запрос»), — так сообщения и значки приходят сразу. */
 let chat = {msgs: [], rev: 0, last: 0, epoch: "", busy: false, timer: null, sending: false, reply: 0, photo: null};
 /* Личные сообщения: у каждого диалога своё такое же состояние, chat указывает на открытый (общий — CHAT_ALL).
    chatView: "feed" — лента (общая или личная), "list" — список людей для личной переписки */
@@ -1798,6 +1917,22 @@ const CHAT_ALL = chat, dmRooms = {};
 let chatView = "feed";
 const chatUrl = sub => (chat.peer ? "/api/dm" : "/api/chat") + sub;
 const draftKey = () => "ark_chat_draft" + (chat.peer ? "_" + chat.peer : "");
+const IC = {
+  back: `<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M11 5l-7 7 7 7"/></svg>`,
+  smile: `<svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M8.5 14.5a4.5 4.5 0 0 0 7 0"/><path d="M9 9.5v.6M15 9.5v.6" stroke-width="2.4"/></svg>`,
+  clip: `<svg width="25" height="25" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11.5l-7.8 7.8a5 5 0 0 1-7.1-7.1l8.2-8.2a3.4 3.4 0 0 1 4.8 4.8l-8.1 8.1a1.7 1.7 0 0 1-2.4-2.4l7.4-7.4"/></svg>`,
+  send: `<svg width="21" height="21" viewBox="0 0 24 24" fill="currentColor"><path d="M3.4 20.4l17.5-7.5a1 1 0 0 0 0-1.8L3.4 3.6a1 1 0 0 0-1.4 1.2L4.3 11l9.7 1-9.7 1L2 19.200a1 1 0 0 0 1.4 1.2z"/></svg>`,
+  down: `<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>`,
+  ck1: `<svg width="15" height="10" viewBox="0 0 15 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 5.300l3 3 6-7"/></svg>`,
+  ck2: `<svg width="18" height="10" viewBox="0 0 18 10" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M1 5.300l3 3 6-7M8.300 7.600l.7.7 6-7"/></svg>`};
+/* цвет аватарки и имени — свой у каждого человека, всегда один и тот же */
+const AVA = ["#e0574f", "#e08a2e", "#3aa55d", "#2f9bd6", "#7a6ef0", "#d057b0", "#12a7a0"];
+const hue = n => { let h = 0; for (const c of String(n || "")) h = (h * 31 + c.charCodeAt(0)) >>> 0; return AVA[h % AVA.length]; };
+const ava1 = n => esc((String(n || "?").trim().charAt(0) || "?").toUpperCase());
+/* Общий чат на экране и приложение не свёрнуто — значит, всё пришедшее человек увидел */
+function chatMarkSeen(){
+  if (tab === "chat" && chatView === "feed" && !chat.peer && !document.hidden && CHAT_ALL.last > chatSeen()) chatSeen(CHAT_ALL.last);
+}
 function chatSeen(v){
   try { if (v !== undefined) localStorage.setItem("ark_chat_seen", String(v)); return +localStorage.getItem("ark_chat_seen") || 0; }
   catch(e) { return v || 0; }
@@ -1816,11 +1951,16 @@ async function chatPoll(room){
   room.busy = true;
   try {
     const since = room.epoch ? room.rev : 0, w = since ? "&wait=1" : "";
-    const d = await call(room.peer ? `/api/dm?peer=${encodeURIComponent(room.peer)}&since=${since}${w}${room.presence ? "&on=" + (room.presence.online ? 1 : 0) : ""}`
-                                   : `/api/chat?since=${since}${w}${w ? `&du=${window._dmUnread || 0}&ep=${encodeURIComponent(room.epoch)}` : ""}`);
+    if (!room.peer) chatMarkSeen();
+    const seenQ = `&seen=${chatSeen()}`, first = !room.epoch;
+    const d = await call(room.peer ? `/api/dm?peer=${encodeURIComponent(room.peer)}&since=${since}${w}${seenQ}${room.presence ? "&on=" + (room.presence.online ? 1 : 0) : ""}${w ? "&rd=" + (room.read ?? -1) : ""}`
+                                   : `/api/chat?since=${since}${w}${seenQ}${w ? `&du=${window._dmUnread || 0}&ep=${encodeURIComponent(room.epoch)}&rd=${room.read ?? -1}&on=${room.online ?? -1}` : ""}`);
     ok = true;
     if (room !== chat) return;  // пока ждали ответ, человек открыл другой диалог
-    if (!room.peer && "dm_unread" in d) window._dmUnread = d.dm_unread;
+    if ("dm_unread" in d) window._dmUnread = d.dm_unread;
+    if (room.peer && "all_unread" in d) window._allUnread = d.all_unread;
+    room.read = d.read || 0;
+    if (!room.peer) { room.online = d.online; room.total = d.total; const o = document.getElementById("chat-on"); if (o) o.textContent = onlineText(); }
     if (room.peer && d.peer) { room.presence = d.peer; if (tab === "chat" && chatView === "feed") dmStatus(); }
     if (d.epoch !== room.epoch) { room.msgs = []; room.rev = 0; room.epoch = d.epoch; }  // сервер перезапустился — берём всё заново
     // приходят и новые, и отредактированные сообщения: новые дописываем, изменённые заменяем
@@ -1834,48 +1974,74 @@ async function chatPoll(room){
     if (added.length || changed.length) {
       room.msgs = room.msgs.concat(added).sort((a, b) => a.id - b.id).slice(-500);
       room.last = room.msgs.length ? room.msgs[room.msgs.length - 1].id : 0;
-      if (tab === "chat" && chatView === "feed") chatDraw(changed.length ? null : added, !!changed.length);
+      let full = false;
+      if (!room.peer && first) {  // чат только что загрузился: «Новые сообщения» — с первого непрочитанного
+        const sn = chatSeen();
+        if (room.last < sn) chatSeen(room.last);  // в таблице убрали строки — номера стали меньше
+        const f = tab === "chat" && sn ? room.msgs.find(m => m.id > sn && !m.mine) : null;
+        room.newFrom = f ? f.id : 0; full = true;
+      }
+      if (room.peer && room.wantNew) {  // личный диалог: непрочитанные — последние сообщения собеседника
+        const o = room.msgs.filter(m => !m.mine), f = o[o.length - room.wantNew];
+        room.newFrom = f ? f.id : 0; room.wantNew = 0; room.newShown = false; full = true;
+      }
+      if (tab === "chat" && chatView === "feed") { if (full) chatDraw(); else chatDraw(changed.length ? null : added, !!changed.length); }
     } else if (tab === "chat" && chatView === "feed" && !document.querySelector(".chat-list")) chatDraw();
   } catch(e) {
     if (room === chat && tab === "chat" && chatView === "feed" && !document.querySelector(".chat-list"))
       $("#main").innerHTML = chatTop() + `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="chatOpen()">Повторить</button></div>`;
   } finally { room.busy = false; }
   if (room !== chat) return;
-  if (tab === "chat" && !room.peer && chatView === "feed") chatSeen(room.last);
+  chatMarkSeen();
+  if (tab === "chat" && chatView === "feed") ticksSync();
   chatBadge();
   if (tab === "chat" && chatView === "list") return;
   room.timer = setTimeout(() => chatPoll(room), ok ? 100 : 3000);
 }
 /* Своё сообщение показываем сразу, с часиками, пока сервер не подтвердит; потом его заменяет настоящее */
 function pendingHtml(p){
-  return `<div class="msg mine pending" data-tmp="${p.tmp}">${p.photo ? `<div class="txt">📷 Фото</div>` : ""}${p.text ? `<div class="txt">${esc(p.text)}</div>` : ""}
-    <div class="tm">${p.failed ? "⚠️ не отправлено" : "⏳"}</div></div>`;
+  return `<div class="mrow mine pending"><div class="msg mine pending" data-tmp="${p.tmp}"><div class="body"><div class="txt">${p.photo ? "📷 Фото" + (p.text ? "\n" : "") : ""}${esc(p.text)}</div>
+    <div class="tm">${p.failed ? "⚠️ не отправлено" : "🕓"}</div></div></div></div>`;
 }
 function pendingSync(){
   const list = document.querySelector(".chat-list"); if (!list) return;
   chat.pending = (chat.pending || []).filter(p => !(p.real && chat.msgs.some(m => m.id === p.real)));
-  list.querySelectorAll(".msg.pending").forEach(e => e.remove());
+  list.querySelectorAll(".mrow.pending").forEach(e => e.remove());
   if (chat.pending.length) {
     list.insertAdjacentHTML("beforeend", chat.pending.map(pendingHtml).join(""));
     const e = $("#chat-empty"); if (e) e.remove();
   }
 }
+/* Значки непрочитанного. На вкладке «Чат» внизу — общий чат + личные (пока чат не открыт).
+   На стрелке «назад» в открытом чате — сколько непрочитанного в остальных чатах. */
 function chatBadge(){
   const dot = document.getElementById("chatdot");
-  const seen = chatSeen(), all = tab === "chat" ? 0 : CHAT_ALL.msgs.filter(m => m.id > seen && !m.mine).length;
-  const dm = window._dmUnread || 0, n = all + (tab === "chat" ? 0 : dm);
+  const seen = chatSeen(), dm = window._dmUnread || 0;
+  const all = tab === "chat" && chatView === "feed" && !chat.peer ? 0 : CHAT_ALL.msgs.filter(m => m.id > seen && !m.mine).length;
+  const n = tab === "chat" ? 0 : all + dm;
   if (dot) dot.textContent = n ? (n > 99 ? "99+" : n) : "";
-  const b = document.getElementById("dm-badge"); if (b) b.textContent = dm ? (dm > 99 ? "99+" : dm) : "";
+  const other = chat.peer ? dm + Math.max(all, window._allUnread || 0) : dm;
+  const b = document.getElementById("dm-badge"); if (b) b.textContent = other ? (other > 99 ? "99+" : other) : "";
+}
+function onlineText(){
+  const r = CHAT_ALL; return r.total ? `${r.online || 0} из ${r.total} в сети` : "все сотрудники";
+}
+function ticksSync(){  // галочки у своих сообщений: одна — отправлено, две — прочитано
+  document.querySelectorAll(".chat-list .ck").forEach(e => {
+    const r = +e.dataset.ck <= (chat.read || 0);
+    if (r !== e.classList.contains("rd")) { e.classList.toggle("rd", r); e.innerHTML = r ? IC.ck2 : IC.ck1; }
+  });
 }
 function presenceHtml(p){
   if (!p) return "";
   return p.online ? `<span class="on-dot"></span>В сети` : `Не в сети${p.seen ? ` · был(а) ${esc(p.seen)}` : ""}`;
 }
 function chatTop(){
-  if (chat.peer) return `<div class="chat-top"><div class="dm-head"><button class="btn" onclick="dmListOpen()">←</button>
+  const back = `<button class="cbk" onclick="dmListOpen()" aria-label="К списку чатов">${IC.back}<b class="dm-badge" id="dm-badge"></b></button>`;
+  if (chat.peer) return `<div class="chat-top"><div class="chat-head">${back}<div class="ava" style="background:${hue(chat.name)}">${ava1(chat.name)}</div>
     <div class="grow"><b>${esc(chat.name)}</b><small id="dm-status" class="${chat.presence && chat.presence.online ? "online" : ""}">${presenceHtml(chat.presence) || esc(chat.label || "")}</small></div></div></div>`;
-  return `<div class="chat-top"><div class="ob-sw chat-sw"><button class="on">💬 Общий чат</button>
-    <button onclick="dmListOpen()">✉️ Личные <b class="dm-badge" id="dm-badge">${window._dmUnread || ""}</b></button></div></div>`;
+  return `<div class="chat-top"><div class="chat-head">${back}<div class="ava all">💬</div>
+    <div class="grow"><b>Общий чат</b><small id="chat-on">${esc(onlineText())}</small></div></div></div>`;
 }
 function dmStatus(){  // обновить строку статуса в шапке открытого диалога
   const e = document.getElementById("dm-status"); if (!e || !chat.peer) return;
@@ -1886,8 +2052,14 @@ function chatOpen(){
   clearInterval(timer); ++nav; onPage = false; window._pageAgain = null;
   chatView = "feed"; clearTimeout(window._dmListT);
   document.querySelectorAll(".composer").forEach(e => e.remove());
+  chat.newShown = false; chat.below = 0;
+  if (!chat.peer) {  // «Новые сообщения» — перед первым, которого человек ещё не видел
+    const sn = chatSeen(), f = chat.msgs.length && sn ? chat.msgs.find(m => m.id > sn && !m.mine) : null;
+    chat.newFrom = f ? f.id : 0;
+  }
   $("#main").innerHTML = chat.msgs.length ? "" : chatTop() + `<div class="empty">Загрузка…</div>`;
   if (chat.msgs.length) chatDraw();
+  chatMarkSeen(); chatBadge();  // открыл чат — значок с числом гаснет сразу, не дожидаясь ответа сервера
   document.body.classList.remove("emoji");
   document.body.insertAdjacentHTML("beforeend", `<div class="composer">
     <div class="emoji-panel" id="emoji" hidden><div class="emoji-tabs">${EMOJI.map((g, i) =>
@@ -1896,17 +2068,17 @@ function chatOpen(){
       <button class="xbtn" onclick="chatReply(0)" aria-label="Отменить ответ">×</button></div>
     <div class="photo-bar" id="photo-bar" hidden><img id="photo-prev" alt=""><div class="grow"><b>Фото</b><span>Можно добавить подпись и отправить</span></div>
       <button class="xbtn" onclick="photoClear()" aria-label="Убрать фото">×</button></div>
-    <div class="in">
-    <button class="emo" id="chat-emo" aria-label="Эмодзи" onclick="emojiToggle()">😊</button>
-    <label class="emo" style="width:46px;height:46px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:var(--chip);font-size:21px;cursor:pointer;flex:none" aria-label="Фото">📎
-      <input type="file" accept="image/*" hidden onchange="photoPick(this)"></label>
-    <textarea id="chat-in" rows="1" maxlength="1000" placeholder="Сообщение для всех…" enterkeyhint="send"></textarea>
-    <button id="chat-go" aria-label="Отправить">➤</button></div></div>`);
+    <div class="in" style="position:relative">
+    <button class="chat-down" id="chat-down" hidden onclick="chatBottom()" aria-label="К последним сообщениям">${IC.down}<b></b></button>
+    <button class="ic emo" id="chat-emo" aria-label="Эмодзи" onclick="emojiToggle()">${IC.smile}</button>
+    <textarea id="chat-in" rows="1" maxlength="1000" placeholder="Сообщение" enterkeyhint="send"></textarea>
+    <label class="ic" aria-label="Фото">${IC.clip}<input type="file" accept="image/*" hidden onchange="photoPick(this)"></label>
+    <button id="chat-go" aria-label="Отправить" hidden>${IC.send}</button></div></div>`);
   const ta = $("#chat-in");
   let draft = ""; try { draft = localStorage.getItem(draftKey()) || ""; } catch(e) {}
   ta.value = draft; grow(ta);
-  if (chat.peer) ta.placeholder = "Личное сообщение…";
-  ta.oninput = () => { grow(ta); try { localStorage.setItem(draftKey(), ta.value); } catch(e) {} };
+  ta.oninput = () => { grow(ta); goSync(); try { localStorage.setItem(draftKey(), ta.value); } catch(e) {} };
+  goSync();
   ta.onkeydown = e => {  // на компьютере Enter отправляет, Shift+Enter — новая строка; на телефоне Enter — новая строка
     if (e.key === "Enter" && !e.shiftKey && !("ontouchstart" in window)) { e.preventDefault(); chatSend(); }
   };
@@ -1919,6 +2091,37 @@ function chatOpen(){
   ta.onfocus = () => { if ("ontouchstart" in window && !$("#emoji").hidden) emojiToggle(); };
   chatPoll();
 }
+/* Кнопка «отправить» появляется, когда есть что отправлять, — как в мессенджерах */
+function goSync(){ const b = $("#chat-go"), ta = $("#chat-in"); if (b && ta) b.hidden = !(ta.value.trim() || chat.photo); }
+/* Кнопка «вниз»: видна, когда лента прокручена вверх; на ней — сколько сообщений пришло за это время */
+function downSync(){
+  const b = document.getElementById("chat-down"); if (!b) return;
+  const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 160;
+  if (atBottom) chat.below = 0;
+  b.hidden = atBottom; b.querySelector("b").textContent = chat.below || "";
+}
+function chatBottom(){ window.scrollTo({top: document.body.scrollHeight, behavior: "smooth"}); }
+window.addEventListener("scroll", () => { if (tab === "chat" && chatView === "feed") downSync(); }, {passive: true});
+/* Смахнули сообщение влево — ответ на него */
+let _sw = null;
+document.addEventListener("touchstart", e => {
+  const el = e.target.closest ? e.target.closest(".chat-list .msg[data-id]") : null;
+  _sw = el && e.touches.length === 1 ? {el, x: e.touches[0].clientX, y: e.touches[0].clientY, dx: 0, on: false} : null;
+}, {passive: true});
+document.addEventListener("touchmove", e => {
+  if (!_sw) return;
+  const dx = e.touches[0].clientX - _sw.x, dy = e.touches[0].clientY - _sw.y;
+  if (!_sw.on) {
+    if (Math.abs(dy) > 10 && Math.abs(dy) >= Math.abs(dx)) { _sw = null; return; }
+    if (dx < -14 && Math.abs(dx) > Math.abs(dy) * 1.5) _sw.on = true; else return;
+  }
+  _sw.dx = Math.max(-80, Math.min(0, dx)); _sw.el.style.transition = "none"; _sw.el.style.transform = `translateX(${_sw.dx}px)`;
+}, {passive: true});
+document.addEventListener("touchend", () => {
+  const w = _sw; _sw = null; if (!w || !w.on) return;
+  w.el.style.transition = "transform .15s"; w.el.style.transform = ""; window._swiped = Date.now();
+  if (w.dx <= -56) chatReply(+w.el.dataset.id);
+}, {passive: true});
 function grow(ta){ ta.style.height = "auto"; ta.style.height = Math.min(ta.scrollHeight + 2, 120) + "px"; }
 function chatDay(t){  // «07.11.2026 12:40» -> «Сегодня» / «Вчера» / «5 ноября»
   const m = /^(\d{2})\.(\d{2})\.(\d{4})/.exec(t || ""); if (!m) return "";
@@ -1930,17 +2133,22 @@ function chatDay(t){  // «07.11.2026 12:40» -> «Сегодня» / «Вчер
 }
 function msgHtml(m, prev){
   const day = chatDay(m.t), pday = prev ? chatDay(prev.t) : null;
-  const cont = prev && pday === day && prev.name === m.name && prev.mine === m.mine;
+  const isNew = chat.newFrom === m.id;
+  const cont = prev && pday === day && prev.name === m.name && prev.mine === m.mine && !isNew;
   const linked = esc(m.text).replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>')
     .replace(/(\+?[78][\s(-]*\d{3}[\s)-]*\d{3}[\s-]*\d{2}[\s-]*\d{2})/g, m2 => `<a href="tel:${m2.replace(/[^\d+]/g, "")}">${m2}</a>`);
-  const big = onlyEmoji(m.text);
-  return (day !== pday ? `<div class="chat-day">${esc(day)}</div>` : "") +
-    `<div class="msg${m.mine ? " mine" : ""}${cont && !m.reply ? " cont" : ""}${big && !m.photo && !m.reply ? " big" : ""}" data-id="${m.id}" onclick="msgMenu(event, ${m.id})">
-      ${m.mine || chat.peer ? "" : `<div class="who">${esc(m.name)} <small>· ${esc(m.label)}</small></div>`}
+  const big = onlyEmoji(m.text) && !m.photo && !m.reply;
+  const group = !m.mine && !chat.peer;  // в общем чате у чужих сообщений — аватарка и имя
+  const read = m.id <= (chat.read || 0);
+  return (day !== pday ? `<div class="chat-day">${esc(day)}</div>` : "") + (isNew ? `<div class="chat-new" id="chat-new">Новые сообщения</div>` : "") +
+    `<div class="mrow${m.mine ? " mine" : ""}${cont ? "" : " first"}">${group ? (cont ? `<div class="ava no"></div>` : `<div class="ava" style="background:${hue(m.name)}">${ava1(m.name)}</div>`) : ""}
+    <div class="msg${m.mine ? " mine" : ""}${cont ? " cont" : ""}${big ? " big" : ""}" data-id="${m.id}" onclick="msgMenu(event, ${m.id})">
+      ${group && !cont ? `<div class="who"><b style="color:${hue(m.name)}">${esc(m.name)}</b><small>${esc((m.label || "").toLowerCase())}</small></div>` : ""}
       ${m.reply ? `<div class="q" onclick="event.stopPropagation();jumpTo(${m.reply.id})"><b>${esc(m.reply.name || "Ответ")}</b><span>${m.reply.photo ? "📷 " : ""}${esc(m.reply.text || (m.reply.photo ? "Фото" : ""))}</span></div>` : ""}
       ${m.photo ? `<img class="ph" loading="lazy" src="/chat-photo/${esc(m.photo)}" alt="Фото" onclick="event.stopPropagation();viewPhoto(this.src)"
         onerror="this.classList.add('bad');this.alt='Фото недоступно';this.onclick=null">` : ""}
-      ${m.text ? `<div class="txt">${linked}</div>` : ""}<div class="tm">${m.edited ? "<i>изменено</i>" : ""}${esc((m.t || "").slice(11, 16))}</div></div>`;
+      <div class="body">${m.text ? `<div class="txt">${linked}</div>` : ""}<div class="tm">${m.edited ? "<i>ред ·</i>" : ""}${esc((m.t || "").slice(11, 16))}${m.mine
+        ? `<i class="ck${read ? " rd" : ""}" data-ck="${m.id}">${read ? IC.ck2 : IC.ck1}</i>` : ""}</div></div></div></div>`;
 }
 function chatDraw(fresh, keepScroll){
   const atBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 120;
@@ -1959,16 +2167,20 @@ function chatDraw(fresh, keepScroll){
     chatNote();
     list = document.querySelector(".chat-list");
     list.innerHTML = chat.msgs.map((m, i) => msgHtml(m, chat.msgs[i - 1])).join("");
-    pendingSync();
-    return window.scrollTo(0, document.body.scrollHeight);
+    pendingSync(); chatBadge();
+    const mark = document.getElementById("chat-new");
+    if (mark && !chat.newShown) { chat.newShown = true; mark.scrollIntoView({block: "center"}); }
+    else window.scrollTo(0, document.body.scrollHeight);
+    return downSync();
   }
   const e = $("#chat-empty"); if (e) e.remove();
   const start = chat.msgs.length - fresh.length;
-  list.querySelectorAll(".msg.pending").forEach(e => e.remove());  // настоящие встают перед «часиками»
+  list.querySelectorAll(".mrow.pending").forEach(e => e.remove());  // настоящие встают перед «часиками»
   list.insertAdjacentHTML("beforeend", fresh.map((m, i) => msgHtml(m, chat.msgs[start + i - 1])).join(""));
   pendingSync();
   if (atBottom || fresh.some(m => m.mine)) window.scrollTo(0, document.body.scrollHeight);
-  else toast("Новое сообщение ↓");
+  else chat.below = (chat.below || 0) + fresh.filter(m => !m.mine).length;
+  downSync();
 }
 /* сообщение только из 1–3 эмодзи показываем крупно, без «пузыря» */
 function onlyEmoji(t){
@@ -2034,6 +2246,7 @@ function emojiPut(e){
 /* ------------------------------ меню сообщения: ответить, изменить, скопировать */
 function msgMenu(ev, id){
   if (ev.target.closest("a")) return;  // нажали на ссылку или телефон — пусть открывается
+  if (Date.now() - (window._swiped || 0) < 400) return;  // это было смахивание для ответа, а не нажатие
   const m = chat.msgs.find(x => x.id === id); if (!m) return;
   sheet(`<div class="menu"><div class="menu-msg">${m.photo ? "📷 " : ""}${esc(m.text || "Фото")}</div>
     <button class="btn" onclick="closeSheet();chatReply(${id})">↩️ Ответить</button>
@@ -2091,50 +2304,56 @@ async function photoPick(input){
     c.getContext("2d").drawImage(bmp, 0, 0, c.width, c.height); URL.revokeObjectURL(bmp.src);
     chat.photo = await new Promise(ok => c.toBlob(ok, "image/jpeg", 0.82));
   } catch(e) { chat.photo = f.size <= 8e6 ? f : null; if (!chat.photo) return toast("Фото слишком большое"); }
-  $("#photo-prev").src = URL.createObjectURL(chat.photo); $("#photo-bar").hidden = false;
+  $("#photo-prev").src = URL.createObjectURL(chat.photo); $("#photo-bar").hidden = false; goSync();
   window.scrollTo(0, document.body.scrollHeight);
 }
-function photoClear(){ chat.photo = null; const b = $("#photo-bar"); if (b) b.hidden = true; }
+function photoClear(){ chat.photo = null; const b = $("#photo-bar"); if (b) b.hidden = true; goSync(); }
 
 /* ------------------------------ личные сообщения: список людей */
+const LIST_TOP = `<div class="chat-top"><div class="chat-head"><b class="ttl">Чаты</b></div></div>`;
 async function dmListOpen(){
+  chatMarkSeen();  // уходим из общего чата — всё, что в нём было, уже видели
   clearTimeout(chat.timer); clearInterval(timer); ++nav; onPage = false;
   chat = CHAT_ALL; chatView = "list";
   document.querySelectorAll(".composer").forEach(e => e.remove());
   document.body.classList.remove("emoji"); $("#main").style.paddingBottom = "";
-  const top = `<div class="chat-top"><div class="ob-sw chat-sw"><button onclick="dmBack()">💬 Общий чат</button><button class="on">✉️ Личные</button></div></div>`;
-  if (!window._dmList) $("#main").innerHTML = top + `<div class="empty">Загрузка…</div>`;
-  else dmListDraw(top);
-  await dmListPoll(top);
+  if (!window._dmList) $("#main").innerHTML = LIST_TOP + `<div class="empty">Загрузка…</div>`;
+  else dmListDraw();
+  await dmListPoll();
 }
 function dmBack(){ chat = CHAT_ALL; chatView = "feed"; clearTimeout(window._dmListT); chatOpen(); }
-async function dmListPoll(top){
+async function dmListPoll(){
   clearTimeout(window._dmListT);
   if (tab !== "chat" || chatView !== "list") return;
-  try { window._dmList = await call("/api/dm/list"); } catch(e) { if (!window._dmList) { $("#main").innerHTML = top + `<div class="empty">${esc(e.message)}</div>`; } }
+  try { window._dmList = await call("/api/dm/list?seen=" + chatSeen()); } catch(e) { if (!window._dmList) { $("#main").innerHTML = LIST_TOP + `<div class="empty">${esc(e.message)}</div>`; } }
   if (tab !== "chat" || chatView !== "list") return;
   if (window._dmList) {
     window._dmUnread = window._dmList.people.reduce((a, p) => a + p.unread, 0);
-    dmListDraw(top); chatBadge();
+    dmListDraw(); chatBadge();
   }
-  window._dmListT = setTimeout(() => dmListPoll(top), 3000);
+  window._dmListT = setTimeout(dmListPoll, 3000);
 }
-function dmListDraw(top){
-  const d = window._dmList, y = window.scrollY;
+function dmListDraw(){
+  const d = window._dmList, y = window.scrollY, g = d.general || {};
   const time = t => { const day = chatDay(t); return day === "Сегодня" ? (t || "").slice(11, 16) : day; };
-  const row = p => `<div class="card tap dm-row" onclick="dmOpen('${esc(p.code)}')">
-      <div class="dm-ava">${esc((p.name || "?").trim().charAt(0).toUpperCase())}${p.online ? `<i class="ava-on"></i>` : ""}</div>
+  const row = p => `<div class="dm-row" onclick="dmOpen('${esc(p.code)}')">
+      <div class="ava" style="background:${hue(p.name)}">${ava1(p.name)}${p.online ? `<i class="ava-on"></i>` : ""}</div>
       <div class="grow" style="min-width:0"><div class="row"><b class="grow dm-name">${esc(p.name)}</b>
         ${p.last ? `<small class="muted" style="margin:0">${esc(time(p.last.t))}</small>` : ""}</div>
-        <div class="dm-st ${p.online ? "online" : ""}">${presenceHtml(p)}${p.label ? ` · ${esc(p.label)}` : ""}</div>
-        <div class="row"><span class="grow dm-last ${p.unread ? "new" : ""}">${p.last ? (p.last.mine ? "Вы: " : "") + esc(p.last.text) : ""}</span>
+        <div class="row"><span class="grow dm-last ${p.unread ? "new" : ""}">${p.last ? (p.last.mine ? "Вы: " : "") + esc(p.last.text)
+          : `<span class="dm-st ${p.online ? "online" : ""}" style="display:inline">${presenceHtml(p)}${p.label ? ` · ${esc(p.label)}` : ""}</span>`}</span>
         ${p.unread ? `<b class="dm-badge">${p.unread}</b>` : ""}</div></div></div>`;
+  const all = `<div class="dm-row" onclick="dmBack()"><div class="ava all">💬</div>
+      <div class="grow" style="min-width:0"><div class="row"><b class="grow dm-name">Общий чат</b>
+        ${g.last ? `<small class="muted" style="margin:0">${esc(time(g.last.t))}</small>` : ""}</div>
+        <div class="row"><span class="grow dm-last ${g.unread ? "new" : ""}">${g.last ? esc((g.last.mine ? "Вы" : g.last.name) + ": " + g.last.text)
+          : (g.total ? `${g.online || 0} из ${g.total} в сети` : "Все сотрудники")}</span>
+        ${g.unread ? `<b class="dm-badge">${g.unread > 99 ? "99+" : g.unread}</b>` : ""}</div></div></div>`;
   const talk = d.people.filter(p => p.last), rest = d.people.filter(p => !p.last);
-  $("#main").innerHTML = top +
+  $("#main").innerHTML = LIST_TOP +
     (me.admin && !d.persistent ? `<div class="card late" style="font-size:14px">⚠️ Личная переписка сейчас хранится во временной папке и пропадёт при обновлении бота.</div>` : "") +
-    (talk.length ? talk.map(row).join("") : "") +
-    (rest.length ? `<h2>${talk.length ? "Написать" : "Кому написать"}</h2>` + rest.map(row).join("") : "") +
-    (d.people.length ? "" : `<div class="empty">В приложении пока нет других сотрудников</div>`) +
+    `<div class="clist">${all}${talk.map(row).join("")}</div>` +
+    (rest.length ? `<h2>Написать лично</h2><div class="clist">${rest.map(row).join("")}</div>` : "") +
     `<p class="muted" style="text-align:center;margin-top:14px">Личную переписку видите только вы и собеседник</p>`;
   window.scrollTo(0, y);
 }
@@ -2144,6 +2363,8 @@ function dmOpen(code){
   const r = dmRooms[code] || (dmRooms[code] = {msgs: [], rev: 0, last: 0, epoch: "", busy: false, timer: null, sending: false,
                                                reply: 0, photo: null, peer: code});
   r.name = p.name; r.label = p.label; r.presence = {online: p.online, seen: p.seen};
+  r.newFrom = 0; r.wantNew = p.unread || 0;
+  window._allUnread = (window._dmList.general || {}).unread || 0;
   chat = r; chatView = "feed";
   if (p.unread) { window._dmUnread = Math.max(0, (window._dmUnread || 0) - p.unread); p.unread = 0; }
   chatOpen();
@@ -2157,7 +2378,8 @@ async function chatSend(){
   (room.pending = room.pending || []).push(p);
   ta.value = ""; grow(ta); try { localStorage.removeItem(draftKey()); } catch(e) {}
   chatReply(0); if (photo) photoClear();
-  pendingSync(); window.scrollTo(0, document.body.scrollHeight);
+  room.newFrom = 0; const nm = document.getElementById("chat-new"); if (nm) nm.remove();
+  goSync(); pendingSync(); window.scrollTo(0, document.body.scrollHeight);
   if (!("ontouchstart" in window) || $("#emoji").hidden) ta.focus();
   try {
     let r;

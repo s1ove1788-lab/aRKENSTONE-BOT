@@ -79,11 +79,10 @@ SHIP_TAB = "Отгрузки"
 OZON_TAB = "Озон"  # какие отправления Озона уже видели
 INV_TABS = {"raw": os.getenv("RAW_TAB", "Сырьё").strip(), "tmc": os.getenv("TMC_TAB", "ТМЦ").strip()}  # склад: сырьё и товарно-материальные ценности
 INV_TITLES = {"raw": "🧱 Сырьё", "tmc": "🧰 ТМЦ"}
-ALICE_SECRET = os.getenv("ALICE_SECRET", "").strip()  # включает навык Алисы; это же секретная часть адреса
 try:
-    ALICE_PORT = int(os.getenv("PORT") or os.getenv("ALICE_PORT") or "3000")
+    APP_PORT = int(os.getenv("PORT") or os.getenv("ALICE_PORT") or "3000")  # порт приложения сотрудников (ALICE_PORT — старое имя переменной)
 except ValueError:
-    ALICE_PORT = 3000
+    APP_PORT = 3000
 FRAMES_TAB = os.getenv("FRAMES_TAB", "Свареные каркасы").strip()  # вкладка со сваренными каркасами (размер и количество)
 BLANKS_TAB = os.getenv("BLANKS_TAB", "Заготовки").strip()  # заготовки (детали кроватей) по размерам
 RETURNS_TAB = "Возвраты"  # таблица возвратов: дата, тип возврата, размер, статус
