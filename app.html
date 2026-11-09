@@ -369,6 +369,39 @@ body.chat{background-color:var(--bg);background-size:220px;background-image:url(
 .clist .ava{width:48px;height:48px;font-size:19px}
 .clist .ava-on{border-color:var(--card)}
 .clist .dm-badge{background:#5b5fe9}
+/* ---------- нет связи: полоска под шапкой */
+.offbar{position:sticky;top:var(--hdr, 56px);z-index:4;background:var(--warn-bg);color:var(--warn);border-bottom:1px solid var(--warn);
+  padding:8px 14px;display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600}
+.offbar[hidden]{display:none}
+.offbar .grow{flex:1;min-width:0}
+.offbar small{display:block;font-weight:400;opacity:.9}
+.offbar button{border:1px solid var(--warn);background:none;color:inherit;border-radius:10px;padding:7px 12px;font:inherit;cursor:pointer;white-space:nowrap}
+body.off .chat-top{top:calc(var(--hdr, 56px) + var(--offh, 0px))}
+/* ---------- как настоящее приложение: отклик на нажатие, без выделения текста на кнопках, плавная смена экранов */
+html{overscroll-behavior-y:none}
+button,.btn,nav,.tap,.dm-row,label.ic,.seg,.quick,.ob-sw,header{-webkit-user-select:none;user-select:none;touch-action:manipulation}
+.btn,.iconbtn,.cbk,.composer .ic,#chat-go,.seg button,.quick button{transition:transform .08s ease,filter .08s ease}
+.btn:active:not(:disabled),.seg button:active,.quick button:active{transform:scale(.97);filter:brightness(.94)}
+.iconbtn:active,.cbk:active,.composer .ic:active,#chat-go:active{transform:scale(.88)}
+nav button{transition:background .15s,color .15s}
+nav button:active span{transform:scale(.88)}
+nav button span{transition:transform .1s}
+.card.tap{transition:transform .08s ease}
+.card.tap:active{transform:scale(.985)}
+@keyframes scr{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+main.fresh>*{animation:scr .16s ease-out both}
+.sheet{animation:up .2s ease-out}
+.sheet-bg{animation:dim .2s ease-out}
+@keyframes up{from{transform:translateY(40px);opacity:.4}to{transform:none;opacity:1}}
+@keyframes dim{from{opacity:0}to{opacity:1}}
+@media (prefers-reduced-motion: reduce){ main.fresh>*,.sheet,.sheet-bg{animation:none} }
+/* потянуть вниз — обновить */
+.ptr{position:fixed;left:50%;top:calc(var(--hdr, 56px) + 6px);z-index:6;width:40px;height:40px;margin-left:-20px;border-radius:50%;background:var(--card);
+  border:1px solid var(--line);box-shadow:0 2px 8px rgba(0,0,0,.18);display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--accent);
+  transform:translateY(-70px);opacity:0;pointer-events:none}
+.ptr span{display:block;line-height:1}
+.ptr.go span{animation:ptr .7s linear infinite}
+@keyframes ptr{to{transform:rotate(360deg)}}
 </style>
 </head>
 <body>
@@ -378,6 +411,8 @@ body.chat{background-color:var(--bg);background-size:220px;background-image:url(
   <button class="iconbtn" id="theme" aria-label="Тема" onclick="themeForm()" style="display:flex;align-items:center"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor"/></svg></button>
   <button class="iconbtn" id="refresh" aria-label="Обновить">⟳</button>
 </header>
+<div class="offbar" id="offbar" hidden><div class="grow">📴 Нет связи<small id="off-note"></small></div><button onclick="netRetry(true)">Повторить</button></div>
+<div class="ptr" id="ptr"><span>⟳</span></div>
 <main id="main"><div class="empty">Загрузка…</div></main>
 <nav id="nav" hidden></nav>
 <div class="toast" id="toast"></div>
@@ -412,14 +447,59 @@ function token(){
 }
 const TOKEN = token();
 
+/* ------------------------------ работа без интернета
+   Последний ответ каждого экрана, свой профиль и лента общего чата запоминаются на телефоне.
+   Нет связи — показываем запомненное и полоску «Нет связи»; связь вернулась — сами обновляемся. */
+const keep = {
+  get(k){ try { return JSON.parse(localStorage.getItem("ark_keep_" + k) || "null"); } catch(e) { return null; } },
+  set(k, v){ try { localStorage.setItem("ark_keep_" + k, JSON.stringify(v)); } catch(e) {} },
+  del(k){ try { localStorage.removeItem("ark_keep_" + k); } catch(e) {} }
+};
+let offline = false, _netT = null;
+const hhmm = at => { const d = new Date(at), t = new Date(); const tm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  return d.toDateString() === t.toDateString() ? tm : `${pad2(d.getDate())}.${pad2(d.getMonth() + 1)} ${tm}`; };
+const pad2 = n => String(n).padStart(2, "0");
+function netState(ok, at){
+  const bar = document.getElementById("offbar"); if (!bar) return;
+  if (at !== undefined) document.getElementById("off-note").textContent = at ? `Показаны данные на ${hhmm(at)}. Изменения сейчас не сохранятся.` : "Этот экран ещё не сохранён на телефоне — откройте его при интернете";
+  if (ok === !offline) return;
+  offline = !ok; bar.hidden = ok; document.body.classList.toggle("off", !ok);
+  document.documentElement.style.setProperty("--offh", ok ? "0px" : bar.offsetHeight + "px");
+  clearInterval(_netT);
+  if (!ok) { if (!document.getElementById("off-note").textContent) document.getElementById("off-note").textContent = "Изменения сейчас не сохранятся";
+             _netT = setInterval(() => netRetry(false), 15000); }
+  else { document.getElementById("off-note").textContent = ""; if (me && me.ok) { toast("✅ Связь вернулась"); me.cached ? boot() : backOnline(); } }
+}
+async function netRetry(byHand){
+  if (byHand) toast("Проверяю связь…");
+  try { const r = await fetch("/api/me", {headers: {"X-Token": TOKEN}, cache: "no-store"}); if (!r.ok && r.status !== 403) throw 0; }
+  catch(e) { if (byHand) toast("Связи всё ещё нет"); return; }
+  netState(true);
+}
+function backOnline(){  // связь вернулась — тихо обновляем то, что на экране
+  if (tab === "chat") return chatPoll();
+  if (onPage) { if (window._pageAgain && !document.querySelector("#main input:focus, #main textarea:focus")) window._pageAgain(); return; }
+  if (!document.querySelector(".sheet-bg")) load();
+}
+window.addEventListener("online", () => { if (offline) netRetry(false); });
+window.addEventListener("offline", () => { if (me && me.ok) netState(false); });
+
 async function call(path, body){
-  const r = await fetch(path, {method: body ? "POST" : "GET",
-    headers: {"X-Token": TOKEN, "Content-Type": "application/json"},
-    body: body ? JSON.stringify(body) : undefined});
+  let r;
+  try {
+    r = await fetch(path, {method: body ? "POST" : "GET",
+      headers: {"X-Token": TOKEN, "Content-Type": "application/json"},
+      body: body ? JSON.stringify(body) : undefined});
+  } catch(e) {  // запрос не дошёл до сервера вообще
+    if (me && me.ok) netState(false);
+    const err = new Error(body ? "Нет связи — действие не выполнено. Повторите, когда появится интернет" : "Нет связи с сервером");
+    err.offline = true; throw err;
+  }
+  if (offline && r.status < 500) netState(true);
   buildCheck(r.headers.get("X-App-Build"));
   let data = {};
   try { data = await r.json(); } catch(e) {}
-  if (r.status === 403) { me = null; boot(); throw new Error(data.error || "Нет доступа"); }
+  if (r.status === 403) { me = null; keep.del("me"); keep.del("chat"); boot(); throw new Error(data.error || "Нет доступа"); }
   if (!r.ok) throw new Error(data.error || "Ошибка связи");
   if (!data || typeof data !== "object" || data.error) throw new Error((data && data.error) || "Нет связи с сервером, повторите");
   return data;
@@ -468,9 +548,15 @@ function toast(text){
 async function boot(){
   try {
     me = await call("/api/me");
+    if (me.ok) keep.set("me", me);
   } catch(e) {
-    $("#main").innerHTML = `<div class="empty">Нет связи с сервером.<br><br><button class="btn" onclick="boot()">Повторить</button></div>`;
-    return;
+    const saved = e.offline ? keep.get("me") : null;
+    if (!saved || !saved.ok) {
+      $("#main").innerHTML = `<div class="empty">Нет связи с сервером.<br><br><button class="btn" onclick="boot()">Повторить</button></div>`;
+      return;
+    }
+    me = {...saved, cached: true};  // без связи открываем приложение с последними данными
+    netState(false);
   }
   if (!me.ok) return showCode();
   $("#who").textContent = (me.name ? me.name + " · " : "") + me.label;
@@ -485,6 +571,7 @@ async function boot(){
   if (want) try { history.replaceState(null, "", location.pathname); } catch(e) {}
   open(me.tabs.includes(want) ? want : me.tabs.includes(saved) ? saved : me.tabs[0]);
   chatPoll();
+  if (me.cached) return;
   nativeSetup();
   checkUpdate();
 }
@@ -511,9 +598,59 @@ function showCode(){
   $("#check").onclick = () => { toast("Проверяю…"); boot(); };
 }
 
+/* Плавное появление экрана: класс живёт треть секунды, чтобы фоновые обновления экран не «мигали» */
+function fresh(){
+  const m = $("#main"); if (tab === "chat") return;
+  m.classList.remove("fresh"); void m.offsetWidth; m.classList.add("fresh");
+  clearTimeout(m._f); m._f = setTimeout(() => m.classList.remove("fresh"), 320);
+}
+/* Кнопка «Назад» телефона: закрывает открытую страницу, фото или диалог, а не всё приложение.
+   Пока есть куда возвращаться, держим в истории браузера одну запись-«сторожа»: нажатие «Назад» снимает её,
+   мы делаем шаг назад внутри приложения и, если вложенность осталась, ставим сторожа снова. */
+function backNeeded(){ return !!(document.querySelector(".viewer") || onPage || (tab === "chat" && (chat.peer || chatView === "list"))); }
+function backAction(){
+  const v = document.querySelector(".viewer"); if (v) return v.remove();
+  if (onPage) { const b = document.getElementById("page-back"); if (b) return b.click(); }
+  if (tab === "chat") { if (chat.peer) return dmListOpen(); if (chatView === "list") return dmBack(); }
+}
+let _histSkip = 0;
+function histSync(){
+  if (!(me && me.ok)) return;
+  const g = !!(history.state && history.state.arkBack);
+  if (backNeeded() && !g) { try { history.pushState({arkBack: 1}, ""); } catch(e) {} }
+  else if (!backNeeded() && g) { _histSkip++; history.back(); }
+}
+window.addEventListener("popstate", () => {
+  if (_histSkip) { _histSkip--; return; }
+  if (document.querySelector(".sheet-bg")) closeSheet(); else backAction();
+  setTimeout(histSync, 0);
+});
+new MutationObserver(() => { clearTimeout(window._histT); window._histT = setTimeout(histSync, 60); })
+  .observe(document.body, {childList: true, subtree: true});
+/* Потянуть экран вниз — обновить (на всех вкладках, кроме чата: там лента растёт снизу) */
+let _ptr = null;
+document.addEventListener("touchstart", e => {
+  _ptr = me && me.ok && tab !== "chat" && window.scrollY <= 0 && e.touches.length === 1 && !document.querySelector(".sheet-bg, .viewer")
+    ? {y: e.touches[0].clientY, x: e.touches[0].clientX, d: 0} : null;
+}, {passive: true});
+document.addEventListener("touchmove", e => {
+  if (!_ptr) return;
+  const dy = e.touches[0].clientY - _ptr.y, dx = e.touches[0].clientX - _ptr.x;
+  if (dy < 0 || Math.abs(dx) > Math.abs(dy) || window.scrollY > 0) { _ptr = null; $("#ptr").style.cssText = ""; return; }
+  _ptr.d = Math.min(dy * .5, 90);
+  $("#ptr").style.cssText = `transition:none;opacity:${Math.min(1, _ptr.d / 60)};transform:translateY(${_ptr.d - 70}px) rotate(${_ptr.d * 4}deg)`;
+}, {passive: true});
+document.addEventListener("touchend", () => {
+  const p = _ptr, el = $("#ptr"); _ptr = null; if (!p) return;
+  if (p.d < 60) { el.style.cssText = "transition:all .2s"; return; }
+  el.style.cssText = "transition:transform .15s;opacity:1;transform:translateY(10px)"; el.classList.add("go");
+  $("#refresh").onclick();
+  setTimeout(() => { el.classList.remove("go"); el.style.cssText = "transition:all .25s"; }, 800);
+}, {passive: true});
+
 function open(k){
   chatMarkSeen();  // уходим из чата (или возвращаемся в него) — увиденное больше не считается непрочитанным
-  tab = k; try { localStorage.setItem("ark_tab", k); } catch(e) {}
+  tab = k; fresh(); try { localStorage.setItem("ark_tab", k); } catch(e) {}
   document.querySelectorAll("nav button").forEach(b => b.classList.toggle("on", b.dataset.tab === k));
   document.body.classList.toggle("chat", k === "chat");
   document.body.classList.remove("emoji");
@@ -521,7 +658,7 @@ function open(k){
   $("#main").style.paddingBottom = "";
   if (k !== "chat" && chat !== CHAT_ALL) { clearTimeout(chat.timer); chat = CHAT_ALL; }
   chatView = "feed"; clearTimeout(window._dmListT);
-  if (k === "chat") return chatOpen();
+  if (k === "chat") { if (offline) netState(false, 0), $("#off-note").textContent = "Показаны сохранённые сообщения, отправка сейчас не работает"; return chatOpen(); }
   chatBadge();
   setTimeout(() => chatPoll(CHAT_ALL), 300);  // вне чата тоже ждём новое — ради значка на вкладке «Чат»
   load(true);
@@ -550,11 +687,16 @@ async function load(fromTab){
     if (!(NEED[t] in data)) throw new Error("Не получилось загрузить, повторите");
     const json = JSON.stringify(data);
     shown[url] = {data, json, at: Date.now()};
+    if (t !== "tech" || url.endsWith(iso(new Date()))) keep.set("scr_" + t, {data, at: Date.now()});  // табель — только за сегодня
     const typing = document.querySelector("#main input:focus, #main textarea:focus, #main select:focus");
     if (!(early && prev.json === json) && !(early && typing)) DRAW()[t](data);
   } catch(e) {
     if (me && my === nav) {
-      if (early) toast("Нет связи, показаны последние данные");
+      const old = e.offline ? (prev || keep.get("scr_" + t)) : null;  // нет связи — достаём то, что видели в прошлый раз
+      let drawn = early;
+      if (old && !early) { try { DRAW()[t](old.data); drawn = true; } catch(_) {} }
+      if (e.offline) netState(false, drawn ? (old || prev).at : 0);
+      if (drawn) { if (!e.offline) toast("Не получилось обновить, показаны последние данные"); }
       else $("#main").innerHTML = `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="load()">Повторить</button></div>`;
     }
   } finally {
@@ -1026,7 +1168,8 @@ function page(title, html, again, back){
   clearInterval(timer);
   onPage = true;
   if (again) window._pageAgain = again;  // ⟳ на странице обновляет саму страницу
-  $("#main").innerHTML = `<div class="open-form"><button class="btn" style="margin-bottom:12px" onclick="${back || "load(true)"}">← Назад</button>
+  fresh();
+  $("#main").innerHTML = `<div class="open-form"><button class="btn" id="page-back" style="margin-bottom:12px" onclick="${back || "load(true)"}">← Назад</button>
     <h2 style="margin-top:0">${title}</h2>${html}</div>`;
   window.scrollTo(0, 0);
 }
@@ -1924,6 +2067,8 @@ let chat = {msgs: [], rev: 0, last: 0, epoch: "", busy: false, timer: null, send
 /* Личные сообщения: у каждого диалога своё такое же состояние, chat указывает на открытый (общий — CHAT_ALL).
    chatView: "feed" — лента (общая или личная), "list" — список людей для личной переписки */
 const CHAT_ALL = chat, dmRooms = {};
+{ const c = keep.get("chat");  // сразу показываем то, что видели в прошлый раз; свежее подтянется с сервера
+  if (Array.isArray(c) && c.length) { CHAT_ALL.msgs = c; CHAT_ALL.last = c[c.length - 1].id; } }
 let chatView = "feed";
 const chatUrl = sub => (chat.peer ? "/api/dm" : "/api/chat") + sub;
 const draftKey = () => "ark_chat_draft" + (chat.peer ? "_" + chat.peer : "");
@@ -1984,6 +2129,7 @@ async function chatPoll(room){
     if (added.length || changed.length) {
       room.msgs = room.msgs.concat(added).sort((a, b) => a.id - b.id).slice(-500);
       room.last = room.msgs.length ? room.msgs[room.msgs.length - 1].id : 0;
+      if (!room.peer) keep.set("chat", room.msgs.slice(-150));
       let full = false;
       if (!room.peer && first) {  // чат только что загрузился: «Новые сообщения» — с первого непрочитанного
         const sn = chatSeen();

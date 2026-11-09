@@ -48,10 +48,35 @@ STATIC = {  # что отдаём браузеру как есть
 
 # Нужен, чтобы телефон предлагал «Установить приложение». Хранится здесь, а не файлом .js:
 # увидев .js в проекте, Bothost решает, что бот на Node.js, и запускает не то.
-SW_JS = b"""self.addEventListener("install", () => self.skipWaiting());
+SW_JS = """// Работа без интернета: страница приложения запоминается на телефоне. Есть связь — берём свежую с сервера,
+// нет связи (или сервер молчит дольше 4 сек) — открываем запомненную. Запросы данных (/api/...) сюда не попадают.
+const CACHE = "ark-shell-1", PAGE = "/app";
+self.addEventListener("install", e => {
+  self.skipWaiting();
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll([PAGE, "/icon-192.png", "/manifest.webmanifest"])).catch(() => {}));
+});
 self.addEventListener("activate", e => e.waitUntil(self.clients.claim()));
-self.addEventListener("fetch", () => {});
-"""
+self.addEventListener("fetch", e => {
+  const r = e.request, u = new URL(r.url);
+  if (r.method !== "GET" || u.origin !== location.origin) return;
+  if (/^\\/(icon-\\d+\\.png|manifest\\.webmanifest)$/.test(u.pathname)) {
+    e.respondWith(caches.match(u.pathname).then(hit => hit || fetch(r).then(res => {
+      if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(u.pathname, copy)); }
+      return res;
+    })));
+    return;
+  }
+  if (!(r.mode === "navigate" && (u.pathname === "/" || u.pathname === "/app"))) return;
+  e.respondWith((async () => {
+    const cache = await caches.open(CACHE), saved = await cache.match(PAGE);
+    const fresh = fetch(r).then(res => { if (res.ok) cache.put(PAGE, res.clone()); return res; });
+    if (!saved) return fresh;
+    fresh.catch(() => {});
+    const late = new Promise(ok => setTimeout(() => ok(null), 4000));
+    try { return (await Promise.race([fresh, late])) || saved; } catch (err) { return saved; }
+  })());
+});
+""".encode()
 
 _deps: dict = {}  # функции бота: deliver, move, notify, shipped, stock, frames, inv_apply, inv_create, returns, pdf
 # Кто видит «Расчёт доставок» в приложении: коды телефонов через запятую в переменной PAY_CODES на Bothost.
