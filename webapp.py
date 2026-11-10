@@ -1511,6 +1511,10 @@ ADV_REPORTS_HEADERS = ["Отправлено", "Кто отправил", "С", 
 # «Выдано под отчёт» — сколько денег выдали тех. директору. Остаток на руках = всё выданное − все траты.
 ADV_ISSUED_TAB = "Выдано под отчёт"
 ADV_ISSUED_HEADERS = ["ID", "Дата", "Сумма ₽", "Комментарий", "Кто внёс", "Внесено"]
+# «Промежуточные отчёты» — тех. директор считает табель с деньгами за любой период для себя: никуда не
+# отправляется, видит только тот, кто сделал, и администратор. Ген. директору не показываются.
+DRAFT_TAB = "Промежуточные отчёты"
+DRAFT_HEADERS = ["Сохранён", "Кто", "С", "По", "Всего часов", "К выплате ₽", "Данные", "Код телефона"]
 DEFAULT_RATE = 625      # ₽ за час, пока ген. директор не поставил другую ставку в приложении
 DEFAULT_BED_RATE = 300  # ₽ маляру за покрашенную кровать
 
@@ -1523,7 +1527,7 @@ RATES_TAB = "Ставки"
 RATES_HEADERS = ["Ключ", "Значение"]
 TABEL_BOOK_TABS = [(WORKERS_TAB, WORKERS_HEADERS), (TABEL_TAB, TABEL_HEADERS), (BONUS_TAB, BONUS_HEADERS),
                    (REPORTS_TAB, REPORTS_HEADERS), (ADV_TAB, ADV_HEADERS), (ADV_REPORTS_TAB, ADV_REPORTS_HEADERS),
-                   (ADV_ISSUED_TAB, ADV_ISSUED_HEADERS)]
+                   (ADV_ISSUED_TAB, ADV_ISSUED_HEADERS), (DRAFT_TAB, DRAFT_HEADERS)]
 _tb = {"id": "", "book": None, "tabs": {}}
 _tb_lock = threading.Lock()
 
@@ -2088,6 +2092,52 @@ def report_delete(rid: int, sent: str, who: str) -> dict:
     return {"ok": True}
 
 
+# ------------------------------------------------------------ промежуточные отчёты (только для себя)
+def draft_summary(d1: date, d2: date) -> dict:
+    """Табель за период с деньгами по текущим ставкам и согласованным премиям — как увидел бы ген. директор."""
+    summ = with_pay(period_summary(d1, d2), hour_rate(), bed_rate(), personal_rates())
+    return with_bonuses(summ, bonuses())
+
+
+def draft_save(d1: date, d2: date, who: str, code: str) -> dict:
+    summ = draft_summary(d1, d2)
+    if not summ["people"]:
+        raise ValueError("За этот период в табеле нет часов")
+    a, b = _d(summ["from"]), _d(summ["to"])
+    _tt(DRAFT_TAB, DRAFT_HEADERS).append_row(
+        [_stamp(), who, a.strftime("%d.%m.%Y"), b.strftime("%d.%m.%Y"), summ["total"], summ["total_pay"],
+         json.dumps(summ, ensure_ascii=False, default=str), code], value_input_option="RAW")
+    return {"ok": True, "total_pay": summ["total_pay"]}
+
+
+def drafts(code: str, see_all: bool) -> list:
+    """Сохранённые промежуточные отчёты: свои, а администратору — все."""
+    out = []
+    for i, v in enumerate(_tt(DRAFT_TAB, DRAFT_HEADERS).get_all_values()[1:], start=2):
+        v = list(v) + [""] * 8
+        if not see_all and norm_code(v[7]) != code:
+            continue
+        try:
+            data = json.loads(v[6])
+            data["people"], data["from"], data["to"]
+        except (ValueError, KeyError, TypeError):
+            continue
+        data.update(id=i, sent=v[0].strip(), who=v[1].strip(), mine=norm_code(v[7]) == code)
+        out.append(data)
+    return out[::-1][:60]
+
+
+def draft_delete(rid: int, sent: str, code: str, see_all: bool) -> dict:
+    ws = _tt(DRAFT_TAB, DRAFT_HEADERS)
+    rows = ws.get_all_values(fresh=True)
+    if not 2 <= rid <= len(rows) or rows[rid - 1][0].strip() != (sent or "").strip():
+        raise ValueError("Отчёты в таблице поменялись, обновите экран и повторите")
+    if not see_all and norm_code((list(rows[rid - 1]) + [""] * 8)[7]) != code:
+        raise ValueError("Это не ваш отчёт")
+    ws.delete_rows(rid)
+    return {"ok": True}
+
+
 # ------------------------------------------------------------ премии (тех. директор → ген. директор)
 def _bonus_ws():
     return _tt(BONUS_TAB, BONUS_HEADERS)
@@ -2513,6 +2563,10 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
             if path == "/api/tech/sent":  # тех. директору — только часы, без денег
                 return 200, {"reports": [{k: r[k] for k in ("from", "to", "total", "sent", "who")}
                                          for r in reports() if r.get("who") == who][:20]}
+            if path == "/api/tech/draft/summary":
+                return 200, draft_summary(_d(body.get("from")), _d(body.get("to")))
+            if path == "/api/tech/drafts":
+                return 200, {"drafts": drafts(code, is_admin), "admin": is_admin}
             if path == "/api/tech/money":
                 return 200, expense_data(who, me["role"] in ("gendir", "admin"))
             if path == "/api/tech/money/summary":
@@ -2524,6 +2578,10 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
                     if path == "/api/tech/day":
                         n = tech_day_save(_d(body.get("day")), body.get("hours") or {}, who, body.get("beds") or {})
                         return 200, {"ok": True, "changed": n}
+                    if path == "/api/tech/draft/save":
+                        return 200, draft_save(_d(body.get("from")), _d(body.get("to")), who, code)
+                    if path == "/api/tech/draft/delete":
+                        return 200, draft_delete(_int(body.get("id"), 0), str(body.get("sent") or ""), code, is_admin)
                     if path == "/api/tech/money/add":
                         return 200, expense_add(_d(body.get("day")) if body.get("day") else today,
                                                 str(body.get("name") or ""), body.get("qty"), body.get("amount"), who)

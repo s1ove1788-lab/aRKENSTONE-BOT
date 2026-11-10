@@ -1475,6 +1475,7 @@ function drawTech(d){
     <div class="toolbar" style="margin-top:12px"><button class="btn" onclick="techMonthPage('${iso(new Date(m.getFullYear(), m.getMonth(), 1))}')">📅 Итоги месяца</button>
       <button class="btn" onclick="techSendPage()">📤 Отправить директору</button></div>
     <button class="btn" style="width:100%;margin-top:8px" onclick="bonusPage()">🎁 Премия на согласование</button>
+    <button class="btn" style="width:100%;margin-top:8px" onclick="draftPage()">🧾 Промежуточный отчёт (для себя)</button>
     <button class="btn" style="width:100%;margin-top:8px" onclick="moneyPage()">💰 Подотчётные финансы</button>
     <p class="muted" style="text-align:center">За ${MONTHS1[m.getMonth()].toLowerCase()}: ${hh(d.month_hours)} ч${d.month_beds ? ` · ${d.month_beds} кроватей` : ""}</p>`;
 }
@@ -1693,6 +1694,67 @@ async function techSend(btn){
   if (!confirm(`Отправить ген. директору табель за ${fmtPeriod(a <= b ? a : b, a <= b ? b : a)}?`)) return;
   btn.disabled = true;
   try { const r = await call("/api/tech/send", {from: a, to: b}); toast(`✅ Отправлено: ${hh(r.total)} ч`); techSendPage(); }
+  catch(e) { toast(e.message); btn.disabled = false; }
+}
+
+/* ------------------------------ промежуточный отчёт: табель с деньгами за любой период, только для себя */
+function draftPage(){
+  if (techDirty() && !confirm("Часы за день не сохранены. Уйти без сохранения?")) return;
+  const k = window._draftK || "month", [a, b] = periodOf(k);
+  page("Промежуточный отчёт", `
+    <div class="open-form">
+    <p class="muted" style="margin-top:-4px">🔒 Только для вас: ген. директору не отправляется. Видите вы и администратор.</p>
+    ${seg("dper", {month: "Этот месяц", h1: "1–15 число", prev: "Прошлый месяц", h2p: "16–конец прошлого"}, k)}
+    <div class="toolbar"><div><label class="l">С</label><input type="date" id="d-from" value="${a}" max="${iso(new Date())}"></div>
+      <div><label class="l">По</label><input type="date" id="d-to" value="${b}" max="${iso(new Date())}"></div></div>
+    <div id="d-sum"><div class="empty">Считаю…</div></div>
+    <button class="btn main big" style="width:100%;margin-top:8px" id="d-save" onclick="draftSave(this)" disabled>💾 Сохранить для себя</button>
+    <p class="muted">Суммы — по текущим ставкам и согласованным премиям. Сохранённый отчёт не меняется, даже если потом поправить табель или ставки.</p>
+    <h2>Сохранённые</h2><div id="d-list" class="muted">…</div></div>`, () => draftPage());
+  document.querySelectorAll("#dper button").forEach(btn => btn.addEventListener("click", () => {
+    window._draftK = btn.dataset.k; const [x, y] = periodOf(btn.dataset.k);
+    $("#d-from").value = x; $("#d-to").value = y; draftPreview();
+  }));
+  $("#d-from").onchange = $("#d-to").onchange = () => { document.querySelectorAll("#dper button").forEach(x => x.classList.remove("on")); draftPreview(); };
+  draftPreview(); draftList();
+}
+async function draftPreview(){
+  const a = $("#d-from").value, b = $("#d-to").value, box = $("#d-sum"), btn = $("#d-save");
+  btn.disabled = true; box.innerHTML = `<div class="empty">Считаю…</div>`;
+  try {
+    const s = await call(`/api/tech/draft/summary?from=${a}&to=${b}`);
+    if (!$("#d-sum")) return;
+    box.innerHTML = `<h2>${esc(fmtPeriod(s.from, s.to))}</h2>` + summaryTable(s);
+    btn.disabled = !s.people.length;
+  } catch(e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+async function draftList(){
+  try {
+    const r = await call("/api/tech/drafts"); window._drafts = r.drafts;
+    if (!$("#d-list")) return;
+    $("#d-list").innerHTML = r.drafts.length ? r.drafts.map((x, i) => `<div class="card tap" onclick="draftView(${i})"><div class="top">
+      <div class="title">${esc(fmtPeriod(x.from, x.to))}</div><span class="badge">${rub(x.total_pay ?? x.pay)}</span></div>
+      <div class="sub">${hh(x.total)} ч${x.beds ? ` · ${x.beds} кров.` : ""} · ${x.people.length} чел. · сохранён ${esc(x.sent)}${r.admin && !x.mine ? ` · ${esc(x.who)}` : ""}</div></div>`).join("")
+      : "Пока ничего не сохраняли";
+  } catch(e) { if ($("#d-list")) $("#d-list").textContent = ""; }
+}
+async function draftSave(btn){
+  const a = $("#d-from").value, b = $("#d-to").value;
+  btn.disabled = true;
+  try { const r = await call("/api/tech/draft/save", {from: a, to: b}); toast(`💾 Сохранено: ${rub(r.total_pay)}`); draftList(); }
+  catch(e) { toast(e.message); }
+  btn.disabled = false;
+}
+function draftView(i){
+  const r = window._drafts[i]; if (!r) return;
+  page(esc(fmtPeriod(r.from, r.to)), `<p class="muted">🔒 Промежуточный отчёт · сохранил ${esc(r.who || "—")}, ${esc(r.sent)}</p>` + summaryTable(r)
+    + `<button class="btn" style="width:100%;margin-top:12px;color:var(--warn)" onclick="draftDel(this, ${i})">🗑 Удалить</button>`, null, "draftPage()");
+}
+async function draftDel(btn, i){
+  const r = window._drafts[i];
+  if (!confirm(`Удалить промежуточный отчёт за ${fmtPeriod(r.from, r.to)}?`)) return;
+  btn.disabled = true;
+  try { await call("/api/tech/draft/delete", {id: r.id, sent: r.sent}); toast("Удалено"); draftPage(); }
   catch(e) { toast(e.message); btn.disabled = false; }
 }
 
