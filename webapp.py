@@ -2234,7 +2234,24 @@ def expenses() -> list:
 
 def _adv_public(e: dict) -> dict:
     return {"id": e["id"], "day": e["day"].isoformat(), "name": e["name"], "qty": e["qty"], "amount": e["amount"],
-            "by": e["by"], "sent": e["sent"]}
+            "by": e["by"], "sent": e["sent"], "created": e["created"]}
+
+
+def _rub_txt(x) -> str:
+    return f"{x:,}".replace(",", " ").replace(".", ",") + " ₽"
+
+
+def _same_person(a: str, b: str) -> bool:
+    """«Николай · Тех. директор» и «Николай» — один человек (раньше роль к имени не дописывали)."""
+    return (a or "").split(" · ")[0].strip() == (b or "").split(" · ")[0].strip() != ""
+
+
+def expense_all(who: str, any_row: bool) -> dict:
+    """Все траты (и отправленные, и нет) с тем, кто их внёс, — для ген. директора и администратора."""
+    rows = sorted(expenses(), key=lambda e: (e["day"], e["row"]), reverse=True)
+    unsent = [e for e in rows if not e["sent"]]
+    return {"items": [_adv_public(e) for e in rows[:400]], "total": _adv_total(rows),
+            "unsent": len(unsent), "unsent_total": _adv_total(unsent), "adv": advance_state(who, any_row)}
 
 
 def _adv_total(items: list) -> float:
@@ -2275,7 +2292,7 @@ def advance_remove(aid: str, who: str, any_row: bool) -> dict:
     ws = _tt(ADV_ISSUED_TAB, ADV_ISSUED_HEADERS)
     for i, v in enumerate(ws.get_all_values(fresh=True)[1:], start=2):
         if aid and v and v[0].strip() == aid:
-            if not any_row and (list(v) + [""] * 5)[4].strip() != who:
+            if not any_row and not _same_person((list(v) + [""] * 5)[4], who):
                 raise ValueError("Эту выдачу записал другой человек — убрать её может он или ген. директор")
             ws.delete_rows(i)
             log.info("Подотчёт: выдача удалена (%s): %s", who, " | ".join(v[1:5]))
@@ -2295,7 +2312,7 @@ def advance_state(who: str = "", any_row: bool = False) -> dict:
     last = sorted(adv, key=lambda a: (a["day"], a["row"]), reverse=True)[:30]
     return {"issued": _adv_r(issued), "spent": _adv_r(spent), "balance": _adv_r(issued - spent),
             "issues": [{"id": a["id"], "day": a["day"].isoformat(), "amount": a["amount"], "note": a["note"], "by": a["by"],
-                        "can_remove": any_row or a["by"] == who} for a in last]}
+                        "can_remove": any_row or _same_person(a["by"], who)} for a in last]}
 
 
 def expense_add(day: date, name: str, qty, amount, who: str) -> dict:
@@ -2351,7 +2368,7 @@ def expense_send(d1: date, d2: date, who: str, code: str) -> dict:
     if not summ["items"]:
         raise ValueError("За этот период трат нет")
     stamp = _stamp()
-    snap = {**summ, "items": [{k: e[k] for k in ("day", "name", "qty", "amount")} for e in summ["items"]]}
+    snap = {**summ, "items": [{k: e[k] for k in ("day", "name", "qty", "amount", "by")} for e in summ["items"]]}
     a, b = _d(summ["from"]), _d(summ["to"])
     _tt(ADV_REPORTS_TAB, ADV_REPORTS_HEADERS).append_row(
         [stamp, who, a.strftime("%d.%m.%Y"), b.strftime("%d.%m.%Y"), summ["total"], json.dumps(snap, ensure_ascii=False)],
@@ -2367,7 +2384,9 @@ def expense_send(d1: date, d2: date, who: str, code: str) -> dict:
     money = f"{summ['total']:,}".replace(",", " ").replace(".", ",")
     left = f"{abs(summ['end']):,}".replace(",", " ").replace(".", ",")
     push_safe("reports", f"💰 Подотчёт за {period}: {money} ₽",
-              f"{len(summ['items'])} поз. · {'остаток' if summ['end'] >= 0 else 'перерасход'} {left} ₽. Отправил(а) {who}", _codes({"gendir", "admin"}, skip=code), "reports")
+              f"Отправил(а) {who}. {'Остаток' if summ['end'] >= 0 else 'Перерасход'} {left} ₽.\n"
+              + "\n".join(f"• {e['name']} — {_rub_txt(e['amount'])}" for e in summ["items"][:6])
+              + (f"\n…и ещё {len(summ['items']) - 6} поз." if len(summ["items"]) > 6 else ""), _codes({"gendir", "admin"}, skip=code), "reports")
     return {"ok": True, "total": summ["total"], "count": len(summ["items"])}
 
 
@@ -2476,6 +2495,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
     is_admin = me["role"] == "admin"
     pay = code in pay_codes()
     who = me["name"] or "сотрудник"
+    whor = f"{who} · {ROLE_LABELS[me['role']]}"  # кто и в какой роли: так подписываем траты, выдачи и отчёты подотчёта
     today = now_date()
     if path == "/api/away":
         away(code)
@@ -2584,11 +2604,11 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
                         return 200, draft_delete(_int(body.get("id"), 0), str(body.get("sent") or ""), code, is_admin)
                     if path == "/api/tech/money/add":
                         return 200, expense_add(_d(body.get("day")) if body.get("day") else today,
-                                                str(body.get("name") or ""), body.get("qty"), body.get("amount"), who)
+                                                str(body.get("name") or ""), body.get("qty"), body.get("amount"), whor)
                     if path == "/api/tech/money/remove":
                         return 200, expense_remove(str(body.get("id") or "").strip(), who)
                     if path == "/api/tech/money/send":
-                        return 200, expense_send(_d(body.get("from")), _d(body.get("to")), who, code)
+                        return 200, expense_send(_d(body.get("from")), _d(body.get("to")), whor, code)
                     if path == "/api/tech/bonus":
                         return 200, bonus_propose(str(body.get("worker") or ""), body.get("amount"),
                                                   str(body.get("reason") or ""), who, code)
@@ -2612,6 +2632,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         return 200, {"reports": reports(), "rate": hour_rate(), "bed_rate": bed_rate(),
                      "can_rate": me["role"] in ("gendir", "admin"), "money": expense_reports(),
                      "adv": advance_state(who, me["role"] in ("gendir", "admin")), "today": today.isoformat(),
+                     "unsent": (lambda u: {"count": len(u), "total": _adv_total(u)})([e for e in expenses() if not e["sent"]]),
                      "pending": [_bonus_public(b) for b in bl if b["status"] == BONUS_WAIT],
                      "decided": [_bonus_public(b) for b in bl[::-1] if b["status"] != BONUS_WAIT][:20]}
     if method == "POST" and path == "/api/reports/rate" and me["role"] in ("gendir", "admin"):
@@ -2641,9 +2662,11 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
                 if path.endswith("remove"):
                     return 200, advance_remove(str(body.get("id") or "").strip(), who, boss)
                 return 200, advance_add(_d(body.get("day")) if body.get("day") else today, body.get("amount"),
-                                        str(body.get("note") or ""), who, code, boss)
+                                        str(body.get("note") or ""), whor, code, boss)
         except ValueError as e:
             return 400, {"error": str(e)}
+    if path == "/api/money/all" and (me["role"] in ("gendir", "admin") or "tech" in tabs):
+        return 200, expense_all(who, me["role"] in ("gendir", "admin"))
     if method == "POST" and path == "/api/reports/money/delete" and me["role"] in ("gendir", "admin"):
         try:
             with _lock:

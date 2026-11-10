@@ -395,6 +395,11 @@ main.fresh>*{animation:scr .16s ease-out both}
 @keyframes up{from{transform:translateY(40px);opacity:.4}to{transform:none;opacity:1}}
 @keyframes dim{from{opacity:0}to{opacity:1}}
 @media (prefers-reduced-motion: reduce){ main.fresh>*,.sheet,.sheet-bg{animation:none} }
+/* табель: единицы у чисел и отступ перед суммой */
+td small.u{font-size:11px;color:var(--muted);margin-left:2px;font-weight:400}
+td.n.sum{white-space:nowrap;padding-left:14px}
+/* траты: кто внёс */
+.by{display:inline-block;font-size:12px;border-radius:999px;padding:1px 8px;background:var(--chip);color:var(--muted);margin-top:3px}
 /* колокольчик: новые заказы и отмены */
 #bell{position:relative;display:flex;align-items:center}
 #bell[hidden]{display:none}
@@ -1634,9 +1639,9 @@ function summaryTable(s, open){
     <div class="card" style="padding:6px 10px"><table>
       <tr><th>Сотрудник</th><th class="n">Дней</th><th class="n">Часов</th>${beds ? `<th class="n">Кров.</th>` : ""}${money ? `<th class="n">Сумма</th>` : ""}</tr>
       ${s.people.map((p, i) => `<tr class="tap" onclick="document.getElementById('bd${i}').hidden ^= 1"><td><b>${esc(p.name)}</b>${p.area ? `<div class="ch">${esc(p.area)}</div>` : ""}${p.bonus ? `<div class="ch">🎁 +${rub(p.bonus)}</div>` : ""}</td>
-        <td class="n">${p.days}</td><td class="n">${money ? hh(p.hours) : `<b>${hh(p.hours)}</b>`}</td>${beds ? `<td class="n">${p.beds || ""}</td>` : ""}${money ? `<td class="n" style="white-space:nowrap"><b>${rub(p.total_pay ?? p.pay)}</b></td>` : ""}</tr>
+        <td class="n">${p.days}</td><td class="n">${money ? hh(p.hours) : `<b>${hh(p.hours)}</b>`}</td>${beds ? `<td class="n">${p.beds ? `${p.beds}<small class="u">шт</small>` : ""}</td>` : ""}${money ? `<td class="n sum"><b>${rub(p.total_pay ?? p.pay)}</b></td>` : ""}</tr>
         <tr id="bd${i}" ${open ? "" : "hidden"}><td colspan="${cols}" class="muted" style="border-top:0;padding-top:0">${detail(p)}</td></tr>`).join("")}
-      ${money ? `<tr><td><b>Итого</b></td><td></td><td class="n"><b>${hh(s.total)}</b></td>${beds ? `<td class="n"><b>${s.beds}</b></td>` : ""}<td class="n" style="white-space:nowrap"><b>${rub(total)}</b></td></tr>` : ""}
+      ${money ? `<tr><td><b>Итого</b></td><td></td><td class="n"><b>${hh(s.total)}</b><small class="u">ч</small></td>${beds ? `<td class="n"><b>${s.beds}</b><small class="u">шт</small></td>` : ""}<td class="n sum"><b>${rub(total)}</b></td></tr>` : ""}
     </table></div><p class="muted">Нажмите на сотрудника, чтобы увидеть ${money ? "из чего сложилась сумма" : "часы по дням"}.</p>`;
 }
 async function techMonthPage(first){
@@ -1766,7 +1771,7 @@ function moneyTable(items, total, del){
   if (!items.length) return `<div class="empty">Трат нет</div>`;
   return `<div class="card" style="padding:6px 10px"><table>
     <tr><th>Наименование</th><th class="n">Кол-во</th><th class="n">Сумма</th>${del ? "<th></th>" : ""}</tr>
-    ${items.map((e, i) => `<tr><td><b>${esc(e.name)}</b><div class="ch">${esc(dm(e.day))}${del && e.sent ? " · уже отправлялось" : ""}</div></td>
+    ${items.map((e, i) => `<tr><td><b>${esc(e.name)}</b><div class="ch">${esc(dm(e.day))}${del && e.sent ? " · уже отправлялось" : ""}${e.sentMark ? ` · ${e.sentMark}` : ""}</div>${e.by ? `<span class="by">внёс(ла): ${esc(e.by)}</span>` : ""}</td>
       <td class="n">${hh(e.qty)}</td><td class="n" style="white-space:nowrap"><b>${rub2(e.amount)}</b></td>
       ${del ? `<td class="n" style="width:1%"><button class="btn" style="padding:8px 10px" onclick="moneyDel(${i})" aria-label="Удалить">✕</button></td>` : ""}</tr>`).join("")}
     <tr><td><b>Итого</b></td><td class="n">${items.length} поз.</td><td class="n" style="white-space:nowrap"><b>${rub2(total)}</b></td>${del ? "<td></td>" : ""}</tr>
@@ -1824,7 +1829,9 @@ async function issueDel(i){
 function moneyCards(list, fn){
   return list.map((r, i) => `<div class="card tap" onclick="${fn}(${i})"><div class="top">
     <div class="title">${esc(fmtPeriod(r.from, r.to))}</div><span class="badge">${rub2(r.total)}</span></div>
-    <div class="sub">${r.items.length} поз.${r.end === undefined ? "" : ` · ${r.end < 0 ? "перерасход" : "остаток"} ${rub2(Math.abs(r.end))}`} · отправил ${esc(r.who || "—")}, ${esc(r.sent)}</div></div>`).join("");
+    <div class="sub">📤 Отправил(а): <b>${esc(r.who || "—")}</b> · ${esc(r.sent)}</div>
+    <div class="sub">${r.items.length} поз.: ${esc(r.items.slice(0, 3).map(e => e.name).join(", "))}${r.items.length > 3 ? "…" : ""}${r.end === undefined ? "" : ` · ${r.end < 0 ? "перерасход" : "остаток"} ${rub2(Math.abs(r.end))}`}</div>
+    <div class="muted" style="margin:4px 0 0;font-size:13px">Нажмите, чтобы увидеть все покупки ›</div></div>`).join("");
 }
 async function moneyPage(keep){
   if (techDirty() && !confirm("Часы за день не сохранены. Уйти без сохранения?")) return;
@@ -1921,10 +1928,29 @@ async function moneySend(btn){
   try { const r = await call("/api/tech/money/send", {from: a, to: b}); window._moneyK = null; toast(`✅ Отправлено: ${rub2(r.total)}`); moneyPage(); }
   catch(e) { toast(e.message); btn.disabled = false; }
 }
+/* Ген. директор и администратор: все покупки — и отправленные в отчёте, и ещё нет, с тем, кто внёс */
+async function moneyAllPage(){
+  const f = window._maF || "all", my = ++nav;
+  page("Все покупки", `<div class="empty">Загрузка…</div>`, () => moneyAllPage(), "load(true)");
+  let d; try { d = await call("/api/money/all"); } catch(e) { return toast(e.message); }
+  if (my !== nav) return;
+  window._adv = d.adv; window._advAgain = () => moneyAllPage();
+  const items = d.items.filter(e => f === "all" || (f === "wait" ? !e.sent : !!e.sent))
+    .map(e => ({...e, sentMark: e.sent ? "в отчёте от " + e.sent.slice(0, 10) : "⏳ ещё не отправлено"}));
+  const total = Math.round(items.reduce((a, e) => a + (+e.amount || 0), 0) * 100) / 100;
+  const people = {}; items.forEach(e => { const k = e.by || "не указано"; people[k] = Math.round(((people[k] || 0) + (+e.amount || 0)) * 100) / 100; });
+  page("Все покупки", moneyBalance(d.adv)
+    + `<div class="ob-sw" style="margin-bottom:10px;grid-template-columns:repeat(3,1fr);display:grid">${[["all", "Все"], ["wait", "Не отправлены"], ["sent", "В отчётах"]].map(([k, v]) =>
+      `<button class="${k === f ? "on" : ""}" onclick="window._maF='${k}';moneyAllPage()">${v}</button>`).join("")}</div>`
+    + (Object.keys(people).length ? `<div class="card" style="padding:6px 10px"><table><tr><th>Кто внёс</th><th class="n">Сумма</th></tr>${Object.entries(people).map(([k, v]) =>
+      `<tr><td>${esc(k)}</td><td class="n sum">${rub2(v)}</td></tr>`).join("")}</table></div>` : "")
+    + moneyTable(items, total)
+    + `<h2>Выдано под отчёт</h2>${moneyIssues(d.adv)}`, () => moneyAllPage(), "load(true)");
+}
 /* Ген. директор: присланный подотчёт */
 function moneyReport(i){
   const r = window._moneyReports[i], can = (window._rateInfo || {}).can_rate;
-  page(esc(fmtPeriod(r.from, r.to)), `<p class="muted">Подотчётные финансы · отправил ${esc(r.who || "—")}, ${esc(r.sent)}</p>` + moneyFlow(r) + moneyTable(r.items, r.total)
+  page(esc(fmtPeriod(r.from, r.to)), `<p class="muted">Подотчётные финансы<br>📤 Отправил(а): <b>${esc(r.who || "—")}</b>, ${esc(r.sent)}</p>` + moneyFlow(r) + moneyTable(r.items, r.total)
     + (can ? `<button class="btn" style="width:100%;margin-top:12px;color:var(--warn)" onclick="moneyReportDelete(this, ${i})">🗑 Удалить отчёт</button>` : ""),
     null, "load(true)");
 }
@@ -2047,11 +2073,13 @@ function drawReports(d){
       <div class="title">${esc(fmtPeriod(r.from, r.to))}</div><span class="badge">${rub(r.total_pay ?? r.pay)}</span></div>
       <div class="sub">${hh(r.total)} ч${r.beds ? ` · ${r.beds} кров.` : ""}${r.bonus ? ` · премии ${rub(r.bonus)}` : ""} · ${r.people.length} чел. · отправил ${esc(r.who || "—")}, ${esc(r.sent)}${r.edited ? " · ✏️ изменён" : ""}</div></div>`).join("")
     : `<div class="empty">Пока ничего не присылали.<br>Отчёт появится здесь, когда тех. директор нажмёт «Отправить директору».</div>`)
-    + `<h2>Подотчётные финансы от тех. директора</h2>` + moneyBalance(d.adv)
+    + `<h2>Подотчётные финансы</h2><div class="tap" onclick="moneyAllPage()" style="border-radius:16px">` + moneyBalance(d.adv) + `</div>`
+    + `<button class="btn" style="width:100%;margin-bottom:10px" onclick="moneyAllPage()">📋 Все покупки: что, на сколько, кто внёс${d.unsent && d.unsent.count ? ` · не отправлено ${d.unsent.count}` : ""}</button>`
     + (d.can_rate ? `<button class="btn" style="width:100%;margin-bottom:10px" onclick="issueForm(() => load())">💵 Выдать под отчёт</button>` : "")
     + (d.adv && d.adv.issues.length ? `<details style="margin-bottom:10px"><summary class="muted" style="cursor:pointer;margin:0 4px 8px">Выдачи · ${d.adv.issues.length}</summary>${moneyIssues(d.adv)}</details>` : "")
+    + `<h2>Присланные отчёты</h2>`
     + (window._moneyReports.length ? moneyCards(window._moneyReports, "moneyReport")
-    : `<div class="empty">Пока ничего не присылали.</div>`)
+    : `<div class="empty">Отчётов пока не присылали.${d.unsent && d.unsent.count ? `<br>Внесено покупок без отчёта: ${d.unsent.count} на ${rub2(d.unsent.total)} — их видно по кнопке «Все покупки».` : ""}</div>`)
     + ((d.decided || []).length ? `<h2>Решённые премии</h2><div class="card" style="padding:6px 10px"><table>${d.decided.map(b =>
       `<tr><td><b>${esc(b.name)}</b><div class="ch">${esc(b.reason)}</div><div class="ch">${esc(b.decided)}${b.comment ? " · " + esc(b.comment) : ""}</div></td>
        <td class="n" style="white-space:nowrap">${rub(b.amount)}<div><span class="pill ${b.status === "Согласовано" ? "ok" : ""}">${esc(b.status)}</span></div></td></tr>`).join("")}</table></div>` : "");
