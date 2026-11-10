@@ -374,6 +374,7 @@ def chat_mark(code: str, last: int) -> None:
     if last <= _reads["by"].get(code, 0):
         return
     _reads["by"][code] = last
+    push_clear(code, "chat")
     try:
         with _dm_lock:
             db = _dm_db()
@@ -494,12 +495,12 @@ def _chat_push(name: str, text: str, photo: str, author: str, replied) -> None:
         body = (("📷 " if photo else "") + (text or ("Фото" if photo else ""))).strip()
         everyone = _codes(skip=author)
         if replied and replied != author and replied in everyone:
-            push_safe("chat", f"↩️ {name} ответил(а) вам", body, {replied}, "chat")
+            push_safe("chat", f"↩️ {name} ответил(а) вам", body, {replied}, "chat", group="chat")
             everyone.discard(replied)
         with _push_lock:
             _push_load()
             muted = {c for c, d in _push["devs"].items() if not d["chat"]}
-        push_safe("chat", f"💬 {name}", body, everyone - muted, "chat")
+        push_safe("chat", f"💬 {name}", body, everyone - muted, "chat", group="chat")
     except Exception:
         log.exception("Уведомления: чат")
 
@@ -978,6 +979,7 @@ def dm_thread(code: str, peer: str, since: int, wait: bool = False, on: int = -1
         read = _dm_read_by(db, peer, code)
     if woke:
         wake()  # у собеседника сразу появятся галочки «прочитано», а у меня на других экранах обнулится счётчик
+        push_clear(code, "dm-" + peer)
     names = devices()
     return {"epoch": _dm["epoch"] + peer, "rev": rev, "msgs": [_dm_public(r, code, names, quotes) for r in rows],
             "peer": presence(peer), "read": read, "dm_unread": dm_unread(code),
@@ -1031,7 +1033,7 @@ def dm_send(code: str, me: dict, peer: str, text: str, reply: int = 0, photo: st
         new_id = cur.lastrowid
     wake()
     body = (("📷 " if photo else "") + (text or ("Фото" if photo else ""))).strip()
-    push_safe("dm", f"✉️ {me['name'] or 'Сотрудник'}", body, {peer}, "chat")  # личное приходит всегда, даже если общий чат выключен
+    push_safe("dm", f"✉️ {me['name'] or 'Сотрудник'}", body, {peer}, "dm-" + code, group="dm-" + code)  # личное приходит всегда, даже если общий чат выключен
     return {"ok": True, "id": new_id}
 
 
@@ -1224,6 +1226,7 @@ def feed_mark(code: str, upto: int) -> dict:
         db.execute("UPDATE feed_read SET last=MAX(last, ?) WHERE code=?", (upto, code))
         db.commit()
     wake()  # на других экранах этого телефона число на колокольчике погаснет сразу
+    push_clear(code, "orders")
     return {"ok": True}
 
 
@@ -1315,7 +1318,7 @@ def push_inbox(code: str, after: int) -> dict:
         last = _push["seq"]
     if after <= 0:  # первый запрос после установки: старое не показываем, только запоминаем, с какого места ждать
         evs = []
-    return {"last": last, "events": [{k: e[k] for k in ("id", "kind", "title", "body", "tab")} for e in evs[-20:]]}
+    return {"last": last, "events": [{k: e.get(k, "") for k in ("id", "kind", "title", "body", "tab", "group")} for e in evs[-20:]]}
 
 
 def _codes(roles=None, skip=None) -> set:
@@ -1329,18 +1332,50 @@ def _codes(roles=None, skip=None) -> set:
     return out
 
 
-def push_event(kind: str, title: str, body: str, codes: set, tab: str = "") -> None:
+def push_group(kind: str, tab: str = "") -> str:
+    """Группа уведомления: в шторке телефона одна карточка на группу (личка с человеком, общий чат, заказы…),
+    новые сообщения складываются в неё, а прочитанное приложение убирает всю группу сразу."""
+    return kind + (":" + tab if tab else "")
+
+
+def push_event(kind: str, title: str, body: str, codes: set, tab: str = "", group: str = "") -> None:
     if not codes:
         return
     with _push_lock:
         _push["seq"] = max(int(time.time() * 1000), _push["seq"] + 1)
         ev = {"id": _push["seq"], "kind": kind, "title": title[:120], "body": body[:400], "tab": tab,
-              "codes": set(codes), "t": time.time()}
+              "group": group or push_group(kind, tab), "codes": set(codes), "t": time.time()}
+        _push_pending.update((c, ev["group"]) for c in codes)
         _push["events"].append(ev)
         cut = time.time() - PUSH_KEEP_SEC
         _push["events"] = [e for e in _push["events"] if e["t"] > cut][-500:]
     if fcm_enabled():
         threading.Thread(target=_fcm_send_all, args=(ev,), daemon=True).start()
+
+
+_push_pending: set = set()  # (телефон, группа), куда ушло уведомление и его ещё не убрали
+
+
+def push_clear(code: str, group: str) -> None:
+    """Человек прочитал переписку (или заказы) — просим его телефон убрать эти уведомления из шторки.
+    Нужен, когда прочитали не в этом приложении (например, в браузере). Старые APK такое сообщение пропускают."""
+    with _push_lock:
+        if (code, group) not in _push_pending:  # уведомлений этой группы человеку не было — убирать нечего
+            return
+        _push_pending.discard((code, group))
+        tok = (_push["devs"].get(code) or {}).get("fcm") if fcm_enabled() else None
+    if not tok:
+        return
+
+    def send():
+        import requests
+        try:
+            url = f"https://fcm.googleapis.com/v1/projects/{_push['fcm']['project']}/messages:send"
+            requests.post(url, timeout=15, headers={"Authorization": "Bearer " + _fcm_token()},
+                          json={"message": {"token": tok, "data": {"clear": group}, "android": {"priority": "NORMAL", "ttl": "3600s"}}})
+        except Exception as e:
+            log.warning("Уведомления: не смог попросить телефон убрать прочитанное: %s", e)
+    threading.Thread(target=send, daemon=True).start()
 
 
 def push_safe(*a, **k) -> None:
@@ -1357,7 +1392,7 @@ def push_order_text(text: str) -> None:
     if not t.startswith(("🛒", "🆕", "❌")):  # новые заказы и отмены с площадок
         return
     head, _, rest = t.partition("\n")
-    push_safe("orders", head, rest.strip() or head, _codes(), "bell")  # нажали — открывается колокольчик
+    push_safe("orders", head, rest.strip() or head, _codes(), "bell", group="orders")  # нажали — открывается колокольчик
 
 
 # ---------- Firebase Cloud Messaging (HTTP v1)
@@ -1407,7 +1442,8 @@ def _fcm_send_all(ev: dict) -> None:
         log.exception("Уведомления: Firebase не выдал ключ доступа")
         return
     url = f"https://fcm.googleapis.com/v1/projects/{_push['fcm']['project']}/messages:send"
-    data = {"id": str(ev["id"]), "kind": ev["kind"], "title": ev["title"], "body": ev["body"], "tab": ev["tab"]}
+    data = {"id": str(ev["id"]), "kind": ev["kind"], "title": ev["title"], "body": ev["body"], "tab": ev["tab"],
+            "group": ev.get("group", "")}
     dead = []
     for code, tok in targets:
         # Только данные, без блока notification: показывает уведомление само приложение. Так оно помнит,

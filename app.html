@@ -2,7 +2,7 @@
 <html lang="ru">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Arkenstone</title>
 <meta name="theme-color" content="#1d2a24">
 <link rel="manifest" href="/manifest.webmanifest">
@@ -378,7 +378,8 @@ body.chat{background-color:var(--bg);background-size:220px;background-image:url(
 .offbar button{border:1px solid var(--warn);background:none;color:inherit;border-radius:10px;padding:7px 12px;font:inherit;cursor:pointer;white-space:nowrap}
 body.off .chat-top{top:calc(var(--hdr, 56px) + var(--offh, 0px))}
 /* ---------- как настоящее приложение: отклик на нажатие, без выделения текста на кнопках, плавная смена экранов */
-html{overscroll-behavior-y:none}
+html{overscroll-behavior-y:none;touch-action:pan-x pan-y;-webkit-text-size-adjust:100%;text-size-adjust:100%}
+.viewer img{touch-action:none;transform-origin:0 0;will-change:transform;user-select:none;-webkit-user-select:none}
 button,.btn,nav,.tap,.dm-row,label.ic,.seg,.quick,.ob-sw,header{-webkit-user-select:none;user-select:none;touch-action:manipulation}
 .btn,.iconbtn,.cbk,.composer .ic,#chat-go,.seg button,.quick button{transition:transform .08s ease,filter .08s ease}
 .btn:active:not(:disabled),.seg button:active,.quick button:active{transform:scale(.97);filter:brightness(.94)}
@@ -609,10 +610,11 @@ async function boot(){
   nav.querySelectorAll("button").forEach(b => b.onclick = () => open(b.dataset.tab));
   let saved = null; try { saved = localStorage.getItem("ark_tab"); } catch(e) {}
   // нажали на уведомление — APK открывает адрес с #tab=chat и т.п.
-  const want = (location.hash.match(/tab=(\w+)/) || [])[1];
+  const want = (location.hash.match(/tab=([\w-]+)/) || [])[1];
   if (want) try { history.replaceState(null, "", location.pathname); } catch(e) {}
   open(me.tabs.includes(want) ? want : me.tabs.includes(saved) ? saved : me.tabs[0]);
   if (want === "bell") bellOpen();  // нажали на уведомление о заказе
+  if (want && want.startsWith("dm-")) dmGo(want.slice(3));  // нажали на личное сообщение
   chatPoll();
   if (me.cached) return;
   nativeSetup();
@@ -702,6 +704,7 @@ function open(k){
   $("#main").style.paddingBottom = "";
   if (k !== "chat" && chat !== CHAT_ALL) { clearTimeout(chat.timer); chat = CHAT_ALL; }
   chatView = "feed"; clearTimeout(window._dmListT);
+  nativeClear("reports:" + k);
   if (k === "chat") { if (offline) $("#off-note").textContent = "Показаны сохранённые сообщения, отправка сейчас не работает"; return chatOpen(); }
   chatBadge();
   setTimeout(() => chatPoll(CHAT_ALL), 300);  // вне чата тоже ждём новое — ради значка на вкладке «Чат»
@@ -760,6 +763,7 @@ function quietRefresh(){
 $("#refresh").onclick = () => !(me && me.ok) ? boot() : tab === "chat" ? chatOpen() : (onPage && window._pageAgain ? window._pageAgain() : load());
 document.addEventListener("visibilitychange", () => {
   if (!(me && me.ok)) return;
+  if (!document.hidden) setTimeout(clearShown, 300);  // вернулись в приложение — то, что на экране, из шторки убираем
   if (document.hidden) {  // свернули — собеседники сразу увидят «не в сети»
     try { fetch("/api/away", {method: "POST", keepalive: true, headers: {"X-Token": TOKEN}}); } catch(e) {}
     return;
@@ -2004,6 +2008,7 @@ async function bellOpen(){
     if (chat !== CHAT_ALL) { clearTimeout(chat.timer); chat = CHAT_ALL; setTimeout(() => chatPoll(CHAT_ALL), 300); }
     chatView = "bell";
   }
+  nativeClear("orders");
   clearInterval(timer);
   const my = ++nav;
   page("🔔 Новые заказы и отмены", `<div class="empty">Загрузка…</div>`, () => bellOpen(), "bellBack()");
@@ -2255,7 +2260,18 @@ function nativeSetup(){
   call("/api/push/register", fcm ? {fcm} : {}).then(r => { window._push = r; if (tab === "chat") chatNote(); }).catch(() => {});
 }
 window.onFcmToken = t => { if (me && me.ok && t) call("/api/push/register", {fcm: t}).then(r => { window._push = r; }).catch(() => {}); };
-window.openTab = k => { if (!(me && me.ok)) return; if (k === "bell") return bellOpen(); if (me.tabs.includes(k)) open(k); };
+window.openTab = k => {
+  if (!(me && me.ok)) return;
+  if (k === "bell") return bellOpen();
+  if (/^dm-/.test(k)) return dmGo(k.slice(3));
+  if (me.tabs.includes(k)) open(k);
+};
+/* Открыть личную переписку по коду собеседника (из уведомления) */
+async function dmGo(code){
+  if (tab !== "chat") open("chat");
+  try { window._dmList = await call("/api/dm/list?seen=" + chatSeen()); } catch(e) { return; }
+  if (window._dmList.people.some(p => p.code === code)) dmOpen(code);
+}
 function chatNote(){
   const box = $("#chat-note"); if (!box) return;
   const p = window._push;
@@ -2329,6 +2345,16 @@ const ava1 = n => esc((String(n || "?").trim().charAt(0) || "?").toUpperCase());
 /* Общий чат на экране и приложение не свёрнуто — значит, всё пришедшее человек увидел */
 function chatMarkSeen(){
   if (tab === "chat" && chatView === "feed" && !chat.peer && !document.hidden && CHAT_ALL.last > chatSeen()) chatSeen(CHAT_ALL.last);
+}
+function nativeClear(group){
+  try { const N = window.ArkNative; if (N && N.clearNotifications) N.clearNotifications(group); } catch(e) {}
+}
+/* Что сейчас на экране — те уведомления в шторке уже не нужны */
+function clearShown(){
+  if (!(me && me.ok) || document.hidden) return;
+  if (onPage && chatView === "bell") return nativeClear("orders");
+  if (tab === "chat" && chatView === "feed") return nativeClear(chat.peer ? "dm-" + chat.peer : "chat");
+  if (tab) nativeClear("reports:" + tab);
 }
 function chatSeen(v){
   try { if (v !== undefined) localStorage.setItem("ark_chat_seen", String(v)); return +localStorage.getItem("ark_chat_seen") || 0; }
@@ -2459,6 +2485,7 @@ function chatOpen(){
   $("#main").innerHTML = chat.msgs.length ? "" : chatTop() + `<div class="empty">Загрузка…</div>`;
   if (chat.msgs.length) chatDraw();
   chatMarkSeen(); chatBadge();  // открыл чат — значок с числом гаснет сразу, не дожидаясь ответа сервера
+  clearShown();
   document.body.classList.remove("emoji");
   document.body.insertAdjacentHTML("beforeend", `<div class="composer">
     <div class="emoji-panel" id="emoji" hidden><div class="emoji-tabs">${EMOJI.map((g, i) =>
@@ -2689,7 +2716,41 @@ function jumpTo(id){
   el.classList.remove("flash"); void el.offsetWidth; el.classList.add("flash");
 }
 function viewPhoto(src){
-  document.body.insertAdjacentHTML("beforeend", `<div class="viewer" onclick="this.remove()"><img src="${esc(src)}" alt=""><button class="xbtn" aria-label="Закрыть">×</button></div>`);
+  document.body.insertAdjacentHTML("beforeend", `<div class="viewer"><img src="${esc(src)}" alt=""><button class="xbtn" aria-label="Закрыть">×</button></div>`);
+  const v = document.body.lastElementChild, img = v.querySelector("img");
+  let k = 1, x = 0, y = 0, start = null, lastTap = 0, moved = false;
+  const put = () => { img.style.transform = `translate(${x}px,${y}px) scale(${k})`; };
+  const base = () => { const r = img.getBoundingClientRect(); return {l: r.left - x, t: r.top - y}; };
+  const zoomAt = (nk, cx, cy) => {  // увеличиваем вокруг точки под пальцами
+    nk = Math.max(1, Math.min(5, nk)); const b = base();
+    x = cx - b.l - (cx - b.l - x) * nk / k; y = cy - b.t - (cy - b.t - y) * nk / k; k = nk;
+    if (k === 1) { x = 0; y = 0; }
+    put();
+  };
+  v.querySelector(".xbtn").onclick = () => v.remove();
+  v.addEventListener("touchstart", e => {
+    moved = false;
+    const t = e.touches;
+    if (t.length === 2) start = {d: Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY), k,
+                                 cx: (t[0].clientX + t[1].clientX) / 2, cy: (t[0].clientY + t[1].clientY) / 2};
+    else if (t.length === 1) start = {px: t[0].clientX, py: t[0].clientY, x, y};
+  }, {passive: true});
+  v.addEventListener("touchmove", e => {
+    const t = e.touches; if (!start) return; moved = true; e.preventDefault();
+    if (t.length === 2 && start.d) zoomAt(start.k * Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY) / start.d, start.cx, start.cy);
+    else if (t.length === 1 && start.px != null && k > 1) { x = start.x + t[0].clientX - start.px; y = start.y + t[0].clientY - start.py; put(); }
+  }, {passive: false});
+  v.addEventListener("touchend", e => {
+    if (e.touches.length) return;
+    const now = Date.now();
+    if (!moved && e.changedTouches.length === 1) {
+      const c = e.changedTouches[0];
+      if (now - lastTap < 300) { zoomAt(k > 1 ? 1 : 2.5, c.clientX, c.clientY); lastTap = 0; }   // двойной тап — увеличить/вернуть
+      else { lastTap = now; setTimeout(() => { if (lastTap === now && k === 1 && e.target !== img) v.remove(); }, 300); }  // тап мимо фото — закрыть
+    }
+    start = null;
+  });
+  v.addEventListener("click", e => { if (!("ontouchstart" in window) && e.target === v) v.remove(); });
 }
 /* фото уменьшаем на телефоне до 1600 px — быстрее грузится и меньше места на сервере */
 async function photoPick(input){
