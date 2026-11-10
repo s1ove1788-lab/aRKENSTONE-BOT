@@ -1344,7 +1344,10 @@ function obShip(gi){
   const head = (g.sort ? niceDate(g.sort) : "Без даты") + (g.shipment ? ` · №${g.shipment}` : "");
   page(esc(head), `<div class="st ${g.tab}" style="margin:-4px 4px 12px">${esc(OB_ST.ru[g.tab])} · ${esc(g.channel)} ·
       ${plural(g.rows.length, "заказ", "заказа", "заказов")} · ${plural(beds, "кровать", "кровати", "кроватей")}</div>
-    ${g.rows.map(obCard).join("")}`, () => ordersPage(true), "ordersPage(false)");
+    ${g.rows.map(obCard).join("")}
+    ${["today", "late"].includes(g.tab) && me && me.tabs.includes("courier") && g.rows.length > 1
+      ? `<button class="btn main big" style="width:100%;margin-top:8px" onclick="obDoneRu(this, [${g.rows.map(r => window._orders.rows.indexOf(r)).join(",")}])">✅ Вся отгрузка доставлена · ${plural(g.rows.length, "заказ", "заказа", "заказов")}</button>` : ""}`,
+    () => ordersPage(true), "ordersPage(false)");
   window.scrollTo(0, 0);
 }
 
@@ -1363,9 +1366,25 @@ function orderView(i){
     <div class="actions">${r.tel ? `<a class="btn" href="tel:${esc(r.tel)}">📞 Позвонить</a>` : ""}
     ${r.city && r.address ? `<a class="btn" target="_blank" href="${esc(mapUrl(r.address))}">🗺 Карта</a>` : ""}
     ${r.city && ["today", "ahead", "late"].includes(r.tab) && me && me.tabs.includes("courier")
-      ? `<button class="btn main wide" onclick="obDone(this, ${i})">✅ Доставлен${r.tab === "ahead" ? " раньше срока" : ""}</button>` : ""}</div>`);
+      ? `<button class="btn main wide" onclick="obDone(this, ${i})">✅ Доставлен${r.tab === "ahead" ? " раньше срока" : ""}</button>` : ""}
+    ${!r.city && ["today", "late"].includes(r.tab) && me && me.tabs.includes("courier")
+      ? `<button class="btn main wide" onclick="obDoneRu(this, [${i}])">✅ Доставлен${r.tab === "late" ? " (просрочен)" : ""}</button>` : ""}</div>`);
 }
 /* «Доставлен» прямо из экрана «Заказы». Только город: заказы по России отмечаются день в день во вкладке «Курьер» */
+/* По России: сегодняшние и просроченные отгрузки можно отметить и с экрана «Заказы» — по одному заказу или всю отгрузку */
+async function obDoneRu(btn, idx){
+  const rows = idx.map(i => window._orders.rows[i]).filter(Boolean);
+  if (!rows.length) return;
+  const late = rows.some(r => r.tab === "late");
+  if (!confirm(rows.length === 1 ? `Отметить № ${rows[0].order_no} доставленным${late ? " (срок отгрузки прошёл)" : ""}?`
+                                 : `Отметить доставленными ${plural(rows.length, "заказ", "заказа", "заказов")} этой отгрузки?`)) return;
+  btn.disabled = true;
+  try {
+    const res = await call("/api/orders/done", {nos: rows.map(r => r.order_no)});
+    closeSheet(); toast(res.message.split("\n")[0]);
+    ordersPage(true);
+  } catch(e) { toast(e.message); btn.disabled = false; }
+}
 async function obDone(btn, i){
   const r = window._orders.rows[i];
   if (!confirm(r.tab === "ahead" ? `Срок доставки ещё не наступил. Отметить № ${r.order_no} доставленным сегодня?`

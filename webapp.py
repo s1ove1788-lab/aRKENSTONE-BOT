@@ -2717,6 +2717,23 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
             log.exception("Приложение: не смог уведомить менеджеров о переносе")
         return 200, {"ok": True, "message": f"📅 Перенесено на {new}"}
 
+    # «Доставлен» для заказов по России с экрана «Заказы»: на сегодня и просроченные (отгрузили позже срока).
+    # Будущие отгрузки отметить нельзя — как и раньше, только когда день отгрузки наступил.
+    if method == "POST" and path == "/api/orders/done" and "courier" in tabs:
+        nos = {str(x).strip() for x in (body.get("nos") or []) if str(x).strip()} if isinstance(body.get("nos"), list) else set()
+        if not nos or len(nos) > 60:
+            return 400, {"error": "Не выбраны заказы"}
+        with _lock:
+            found = [o for o in sheets.read_orders(force=True)
+                     if o["order_no"] in nos and not o["status"] and not logic.is_city(o)
+                     and _board_tab(o, logic.key_range(o, today), today) in ("today", "late")]
+            if not found:
+                return 409, {"error": "Уже отмечено, или день отгрузки ещё не наступил"}
+            marked = _deps["deliver"](found, f"{who} (приложение)", today)
+        late = [o for o in marked if _board_tab(o, logic.key_range(o, today), today) == "late"]
+        log.info("Приложение: %s отметил(а) доставленными по России %d шт. (просроченных %d)", who, len(marked), len(late))
+        return 200, {"ok": True, "message": f"✅ Доставлено: {sum(logic.qty(o) for o in marked)} шт." if marked else "Уже отмечено"}
+
     if path == "/api/courier/pay" and "courier" in tabs and pay:
         return 200, courier_pay(today)
 
