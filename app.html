@@ -453,7 +453,8 @@ const TOKEN = token();
 const keep = {
   get(k){ try { return JSON.parse(localStorage.getItem("ark_keep_" + k) || "null"); } catch(e) { return null; } },
   set(k, v){ try { localStorage.setItem("ark_keep_" + k, JSON.stringify(v)); } catch(e) {} },
-  del(k){ try { localStorage.removeItem("ark_keep_" + k); } catch(e) {} }
+  del(k){ try { localStorage.removeItem("ark_keep_" + k); } catch(e) {} },
+  wipe(){ try { Object.keys(localStorage).filter(k => k.startsWith("ark_keep_")).forEach(k => localStorage.removeItem(k)); } catch(e) {} }
 };
 let offline = false, _netT = null;
 const hhmm = at => { const d = new Date(at), t = new Date(); const tm = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
@@ -461,7 +462,7 @@ const hhmm = at => { const d = new Date(at), t = new Date(); const tm = `${pad2(
 const pad2 = n => String(n).padStart(2, "0");
 function netState(ok, at){
   const bar = document.getElementById("offbar"); if (!bar) return;
-  if (at !== undefined) document.getElementById("off-note").textContent = at ? `Показаны данные на ${hhmm(at)}. Изменения сейчас не сохранятся.` : "Этот экран ещё не сохранён на телефоне — откройте его при интернете";
+  if (at !== undefined) offNote(at);
   if (ok === !offline) return;
   offline = !ok; bar.hidden = ok; document.body.classList.toggle("off", !ok);
   document.documentElement.style.setProperty("--offh", ok ? "0px" : bar.offsetHeight + "px");
@@ -470,16 +471,33 @@ function netState(ok, at){
              _netT = setInterval(() => netRetry(false), 15000); }
   else { document.getElementById("off-note").textContent = ""; if (me && me.ok) { toast("✅ Связь вернулась"); me.cached ? boot() : backOnline(); } }
 }
+/* Один запрос оборвался — это ещё не «нет связи»: так бывает, когда приложение сворачивают или экран перезагружается.
+   Перепроверяем коротким запросом и только после второй неудачи показываем полоску. */
+let _doubt = null;
+function netDoubt(){
+  if (offline || _doubt || document.hidden) return;
+  _doubt = fetch("/health", {cache: "no-store"}).then(r => { if (!r.ok) throw 0; })
+    .catch(() => { if (!document.hidden) netState(false); }).finally(() => { _doubt = null; });
+}
+function offNote(at){  // подпись на полоске: за какое время данные на экране
+  document.getElementById("off-note").textContent = at ? `Показаны данные на ${hhmm(at)}. Изменения сейчас не сохранятся.`
+    : "Этот экран ещё не сохранён на телефоне — откройте его при интернете";
+}
 async function netRetry(byHand){
   if (byHand) toast("Проверяю связь…");
   try { const r = await fetch("/api/me", {headers: {"X-Token": TOKEN}, cache: "no-store"}); if (!r.ok && r.status !== 403) throw 0; }
   catch(e) { if (byHand) toast("Связи всё ещё нет"); return; }
   netState(true);
 }
+/* В форму на экране что-то набрали и ещё не сохранили — такой экран сами не перерисовываем */
+function formTyped(){
+  return [...document.querySelectorAll("#main input, #main textarea")].some(i => i.type !== "date" && i.type !== "file" && i.value !== i.defaultValue);
+}
 function backOnline(){  // связь вернулась — тихо обновляем то, что на экране
   if (tab === "chat") return chatPoll();
-  if (onPage) { if (window._pageAgain && !document.querySelector("#main input:focus, #main textarea:focus")) window._pageAgain(); return; }
-  if (!document.querySelector(".sheet-bg")) load();
+  if (document.querySelector(".sheet-bg") || formTyped()) return;
+  if (onPage) { if (window._pageAgain) window._pageAgain(); return; }
+  load();
 }
 window.addEventListener("online", () => { if (offline) netRetry(false); });
 window.addEventListener("offline", () => { if (me && me.ok) netState(false); });
@@ -491,7 +509,7 @@ async function call(path, body){
       headers: {"X-Token": TOKEN, "Content-Type": "application/json"},
       body: body ? JSON.stringify(body) : undefined});
   } catch(e) {  // запрос не дошёл до сервера вообще
-    if (me && me.ok) netState(false);
+    if (me && me.ok) netDoubt();
     const err = new Error(body ? "Нет связи — действие не выполнено. Повторите, когда появится интернет" : "Нет связи с сервером");
     err.offline = true; throw err;
   }
@@ -499,7 +517,7 @@ async function call(path, body){
   buildCheck(r.headers.get("X-App-Build"));
   let data = {};
   try { data = await r.json(); } catch(e) {}
-  if (r.status === 403) { me = null; keep.del("me"); keep.del("chat"); boot(); throw new Error(data.error || "Нет доступа"); }
+  if (r.status === 403) { me = null; keep.wipe(); boot(); throw new Error(data.error || "Нет доступа"); }
   if (!r.ok) throw new Error(data.error || "Ошибка связи");
   if (!data || typeof data !== "object" || data.error) throw new Error((data && data.error) || "Нет связи с сервером, повторите");
   return data;
@@ -607,8 +625,9 @@ function fresh(){
 /* Кнопка «Назад» телефона: закрывает открытую страницу, фото или диалог, а не всё приложение.
    Пока есть куда возвращаться, держим в истории браузера одну запись-«сторожа»: нажатие «Назад» снимает её,
    мы делаем шаг назад внутри приложения и, если вложенность осталась, ставим сторожа снова. */
-function backNeeded(){ return !!(document.querySelector(".viewer") || onPage || (tab === "chat" && (chat.peer || chatView === "list"))); }
+function backNeeded(){ return !!(document.querySelector(".viewer, .sheet-bg") || onPage || (tab === "chat" && (chat.peer || chatView === "list"))); }
 function backAction(){
+  if (document.querySelector(".sheet-bg")) return closeSheet();
   const v = document.querySelector(".viewer"); if (v) return v.remove();
   if (onPage) { const b = document.getElementById("page-back"); if (b) return b.click(); }
   if (tab === "chat") { if (chat.peer) return dmListOpen(); if (chatView === "list") return dmBack(); }
@@ -622,7 +641,7 @@ function histSync(){
 }
 window.addEventListener("popstate", () => {
   if (_histSkip) { _histSkip--; return; }
-  if (document.querySelector(".sheet-bg")) closeSheet(); else backAction();
+  backAction();
   setTimeout(histSync, 0);
 });
 new MutationObserver(() => { clearTimeout(window._histT); window._histT = setTimeout(histSync, 60); })
@@ -630,7 +649,7 @@ new MutationObserver(() => { clearTimeout(window._histT); window._histT = setTim
 /* Потянуть экран вниз — обновить (на всех вкладках, кроме чата: там лента растёт снизу) */
 let _ptr = null;
 document.addEventListener("touchstart", e => {
-  _ptr = me && me.ok && tab !== "chat" && window.scrollY <= 0 && e.touches.length === 1 && !document.querySelector(".sheet-bg, .viewer")
+  _ptr = me && me.ok && tab !== "chat" && window.scrollY <= 0 && e.touches.length === 1 && !document.querySelector(".sheet-bg, .viewer") && !formTyped()
     ? {y: e.touches[0].clientY, x: e.touches[0].clientX, d: 0} : null;
 }, {passive: true});
 document.addEventListener("touchmove", e => {
@@ -658,7 +677,7 @@ function open(k){
   $("#main").style.paddingBottom = "";
   if (k !== "chat" && chat !== CHAT_ALL) { clearTimeout(chat.timer); chat = CHAT_ALL; }
   chatView = "feed"; clearTimeout(window._dmListT);
-  if (k === "chat") { if (offline) netState(false, 0), $("#off-note").textContent = "Показаны сохранённые сообщения, отправка сейчас не работает"; return chatOpen(); }
+  if (k === "chat") { if (offline) $("#off-note").textContent = "Показаны сохранённые сообщения, отправка сейчас не работает"; return chatOpen(); }
   chatBadge();
   setTimeout(() => chatPoll(CHAT_ALL), 300);  // вне чата тоже ждём новое — ради значка на вкладке «Чат»
   load(true);
@@ -695,7 +714,7 @@ async function load(fromTab){
       const old = e.offline ? (prev || keep.get("scr_" + t)) : null;  // нет связи — достаём то, что видели в прошлый раз
       let drawn = early;
       if (old && !early) { try { DRAW()[t](old.data); drawn = true; } catch(_) {} }
-      if (e.offline) netState(false, drawn ? (old || prev).at : 0);
+      if (e.offline) offNote(drawn ? (old || prev).at : 0);
       if (drawn) { if (!e.offline) toast("Не получилось обновить, показаны последние данные"); }
       else $("#main").innerHTML = `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="load()">Повторить</button></div>`;
     }
@@ -1138,12 +1157,14 @@ function staffPage(){
         <td class="n" style="white-space:nowrap">${x.code === me.code ? `<span class="badge">это вы</span>`
           : me.admin && !x.fixed ? `<button class="btn" style="padding:8px 12px" onclick="editDevice('${esc(x.code)}')">Изменить</button>`
           : x.role === "admin" ? `<span class="badge">админ</span>`
+          : x.can_remove === false ? ""
           : `<button class="btn" style="padding:8px 12px" onclick="removeDevice('${esc(x.code)}','${esc(x.name)}')">Убрать</button>`}</td></tr>`).join("")}
     </table></div>
     ${me.admin ? `<p class="muted">Роль и имя сотрудника меняет только администратор: нажмите «Изменить».</p>` : ""}` : `<div class="empty">Пока никого</div>`}`);
 }
 function roleOptions(on){
-  return Object.entries(ROLES).filter(([k]) => k !== "admin" || me.admin)
+  const can = (window._mgr || {}).roles;  // сервер говорит, какие роли этот человек вправе выдавать
+  return Object.entries(ROLES).filter(([k]) => can ? can.includes(k) : (k !== "admin" || me.admin))
     .map(([k,v]) => `<option value="${k}" ${k === on ? "selected" : ""}>${v}</option>`).join("");
 }
 function editDevice(code){
@@ -2152,7 +2173,7 @@ async function chatPoll(room){
   if (tab === "chat" && chatView === "feed") ticksSync();
   chatBadge();
   if (tab === "chat" && chatView === "list") return;
-  room.timer = setTimeout(() => chatPoll(room), ok ? 100 : 3000);
+  room.timer = setTimeout(() => chatPoll(room), ok ? 100 : offline ? 10000 : 3000);
 }
 /* Своё сообщение показываем сразу, с часиками, пока сервер не подтвердит; потом его заменяет настоящее */
 function pendingHtml(p){

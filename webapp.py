@@ -73,7 +73,7 @@ self.addEventListener("fetch", e => {
     if (!saved) return fresh;
     fresh.catch(() => {});
     const late = new Promise(ok => setTimeout(() => ok(null), 4000));
-    try { return (await Promise.race([fresh, late])) || saved; } catch (err) { return saved; }
+    try { const res = await Promise.race([fresh, late]); return res && res.ok ? res : saved; } catch (err) { return saved; }
   })());
 });
 """.encode()
@@ -545,7 +545,8 @@ def app_command(raw: str, who: str) -> str:
     """Команда менеджера в MAX: /app КОД роль Имя · /app — список · /app удалить КОД."""
     parts = raw.split()[1:]
     usage = ("📱 Приложение для сотрудников\n\nДобавить телефон:\n/app КОД роль Имя\n"
-             "например: /app K7QM-2XPA курьер Иван\n\nРоли: менеджер, курьер, производство, кладовщик, техдиректор, гендиректор\n"
+             "например: /app K7QM-2XPA курьер Иван\n\nРоли: менеджер, курьер, производство, кладовщик\n"
+             "Тех. директора и ген. директора добавляет администратор в самом приложении.\n"
              "Убрать: /app удалить КОД")
     try:
         if not parts:
@@ -559,6 +560,8 @@ def app_command(raw: str, who: str) -> str:
             cur = devices(force=True).get(code)
             if cur and role_of(code, cur) == "admin":
                 return "Администратора убирает только администратор в приложении."
+            if cur and role_of(code, cur) not in BASIC_ROLES:
+                return f"Сотрудника с ролью «{ROLE_LABELS[role_of(code, cur)]}» убирает администратор или ген. директор в приложении."
             return f"🗑 {code} удалён из приложения." if code and remove_device(code) else "Такого кода нет в списке."
         if len(parts) > 1 and not norm_code(parts[0]) and norm_code(parts[0] + parts[1]):
             parts = [parts[0] + parts[1]] + parts[2:]  # код написали через пробел: «K7QM 2XPA»
@@ -570,6 +573,11 @@ def app_command(raw: str, who: str) -> str:
         cur = devices(force=True).get(code)
         if role == "admin" or (cur and role_of(code, cur) == "admin"):
             return "Администратора назначает и меняет только администратор в приложении."
+        if role not in BASIC_ROLES:
+            return f"Роль «{ROLE_LABELS[role]}» выдаёт администратор или ген. директор в самом приложении."
+        if cur:
+            return (f"Телефон {code} уже добавлен: {cur['name'] or 'без имени'}, {ROLE_LABELS[role_of(code, cur)]}.\n"
+                    "Роль меняет только администратор в приложении.")
         add_device(code, role, name, who)
         return f"✅ {code} добавлен: {name or 'без имени'}, {ROLE_LABELS[role]}.\nПусть нажмёт «Проверить» в приложении."
     except Exception:
@@ -758,7 +766,21 @@ def open_orders(today: date) -> dict:
     return {"rows": rows, "today": str(today), "url": sheets.sheet_url("orders")}
 
 
-def manager_data(today: date, pay: bool = False) -> dict:
+# Кто какие роли может выдавать и чьи телефоны убирать. Роли с доступом к табелю, премиям и суммам
+# (тех. директор, ген. директор) выдаёт только администратор или ген. директор — иначе менеджер мог бы добавить
+# свой второй телефон «директором» и увидеть закрытое.
+BASIC_ROLES = ("courier", "prod", "keeper", "manager")
+
+
+def can_assign(my_role: str, role: str) -> bool:
+    if my_role == "admin":
+        return True
+    if my_role == "gendir":
+        return role != "admin"
+    return role in BASIC_ROLES
+
+
+def manager_data(today: date, pay: bool = False, my_role: str = "manager") -> dict:
     orders = sheets.read_orders()
     open_ = [o for o in orders if not o["status"]]
     links = []
@@ -778,8 +800,9 @@ def manager_data(today: date, pay: bool = False) -> dict:
         "open": sum(logic.qty(o) for o in open_),
         "city": sum(logic.qty(o) for o in open_ if logic.is_city(o)),
         "devices": [{"code": c, "name": d["name"], "role": role_of(c, d), "label": ROLE_LABELS[role_of(c, d)],
-                     "fixed": c in admin_codes()}
+                     "fixed": c in admin_codes(), "can_remove": can_assign(my_role, role_of(c, d))}
                     for c, d in devices(force=True).items()],
+        "roles": [r for r in ROLE_LABELS if can_assign(my_role, r)],
     }
 
 
@@ -2414,7 +2437,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
     if path == "/api/manager/orders" and "manager" in tabs:
         return 200, open_orders(today)
     if path == "/api/manager" and "manager" in tabs:
-        return 200, manager_data(today, pay)
+        return 200, manager_data(today, pay, me["role"])
 
     if method == "POST" and path in ("/api/courier/done", "/api/courier/move") and "courier" in tabs:
         kind, key = body.get("kind"), str(body.get("key") or "")
@@ -2527,6 +2550,8 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         cur = devices(force=True).get(new_code)
         if not is_admin and (role == "admin" or (cur and role_of(new_code, cur) == "admin")):
             return 400, {"error": "Администратора назначает только администратор"}
+        if not can_assign(me["role"], role):
+            return 400, {"error": f"Роль «{ROLE_LABELS[role]}» выдаёт только администратор или ген. директор"}
         if cur and not is_admin:
             return 400, {"error": "Этот телефон уже добавлен. Сменить роль может только администратор"}
         with _lock:
@@ -2553,6 +2578,8 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         cur = devices(force=True).get(rm)
         if cur and role_of(rm, cur) == "admin" and (not is_admin or rm in admin_codes()):
             return 400, {"error": "Администратора убрать нельзя" if not is_admin else "Этот администратор задан на Bothost"}
+        if cur and not can_assign(me["role"], role_of(rm, cur)):
+            return 400, {"error": f"Сотрудника с ролью «{ROLE_LABELS[role_of(rm, cur)]}» убирает только администратор или ген. директор"}
         with _lock:
             remove_device(rm)
         return 200, {"ok": True}
@@ -2570,7 +2597,7 @@ class Handler(BaseHTTPRequestHandler):
                     return out
                 out += self.rfile.read(size)
                 self.rfile.readline()
-        return self.rfile.read(min(int(self.headers.get("Content-Length") or 0), 100_000))
+        return self.rfile.read(min(max(0, _int(self.headers.get("Content-Length"), 0)), 100_000))
 
     def _send(self, code: int, data: bytes, ctype: str, cache: str = "no-store", extra: dict = None) -> None:
         self.send_response(code)
@@ -2637,7 +2664,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         path = self.path.split("?")[0].rstrip("/")
         if path == "/api/chat/photo":
-            size = int(self.headers.get("Content-Length") or 0)
+            size = max(0, _int(self.headers.get("Content-Length"), 0))
             if size > MAX_PHOTO:
                 return self._json(400, {"error": "Фото больше 8 МБ"})
             data = self.rfile.read(size)
@@ -2651,7 +2678,7 @@ class Handler(BaseHTTPRequestHandler):
                 code, res = 500, {"error": "Не получилось сохранить фото"}
             return self._json(code, res)
         if path == "/api/manager/pdf":
-            size = int(self.headers.get("Content-Length") or 0)
+            size = max(0, _int(self.headers.get("Content-Length"), 0))
             if size > MAX_PDF:
                 return self._json(400, {"error": "Файл больше 20 МБ"})
             data = self.rfile.read(size)
