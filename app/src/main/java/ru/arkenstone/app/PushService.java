@@ -15,9 +15,13 @@ public class PushService extends FirebaseMessagingService {
     @Override
     public void onMessageReceived(@NonNull RemoteMessage msg) {
         Map<String, String> d = msg.getData();
+        if (d.containsKey("clear")) {  // человек прочитал это в другом месте — убрать из шторки
+            Notifier.clear(this, d.get("clear"));
+            return;
+        }
         long id;
         try { id = Long.parseLong(d.get("id")); } catch (Exception e) { return; }
-        Notifier.show(this, id, d.get("kind"), d.get("title"), d.get("body"), d.get("tab"));
+        Notifier.show(this, id, d.get("kind"), d.get("title"), d.get("body"), d.get("tab"), d.get("group"));
     }
 
     @Override

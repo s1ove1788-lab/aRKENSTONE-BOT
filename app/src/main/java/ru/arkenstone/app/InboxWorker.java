@@ -49,7 +49,7 @@ public class InboxWorker extends Worker {
                 for (int i = 0; i < evs.length(); i++) {
                     JSONObject e = evs.getJSONObject(i);
                     Notifier.show(c, e.optLong("id"), e.optString("kind"), e.optString("title"),
-                            e.optString("body"), e.optString("tab"));
+                            e.optString("body"), e.optString("tab"), e.optString("group"));
                 }
             }
             Prefs.setCursor(c, Math.max(cursor, j.optLong("last", cursor)));

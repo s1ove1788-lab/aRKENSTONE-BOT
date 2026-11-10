@@ -22,6 +22,23 @@ final class Prefs {
     static void setFcm(Context c, String t) { of(c).edit().putString("fcm", t).apply(); }
     static void setCursor(Context c, long v) { of(c).edit().putLong("cursor", v).apply(); }
 
+    /** Строки, которые сейчас в карточке группы (последние 6). Возвращает всё, что в ней есть, вместе с новой. */
+    static synchronized java.util.List<String> addLine(Context c, String group, String line) {
+        java.util.List<String> out = new java.util.ArrayList<>();
+        try {
+            org.json.JSONArray a = new org.json.JSONArray(of(c).getString("lines:" + group, "[]"));
+            for (int i = 0; i < a.length(); i++) out.add(a.getString(i));
+        } catch (Exception ignored) { }
+        out.add(line == null ? "" : line.length() > 200 ? line.substring(0, 200) + "…" : line);
+        while (out.size() > 6) out.remove(0);
+        of(c).edit().putString("lines:" + group, new org.json.JSONArray(out).toString()).apply();
+        return out;
+    }
+
+    static synchronized void clearLines(Context c, String group) {
+        of(c).edit().remove("lines:" + group).apply();
+    }
+
     /** Показывали ли уже это уведомление (оно могло прийти и через Firebase, и через проверку раз в 15 минут). */
     static synchronized boolean markShown(Context c, long id) {
         String key = "," + id + ",";

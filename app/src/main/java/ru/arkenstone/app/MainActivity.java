@@ -55,6 +55,9 @@ public class MainActivity extends Activity {
         s.setDomStorageEnabled(true);   // тут хранится ключ телефона — без него вход сбросится
         s.setDatabaseEnabled(true);
         s.setTextZoom(100);
+        s.setSupportZoom(false);            // как в настоящем приложении: экран не увеличивается щипком
+        s.setBuiltInZoomControls(false);
+        s.setDisplayZoomControls(false);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_NEVER_ALLOW);
         s.setUserAgentString(s.getUserAgentString() + " ArkenstoneApp/" + BuildConfigHelper.version(this));
 
@@ -114,6 +117,7 @@ public class MainActivity extends Activity {
         if (state != null) web.restoreState(state);
         else web.loadUrl(withTab(getIntent()));
 
+        Notifier.cleanOnce(this);
         setupNotifications();
     }
 
@@ -127,7 +131,7 @@ public class MainActivity extends Activity {
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         String tab = intent.getStringExtra("tab");
-        if (tab != null && !tab.isEmpty() && tab.matches("[a-z]+")) {
+        if (tab != null && !tab.isEmpty() && tab.matches("[A-Za-z0-9-]{1,40}")) {
             web.evaluateJavascript("window.openTab && openTab('" + tab + "')", null);
         }
     }
@@ -182,6 +186,13 @@ public class MainActivity extends Activity {
             boolean first = Prefs.cursor(MainActivity.this) == 0;
             Prefs.setDevice(MainActivity.this, token, server.endsWith("/") ? server : server + "/");
             if (first) InboxWorker.runNow(MainActivity.this);  // запомнить, с какого места ждать уведомления
+        }
+
+        /** Экран показал переписку или заказы — их уведомления в шторке больше не нужны. */
+        @JavascriptInterface
+        public void clearNotifications(String group) {
+            if (group == null || !group.matches("[A-Za-z0-9:_-]{1,60}")) return;
+            Notifier.clear(MainActivity.this, group);
         }
 
         @JavascriptInterface
