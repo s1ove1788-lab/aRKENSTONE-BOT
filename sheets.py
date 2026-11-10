@@ -479,6 +479,7 @@ def cancel_rows(reasons: dict) -> list:
                              value_input_option="RAW")
     _invalidate()
     safe_sync_colors()
+    _order_event("cancel", hit)
     return hit
 
 
@@ -570,6 +571,19 @@ def _invalidate() -> None:
     _cache["rows"] = None
 
 
+# Кто хочет знать, что в таблице появились заказы или отмены (лента уведомлений приложения).
+# Функция получает (вид, данные): ("new", [Order]) или ("cancel", [(строка, причина)]).
+order_hooks: list = []
+
+
+def _order_event(kind: str, data) -> None:
+    for f in list(order_hooks):
+        try:
+            f(kind, data)
+        except Exception:
+            log.exception("Уведомления о заказах: обработчик упал")
+
+
 def add_orders(orders: list) -> list:
     """Добавляет только новые заказы (по номеру). Возвращает добавленные."""
     existing = {r["order_no"] for r in read_orders(force=True)}
@@ -594,6 +608,7 @@ def add_orders(orders: list) -> list:
         _invalidate()
         if not safe_sort_orders():
             safe_sync_colors()
+        _order_event("new", new)
     return new
 
 

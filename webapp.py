@@ -409,7 +409,7 @@ def chat_unread(code: str, seen: int) -> dict:
 
 
 def chat_list(since: int, code: str, wait: bool = False, du: int = -1, ep: str = "", seen: int = 0, rd: int = -1,
-              on: int = -1) -> dict:
+              on: int = -1, fu: int = -1) -> dict:
     with _chat_lock:
         _chat_load()
     if seen > 0:
@@ -421,7 +421,7 @@ def chat_list(since: int, code: str, wait: bool = False, du: int = -1, ep: str =
                 return True
             try:
                 return (du >= 0 and dm_unread(code) != du) or (rd >= 0 and chat_read_by_others(code) != rd) \
-                    or (on >= 0 and online_count()[0] != on)
+                    or (on >= 0 and online_count()[0] != on) or (fu >= 0 and feed_unread(code) != fu)
             except Exception:
                 return False
         hold_wait(code, changed)
@@ -734,29 +734,34 @@ def _board_tab(o: dict, r, today: date) -> str:
     return "today" if r[0] <= today else "ahead"
 
 
+def board_item(o: dict, today: date) -> dict:
+    """Заказ из таблицы в том виде, в каком его показывает экран «Заказы»."""
+    r = logic.key_range(o, today)
+    city = logic.is_city(o)
+    a = logic.parse_article(o["article"])
+    width = int(a["width"]) if a else int((re.match(r"\d+", o["size"]) or [0])[0] or 0)
+    color = (a["color_code"] if a else {"чёрный": "04", "черный": "04", "белый": "06"}.get(o["color"].lower(), ""))
+    return {
+        "id": o["row"], "tab": _board_tab(o, r, today), "city": city, "channel": o["channel"], "order_no": o["order_no"],
+        "title": logic.article_name(o["article"], logic.item_line(o)), "qty": logic.qty(o),
+        "width": width, "color": {"04": "black", "06": "white"}.get(color, ""), "article": o["article"],
+        "added": o["added"], "ship": o["ship"], "delivery": o["delivery"],
+        "sort": str(r[0]) if r else "", "end": str(r[1]) if r else "",
+        "status": o["status"] or "", "address": o["address"] if city else "",
+        "shipment": "" if city else o["phone"], "phone": logic.fmt_phone(o["phone"]) if city else "",
+        "tel": re.sub(r"[^\d+]", "", (o["phone"] or "").split("доб")[0].split(",")[0]) if city else "",
+    }
+
+
 def open_orders(today: date) -> dict:
     """Все заказы для экрана «Заказы» (как в кабинете Маркета): Город / По России и вкладки
     Сегодня · Впереди · Просрочены · Доставлены · Отмены. Отгрузки по России склеивает телефон."""
     rows, closed = [], {}
     for o in sheets.read_orders():
-        r = logic.key_range(o, today)
-        city = logic.is_city(o)
-        tab = _board_tab(o, r, today)
-        a = logic.parse_article(o["article"])
-        width = int(a["width"]) if a else int((re.match(r"\d+", o["size"]) or [0])[0] or 0)
-        color = (a["color_code"] if a else {"чёрный": "04", "черный": "04", "белый": "06"}.get(o["color"].lower(), ""))
-        item = {
-            "id": o["row"], "tab": tab, "city": city, "channel": o["channel"], "order_no": o["order_no"],
-            "title": logic.article_name(o["article"], logic.item_line(o)), "qty": logic.qty(o),
-            "width": width, "color": {"04": "black", "06": "white"}.get(color, ""), "article": o["article"],
-            "added": o["added"], "ship": o["ship"], "delivery": o["delivery"],
-            "sort": str(r[0]) if r else "", "end": str(r[1]) if r else "",
-            "status": o["status"] or "", "address": o["address"] if city else "",
-            "shipment": "" if city else o["phone"], "phone": logic.fmt_phone(o["phone"]) if city else "",
-            "tel": re.sub(r"[^\d+]", "", (o["phone"] or "").split("доб")[0].split(",")[0]) if city else "",
-        }
+        item = board_item(o, today)
+        tab = item["tab"]
         if tab in ("done", "cancel"):
-            closed.setdefault((tab, city), []).append(item)
+            closed.setdefault((tab, item["city"]), []).append(item)
         else:
             rows.append(item)
     for items in closed.values():  # из закрытых — только самые свежие, иначе за год экран станет неподъёмным
@@ -883,6 +888,10 @@ def _dm_db():
             CREATE TABLE IF NOT EXISTS dm_read(code TEXT, peer TEXT, last INTEGER, PRIMARY KEY(code, peer));
             CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
             CREATE TABLE IF NOT EXISTS chat_read(code TEXT PRIMARY KEY, last INTEGER);
+            CREATE TABLE IF NOT EXISTS feed(id INTEGER PRIMARY KEY AUTOINCREMENT, t TEXT, ts REAL, kind TEXT, no TEXT,
+                channel TEXT, title TEXT, body TEXT);
+            CREATE TABLE IF NOT EXISTS feed_seen(no TEXT PRIMARY KEY, state TEXT);
+            CREATE TABLE IF NOT EXISTS feed_read(code TEXT PRIMARY KEY, last INTEGER);
         """)
         row = db.execute("SELECT v FROM meta WHERE k='epoch'").fetchone()
         if not row:
@@ -1062,6 +1071,162 @@ def dm_delete(code: str, msg_id: int) -> dict:
     return {"ok": True}
 
 
+# ------------------------------------------------------------ колокольчик: новые заказы и отмены
+# Сервер сам сверяет таблицу заказов: появился номер, которого раньше не было, — «новый заказ»;
+# все строки заказа стали «Отмена…» или «Возврат…» — «отмена». Так в ленту попадает всё: Маркет, Озон, PDF
+# и то, что менеджер вписал или отменил руками. Площадки и загрузка PDF дёргают сверку сразу (sheets.order_hooks),
+# остальное ловится проверкой раз в FEED_EVERY секунд. Лента и «что уже было» хранятся в базе на сервере.
+FEED_EVERY = 45
+FEED_KEEP_DAYS = 30
+_feed = {"why": {}, "kick": threading.Event()}
+_feed_lock = threading.Lock()
+
+
+def _feed_key(no: str) -> str:
+    return (no or "").split("#")[0].strip()
+
+
+def _feed_state(rows: list) -> str:
+    st = [(o["status"] or "").strip().lower() for o in rows]
+    if st and all(x.startswith(("отмен", "возврат")) for x in st):
+        return "cancel"
+    if st and all(st):
+        return "done"
+    return "open"
+
+
+def _feed_items(rows: list) -> str:
+    c: dict = {}
+    for o in rows:
+        line = logic.item_line(o)
+        c[line] = c.get(line, 0) + logic.qty(o)
+    return ", ".join(f"{k}{f' ×{n}' if n > 1 else ''}" for k, n in c.items())
+
+
+def feed_scan(force: bool = False) -> int:
+    """Сверка таблицы заказов с тем, что сервер видел в прошлый раз. Возвращает, сколько событий добавлено."""
+    rows = sheets.read_orders(force=force)
+    by: dict = {}
+    for o in rows:
+        k = _feed_key(o["order_no"])
+        if k:
+            by.setdefault(k, []).append(o)
+    events = []
+    with _feed_lock:
+        with _dm_lock:
+            db = _dm_db()
+            seen = dict(db.execute("SELECT no, state FROM feed_seen").fetchall())
+            first = not seen and not db.execute("SELECT 1 FROM meta WHERE k='feed_base'").fetchone()
+            upd = []
+            for k, group in by.items():
+                st, prev = _feed_state(group), seen.get(k)
+                if st == prev:
+                    continue
+                upd.append((k, st))
+                if first:
+                    continue  # самый первый запуск: запоминаем таблицу как есть, старые заказы «новыми» не считаем
+                o = group[0]
+                items = _feed_items(group)
+                where = logic.short(o["address"], 40) if logic.is_city(o) else (o["phone"] and f"отгрузка {o['phone']}") or ""
+                if prev is None and st != "cancel":
+                    events.append(("new", k, o["channel"], f"Новый заказ · {o['channel'] or 'без площадки'}",
+                                   " · ".join(x for x in (f"№ {k}", items, where) if x)))
+                elif st == "cancel" and prev is not None:
+                    ret = all((x["status"] or "").strip().lower().startswith("возврат") for x in group)
+                    why = _feed["why"].pop(k, "")
+                    events.append(("return" if ret else "cancel", k, o["channel"],
+                                   f"{'Возврат' if ret else 'Отмена'} · {o['channel'] or 'без площадки'}",
+                                   " · ".join(x for x in (f"№ {k}", items, why or where) if x)))
+            if upd:
+                db.executemany("INSERT INTO feed_seen VALUES(?,?) ON CONFLICT(no) DO UPDATE SET state=excluded.state", upd)
+            if first:
+                db.execute("INSERT OR REPLACE INTO meta VALUES('feed_base', ?)", (_stamp(),))
+            now = time.time()
+            for kind, k, ch, title, body in events:
+                db.execute("INSERT INTO feed(t, ts, kind, no, channel, title, body) VALUES(?,?,?,?,?,?,?)",
+                           (_stamp(), now, kind, k, ch or "", title[:120], body[:300]))
+            db.execute("DELETE FROM feed WHERE ts < ?", (now - FEED_KEEP_DAYS * 86400,))
+            db.commit()
+    if events:
+        log.info("Колокольчик: %s", "; ".join(f"{e[0]} {e[1]}" for e in events))
+        wake()  # открытые приложения сразу увидят число на колокольчике
+    return len(events)
+
+
+def _feed_hook(kind: str, data) -> None:
+    """Площадка сообщила об отмене или добавили заказы — сверяем сразу, не дожидаясь проверки по таймеру."""
+    if kind == "cancel":
+        for r, why in data:
+            _feed["why"][_feed_key(r["order_no"])] = str(why or "")[:120]
+    _feed["kick"].set()
+
+
+def _feed_loop() -> None:
+    time.sleep(20)  # сначала даём прогреться экранам
+    while True:
+        try:
+            feed_scan()
+        except Exception as e:
+            if "429" in str(e):
+                log.warning("Колокольчик: лимит Google, сверю позже")
+            else:
+                log.exception("Колокольчик: не смог сверить таблицу заказов")
+        _feed["kick"].wait(FEED_EVERY)
+        if _feed["kick"].is_set():
+            _feed["kick"].clear()
+            time.sleep(1)
+
+
+def _feed_last_read(db, code: str) -> int:
+    r = db.execute("SELECT last FROM feed_read WHERE code=?", (code,)).fetchone()
+    if r:
+        return int(r[0] or 0)
+    # новый телефон: непрочитанными считаем только события последних суток, а не весь месяц
+    last = db.execute("SELECT COALESCE(MAX(id), 0) FROM feed WHERE ts < ?", (time.time() - 86400,)).fetchone()[0] or 0
+    db.execute("INSERT OR IGNORE INTO feed_read VALUES(?,?)", (code, last))
+    db.commit()
+    return last
+
+
+def feed_unread(code: str) -> int:
+    with _dm_lock:
+        db = _dm_db()
+        return db.execute("SELECT COUNT(*) FROM feed WHERE id > ?", (_feed_last_read(db, code),)).fetchone()[0]
+
+
+def feed_list(code: str, tabs: list, today: date) -> dict:
+    with _dm_lock:
+        db = _dm_db()
+        last = _feed_last_read(db, code)
+        evs = [dict(r) for r in db.execute("SELECT id, t, kind, no, channel, title, body FROM feed ORDER BY id DESC LIMIT 150")]
+    by: dict = {}
+    for o in sheets.read_orders():
+        by.setdefault(_feed_key(o["order_no"]), []).append(o)
+    private = not ({"courier", "manager"} & set(tabs))  # адрес и телефон клиента — только курьеру и менеджерам
+    for e in evs:
+        group = by.get(e["no"])
+        item = board_item(group[0], today) if group else None
+        if item and private:
+            item.update(address="", phone="", tel="")
+        if item:
+            item["qty"] = sum(logic.qty(o) for o in group)
+        e["item"] = item
+        e["new"] = e["id"] > last
+    return {"events": evs, "last": last}
+
+
+def feed_mark(code: str, upto: int) -> dict:
+    with _dm_lock:
+        db = _dm_db()
+        top = db.execute("SELECT COALESCE(MAX(id), 0) FROM feed").fetchone()[0] or 0
+        upto = max(0, min(upto, top))
+        _feed_last_read(db, code)
+        db.execute("UPDATE feed_read SET last=MAX(last, ?) WHERE code=?", (upto, code))
+        db.commit()
+    wake()  # на других экранах этого телефона число на колокольчике погаснет сразу
+    return {"ok": True}
+
+
 def chat_photo(token: str, data: bytes, caption: str, reply: int, peer: str = "") -> tuple:
     if not re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token or ""):
         return 400, {"error": "Нет ключа телефона"}
@@ -1189,10 +1354,10 @@ def push_safe(*a, **k) -> None:
 def push_order_text(text: str) -> None:
     """Вызывается из рассылки бота: уведомления о новых заказах получают все роли."""
     t = (text or "").strip()
-    if not t.startswith(("🛒", "🆕")):
+    if not t.startswith(("🛒", "🆕", "❌")):  # новые заказы и отмены с площадок
         return
     head, _, rest = t.partition("\n")
-    push_safe("orders", head, rest.strip() or head, _codes(), "")
+    push_safe("orders", head, rest.strip() or head, _codes(), "bell")  # нажали — открывается колокольчик
 
 
 # ---------- Firebase Cloud Messaging (HTTP v1)
@@ -2293,12 +2458,18 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
             return 400, {"error": str(e)}
     if path == "/api/chat":
         res = chat_list(_int(body.get("since"), 0), code, body.get("wait") == "1", _int(body.get("du"), -1),
-                        str(body.get("ep") or ""), _int(body.get("seen"), 0), _int(body.get("rd"), -1), _int(body.get("on"), -1))
+                        str(body.get("ep") or ""), _int(body.get("seen"), 0), _int(body.get("rd"), -1), _int(body.get("on"), -1),
+                        _int(body.get("fu"), -1))
         try:
             res["dm_unread"] = dm_unread(code)  # непрочитанные личные — для значка на вкладке «Чат»
+            res["feed_unread"] = feed_unread(code)  # число на колокольчике
         except Exception:
             log.exception("Личные сообщения: счётчик непрочитанных")
         return 200, res
+    if path == "/api/feed":
+        return 200, feed_list(code, tabs, today)
+    if method == "POST" and path == "/api/feed/read":
+        return 200, feed_mark(code, _int(body.get("last"), 0))
     if method == "POST" and path == "/api/chat/edit":
         try:
             return 200, chat_edit(_int(body.get("id"), 0), str(body.get("text") or ""), code)
@@ -2764,6 +2935,9 @@ def start(**hooks) -> None:
     except Exception:
         log.exception("Таблица: не смог запустить фоновое обновление")
     threading.Thread(target=_prewarm, daemon=True).start()
+    if _feed_hook not in sheets.order_hooks:
+        sheets.order_hooks.append(_feed_hook)
+    threading.Thread(target=_feed_loop, daemon=True).start()
     try:
         d = photo_dir()
         old = HERE / "chat_photos"

@@ -395,6 +395,23 @@ main.fresh>*{animation:scr .16s ease-out both}
 @keyframes up{from{transform:translateY(40px);opacity:.4}to{transform:none;opacity:1}}
 @keyframes dim{from{opacity:0}to{opacity:1}}
 @media (prefers-reduced-motion: reduce){ main.fresh>*,.sheet,.sheet-bg{animation:none} }
+/* колокольчик: новые заказы и отмены */
+#bell{position:relative;display:flex;align-items:center}
+#bell[hidden]{display:none}
+.bdot{position:absolute;top:-3px;right:-5px;background:var(--warn);color:#fff;font-size:11px;font-weight:700;min-width:18px;height:18px;
+  line-height:18px;border-radius:9px;padding:0 5px;text-align:center;font-style:normal}
+.bdot:empty{display:none}
+.fe{display:flex;gap:12px;align-items:flex-start;padding:12px 14px}
+.fe .fi{width:40px;height:40px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:19px;background:var(--ok-bg);flex:none}
+.fe.k-cancel .fi,.fe.k-return .fi{background:var(--warn-bg)}
+.fe .grow{flex:1;min-width:0}
+.fe .row{display:flex;gap:8px;align-items:baseline}
+.fe .row b{flex:1;min-width:0}
+.fe .row small{color:var(--muted);font-size:12px;flex:none}
+.fe .sub{word-break:break-word}
+.fe .now{display:inline-block;margin-top:6px;font-size:12px;font-weight:600;border-radius:999px;padding:2px 10px;background:var(--chip);color:var(--muted)}
+.fe.unread{border-left:4px solid var(--accent)}
+.fe.unread .row b::after{content:" •";color:var(--accent)}
 /* потянуть вниз — обновить */
 .ptr{position:fixed;left:50%;top:calc(var(--hdr, 56px) + 6px);z-index:6;width:40px;height:40px;margin-left:-20px;border-radius:50%;background:var(--card);
   border:1px solid var(--line);box-shadow:0 2px 8px rgba(0,0,0,.18);display:flex;align-items:center;justify-content:center;font-size:20px;color:var(--accent);
@@ -408,6 +425,7 @@ main.fresh>*{animation:scr .16s ease-out both}
 <header>
   <h1>Arkenstone</h1>
   <div class="who" id="who"></div>
+  <button class="iconbtn" id="bell" aria-label="Уведомления о заказах" onclick="bellOpen()" hidden><svg width="23" height="23" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg><b class="bdot" id="belldot"></b></button>
   <button class="iconbtn" id="theme" aria-label="Тема" onclick="themeForm()" style="display:flex;align-items:center"><svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 3.5a8.5 8.5 0 0 1 0 17z" fill="currentColor"/></svg></button>
   <button class="iconbtn" id="refresh" aria-label="Обновить">⟳</button>
 </header>
@@ -577,6 +595,7 @@ async function boot(){
     netState(false);
   }
   if (!me.ok) return showCode();
+  $("#bell").hidden = false;
   $("#who").textContent = (me.name ? me.name + " · " : "") + me.label;
   const nav = $("#nav");
   nav.hidden = me.tabs.length < 2;
@@ -588,6 +607,7 @@ async function boot(){
   const want = (location.hash.match(/tab=(\w+)/) || [])[1];
   if (want) try { history.replaceState(null, "", location.pathname); } catch(e) {}
   open(me.tabs.includes(want) ? want : me.tabs.includes(saved) ? saved : me.tabs[0]);
+  if (want === "bell") bellOpen();  // нажали на уведомление о заказе
   chatPoll();
   if (me.cached) return;
   nativeSetup();
@@ -595,7 +615,7 @@ async function boot(){
 }
 
 function showCode(){
-  $("#nav").hidden = true; $("#who").textContent = "";
+  $("#nav").hidden = true; $("#who").textContent = ""; $("#bell").hidden = true;
   $("#main").innerHTML = `
     <div class="card">
       <div class="title">Добро пожаловать</div>
@@ -691,7 +711,7 @@ const shown = {};
 const DRAW = () => ({courier: drawCourier, prod: drawProd, keeper: drawKeeper, manager: drawManager, tech: drawTech, reports: drawReports});
 async function load(fromTab){
   clearInterval(timer);
-  onPage = false; window._pageAgain = null;
+  onPage = false; window._pageAgain = null; window._obBack = null;
   const my = ++nav, t = tab, url = t === "tech" ? "/api/tech?day=" + techDay() : "/api/" + t;
   $("#refresh").classList.add("spin");
   const prev = shown[url];
@@ -1133,7 +1153,7 @@ function drawManager(d){
       <div class="stat tap" onclick="ordersPage(true,{kind:'city',tab:'today',q:''})"><b>${d.city}</b><small>по городу</small></div></div>
     <label class="btn main big" style="margin:10px 0">📄 Загрузить PDF с заказами
       <input type="file" accept="application/pdf,.pdf" hidden onchange="uploadPdf(this)"></label>
-    <div class="toolbar"><button class="btn" onclick="ordersPage()">📊 Заказы</button>
+    <div class="toolbar"><button class="btn" onclick="ordersPage(true,{q:''})">📊 Заказы</button>
       <button class="btn" onclick="stockPage()">📦 Остатки</button></div>
     ${d.links.filter(l => !l.hidden).map(l => `<a class="btn" style="margin-top:8px" target="_blank" href="${esc(l.url)}">${esc(l.title)}</a>`).join("")}
     <button class="btn" style="width:100%;margin-top:8px" onclick="staffPage()">👥 Сотрудники · ${d.devices.length}</button>`;
@@ -1272,7 +1292,7 @@ async function ordersPage(fresh, ch){
     <div class="ob-q"><input id="ob-q" type="search" placeholder="Номер заказа, артикул, адрес" value="${esc(st.q)}" autocomplete="off" enterkeyhint="search"></div>
     <div id="ob-body"></div>
     ${window._orders.url ? `<a class="btn" style="margin-top:12px" target="_blank" href="${esc(window._orders.url)}">Открыть в Google Таблице</a>` : ""}`,
-    () => ordersPage(true));
+    () => ordersPage(true), window._obBack || undefined);
   let tm;
   $("#ob-q").oninput = e => { clearTimeout(tm); tm = setTimeout(() => obGo({q: e.target.value}), 200); };
   obFill();
@@ -1854,6 +1874,98 @@ async function moneyReportDelete(btn, i){
   catch(e) { toast(e.message); btn.disabled = false; }
 }
 
+/* ------------------------------ колокольчик: новые заказы и отмены
+   Список ведёт сервер (сверяет таблицу заказов). Число непрочитанных приходит вместе с опросом чата. */
+const FEED_IC = {new: "🛒", cancel: "❌", return: "↩️"};
+function bellBadge(){
+  const b = document.getElementById("belldot"); if (!b) return;
+  const n = window._feedUnread || 0; b.textContent = n ? (n > 99 ? "99+" : n) : "";
+}
+function obStatus(r){
+  const kind = r.city ? "city" : "ru";
+  return r.status && (r.tab === "done" || r.tab === "cancel") ? r.status : OB_ST[kind][r.tab];
+}
+function bellBack(){ open(tab); }
+async function bellOpen(){
+  if (!(me && me.ok)) return;
+  closeSheet();
+  if (tab === "chat") {  // уходим из ленты чата, вкладка остаётся «Чат» — «Назад» вернёт в неё
+    chatMarkSeen();
+    document.querySelectorAll(".composer").forEach(e => e.remove());
+    document.body.classList.remove("chat", "emoji"); $("#main").style.paddingBottom = "";
+    clearTimeout(window._dmListT);
+    if (chat !== CHAT_ALL) { clearTimeout(chat.timer); chat = CHAT_ALL; setTimeout(() => chatPoll(CHAT_ALL), 300); }
+    chatView = "bell";
+  }
+  clearInterval(timer);
+  const my = ++nav;
+  page("🔔 Новые заказы и отмены", `<div class="empty">Загрузка…</div>`, () => bellOpen(), "bellBack()");
+  let d;
+  try { d = await call("/api/feed"); }
+  catch(e) {
+    if (my === nav) page("🔔 Новые заказы и отмены", `<div class="empty">${esc(e.message)}<br><br><button class="btn" onclick="bellOpen()">Повторить</button></div>`, () => bellOpen(), "bellBack()");
+    return;
+  }
+  if (my !== nav) return;
+  window._feed = d.events;
+  bellDraw();
+  const top = d.events.length ? d.events[0].id : 0;
+  if (top > d.last) {  // открыл колокольчик — всё, что в нём, прочитано
+    window._feedUnread = 0; bellBadge();
+    call("/api/feed/read", {last: top}).catch(() => {});
+  }
+}
+function bellDraw(){
+  const all = window._feed || [], f = window._feedF || "all";
+  const evs = all.map((e, i) => [e, i]).filter(([e]) => f === "all" || (f === "new" ? e.kind === "new" : e.kind !== "new"));
+  let html = "", pd = null;
+  for (const [e, i] of evs) {
+    const dd = chatDay(e.t);
+    if (dd !== pd) { html += `<h2>${esc(dd)}</h2>`; pd = dd; }
+    const r = e.item;
+    html += `<div class="card tap fe k-${esc(e.kind)}${e.new ? " unread" : ""}" onclick="feedGo(${i})">
+      <div class="fi">${FEED_IC[e.kind] || "🔔"}</div>
+      <div class="grow"><div class="row"><b>${esc(e.title)}</b><small>${esc((e.t || "").slice(11, 16))}</small></div>
+        <div class="sub">${esc(e.body)}</div>
+        <span class="now">${r ? "Сейчас: " + esc(obStatus(r)) : "Строки заказа в таблице больше нет"}</span></div></div>`;
+  }
+  const seg = `<div class="ob-sw" style="margin-bottom:10px;grid-template-columns:repeat(3,1fr);display:grid">${[["all", "Все"], ["new", "Заказы"], ["cancel", "Отмены"]].map(([k, v]) =>
+    `<button class="${k === f ? "on" : ""}" onclick="window._feedF='${k}';bellDraw()">${v}</button>`).join("")}</div>`;
+  page("🔔 Новые заказы и отмены", seg + (html || `<div class="empty">${all.length ? "Здесь пусто" :
+    "Пока ничего не приходило.<br>Новые заказы и отмены с площадок будут появляться здесь."}</div>`)
+    + `<p class="muted" style="text-align:center">Хранятся за последние 30 дней</p>`, () => bellOpen(), "bellBack()");
+}
+/* Нажали на событие: у кого есть экран «Заказы» — открываем его на этом заказе, остальным — карточку заказа */
+async function feedGo(i){
+  const e = (window._feed || [])[i]; if (!e) return;
+  const r = e.item;
+  if (!r) return toast("Этого заказа больше нет в таблице");
+  if (me.tabs.includes("manager")) {
+    if (tab !== "manager") open("manager");
+    window._obBack = "bellOpen()";
+    await ordersPage(true, {kind: r.city ? "city" : "ru", tab: r.tab, q: e.no});
+    const rows = (window._orders && window._orders.rows) || [];
+    const k = rows.findIndex(x => (x.order_no || "").split("#")[0].trim() === e.no);
+    if (k >= 0 && onPage) return orderView(k);
+    if (onPage) feedView(e);  // заказ из давних закрытых — на экране «Заказы» его нет, покажем карточку
+    return;
+  }
+  feedView(e);
+}
+function feedView(e){
+  const r = e.item, where = r.city ? r.address : (r.shipment ? `Отгрузка № ${r.shipment}` : "");
+  sheet(`<h3>№ ${esc(e.no)}</h3><div class="muted">${esc(r.channel)} · ${esc(obStatus(r))}</div>
+    <table><tr><td>Кровать</td><td>${esc(r.title)} ×${r.qty}</td></tr>
+    ${r.article ? `<tr><td>Артикул</td><td>${esc(r.article)}</td></tr>` : ""}
+    ${where ? `<tr><td>${r.city ? "Адрес" : "Куда"}</td><td>${esc(where)}</td></tr>` : ""}
+    ${r.ship ? `<tr><td>Отгрузка</td><td>${esc(r.ship)}</td></tr>` : ""}
+    ${r.delivery ? `<tr><td>Доставка</td><td>${esc(r.delivery)}</td></tr>` : ""}
+    ${r.phone ? `<tr><td>Телефон</td><td>${esc(r.phone)}</td></tr>` : ""}</table>
+    <div class="actions">${r.tel ? `<a class="btn" href="tel:${esc(r.tel)}">📞 Позвонить</a>` : ""}
+    ${r.city && r.address ? `<a class="btn" target="_blank" href="${esc(mapUrl(r.address))}">🗺 Карта</a>` : ""}
+    <button class="btn wide" onclick="closeSheet()">Закрыть</button></div>`);
+}
+
 /* ------------------------------ отчёты табеля (ген. директор) */
 function drawReports(d){
   window._reports = d.reports; window._rateInfo = d; window._pending = d.pending || []; window._moneyReports = d.money || [];
@@ -2034,7 +2146,7 @@ function nativeSetup(){
   call("/api/push/register", fcm ? {fcm} : {}).then(r => { window._push = r; if (tab === "chat") chatNote(); }).catch(() => {});
 }
 window.onFcmToken = t => { if (me && me.ok && t) call("/api/push/register", {fcm: t}).then(r => { window._push = r; }).catch(() => {}); };
-window.openTab = k => { if (me && me.ok && me.tabs.includes(k)) open(k); };
+window.openTab = k => { if (!(me && me.ok)) return; if (k === "bell") return bellOpen(); if (me.tabs.includes(k)) open(k); };
 function chatNote(){
   const box = $("#chat-note"); if (!box) return;
   const p = window._push;
@@ -2130,10 +2242,11 @@ async function chatPoll(room){
     if (!room.peer) chatMarkSeen();
     const seenQ = `&seen=${chatSeen()}`, first = !room.epoch;
     const d = await call(room.peer ? `/api/dm?peer=${encodeURIComponent(room.peer)}&since=${since}${w}${seenQ}${room.presence ? "&on=" + (room.presence.online ? 1 : 0) : ""}${w ? "&rd=" + (room.read ?? -1) : ""}`
-                                   : `/api/chat?since=${since}${w}${seenQ}${w ? `&du=${window._dmUnread || 0}&ep=${encodeURIComponent(room.epoch)}&rd=${room.read ?? -1}&on=${room.online ?? -1}` : ""}`);
+                                   : `/api/chat?since=${since}${w}${seenQ}${w ? `&du=${window._dmUnread || 0}&ep=${encodeURIComponent(room.epoch)}&rd=${room.read ?? -1}&on=${room.online ?? -1}&fu=${window._feedUnread ?? -1}` : ""}`);
     ok = true;
     if (room !== chat) return;  // пока ждали ответ, человек открыл другой диалог
     if ("dm_unread" in d) window._dmUnread = d.dm_unread;
+    if ("feed_unread" in d) { window._feedUnread = d.feed_unread; bellBadge(); }
     if (room.peer && "all_unread" in d) window._allUnread = d.all_unread;
     room.read = d.read || 0;
     if (!room.peer) { room.online = d.online; room.total = d.total; const o = document.getElementById("chat-on"); if (o) o.textContent = onlineText(); }
