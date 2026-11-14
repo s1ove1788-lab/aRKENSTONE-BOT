@@ -2545,10 +2545,6 @@ function chatOpen(){
     const sn = chatSeen(), f = chat.msgs.length && sn ? chat.msgs.find(m => m.id > sn && !m.mine) : null;
     chat.newFrom = f ? f.id : 0;
   }
-  $("#main").innerHTML = chat.msgs.length ? "" : chatTop() + `<div class="empty">Загрузка…</div>`;
-  if (chat.msgs.length) chatDraw();
-  chatMarkSeen(); chatBadge();  // открыл чат — значок с числом гаснет сразу, не дожидаясь ответа сервера
-  clearShown();
   document.body.classList.remove("emoji");
   document.body.insertAdjacentHTML("beforeend", `<div class="composer">
     <div class="emoji-panel" id="emoji" hidden><div class="emoji-tabs">${EMOJI.map((g, i) =>
@@ -2572,12 +2568,19 @@ function chatOpen(){
     if (e.key === "Enter" && !e.shiftKey && !("ontouchstart" in window)) { e.preventDefault(); chatSend(); }
   };
   $("#chat-go").onclick = chatSend;
-  // поле ввода растёт (ответ, фото, эмодзи) — отодвигаем ленту, чтобы последние сообщения не прятались под ним
-  const comp = document.querySelector(".composer");
-  if (window.ResizeObserver) new ResizeObserver(() => { if (comp.isConnected) $("#main").style.paddingBottom = (comp.offsetHeight + 84) + "px"; }).observe(comp);
   if (chat.reply) chatReply(chat.reply);
   if (chat.photo) { $("#photo-prev").src = URL.createObjectURL(chat.photo); $("#photo-bar").hidden = false; }
   ta.onfocus = () => { if ("ontouchstart" in window && !$("#emoji").hidden) emojiToggle(); };
+  // Высоту панели ввода (черновик/ответ/фото уже учтены выше) резервируем ДО отрисовки ленты и прокрутки к низу.
+  // Раньше отступ ставился только через ResizeObserver, уже ПОСЛЕ прокрутки — и чат открывался так,
+  // что самое последнее сообщение оказывалось под панелью ввода, а не на виду.
+  const comp = document.querySelector(".composer");
+  $("#main").style.paddingBottom = (comp.offsetHeight + 84) + "px";
+  if (window.ResizeObserver) new ResizeObserver(() => { if (comp.isConnected) $("#main").style.paddingBottom = (comp.offsetHeight + 84) + "px"; }).observe(comp);
+  $("#main").innerHTML = chat.msgs.length ? "" : chatTop() + `<div class="empty">Загрузка…</div>`;
+  if (chat.msgs.length) chatDraw();
+  chatMarkSeen(); chatBadge();  // открыл чат — значок с числом гаснет сразу, не дожидаясь ответа сервера
+  clearShown();
   chatPoll();
 }
 /* Кнопка «отправить» появляется, когда есть что отправлять, — как в мессенджерах */
