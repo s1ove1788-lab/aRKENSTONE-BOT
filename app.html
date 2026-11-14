@@ -9,6 +9,24 @@
 <link rel="icon" href="/icon-192.png">
 <link rel="apple-touch-icon" href="/icon-192.png">
 <script>try { const t = localStorage.getItem("ark_theme"); if (t === "light" || t === "dark") document.documentElement.dataset.theme = t; } catch(e) {}</script>
+<script>
+/* Приложение, а не веб-страница: никакого масштабирования страницы (щипок, двойной тап, Ctrl+колесо/плюс/минус).
+   Фото в просмотрщике (.viewer) увеличивается своим собственным кодом — его не трогаем. */
+(function(){
+  const inViewer = e => e.target && e.target.closest && e.target.closest(".viewer");
+  ["gesturestart","gesturechange","gestureend"].forEach(n => document.addEventListener(n, e => { if (!inViewer(e)) e.preventDefault(); }, {passive:false}));
+  document.addEventListener("touchmove", e => { if (e.touches.length > 1 && !inViewer(e)) e.preventDefault(); }, {passive:false});
+  let lastEnd = 0;
+  document.addEventListener("touchend", e => {
+    const n = Date.now();
+    if (n - lastEnd < 300 && !inViewer(e) && !(e.target.closest && e.target.closest("input,textarea,select"))) e.preventDefault();
+    lastEnd = n;
+  }, {passive:false});
+  document.addEventListener("dblclick", e => { if (!inViewer(e)) e.preventDefault(); }, {passive:false});
+  window.addEventListener("wheel", e => { if (e.ctrlKey) e.preventDefault(); }, {passive:false});
+  window.addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && ["+","-","=","0","_"].includes(e.key)) e.preventDefault(); });
+})();
+</script>
 <style>
 :root{
   --bg:#f3f1ec; --card:#ffffff; --ink:#1c1f1d; --muted:#6c716d; --line:#e2dfd7;
@@ -378,6 +396,9 @@ body.chat{background-color:var(--bg);background-size:220px;background-image:url(
 .offbar button{border:1px solid var(--warn);background:none;color:inherit;border-radius:10px;padding:7px 12px;font:inherit;cursor:pointer;white-space:nowrap}
 body.off .chat-top{top:calc(var(--hdr, 56px) + var(--offh, 0px))}
 /* ---------- как настоящее приложение: отклик на нажатие, без выделения текста на кнопках, плавная смена экранов */
+/* без зума страницы: поля ввода не меньше 16px (иначе iOS приближает страницу при фокусе), без «лупы» на долгом нажатии */
+body{touch-action:pan-x pan-y;-webkit-touch-callout:none}
+input,textarea,select{font-size:max(16px,1em);-webkit-user-select:text;user-select:text}
 html{overscroll-behavior-y:none;touch-action:pan-x pan-y;-webkit-text-size-adjust:100%;text-size-adjust:100%}
 .viewer img{touch-action:none;transform-origin:0 0;will-change:transform;user-select:none;-webkit-user-select:none}
 button,.btn,nav,.tap,.dm-row,label.ic,.seg,.quick,.ob-sw,header{-webkit-user-select:none;user-select:none;touch-action:manipulation}
