@@ -81,6 +81,13 @@ def parse_range(text: str, today: date):
     return None
 
 
+def odd_status(o: dict) -> bool:
+    """В «Статусе» написано что-то своё (не «Доставлен…», не «Отмена…», не «Возврат…»).
+    Такой заказ бот считает закрытым: он пропадает у курьера и из плана — об этом надо предупредить менеджера."""
+    st = (o.get("status") or "").strip().lower().replace("ё", "е")
+    return bool(st) and not (st.startswith("доставлен") or "отмен" in st or "возврат" in st)
+
+
 def is_city(o: dict) -> bool:
     ch = o["channel"].upper()
     return ch in CITY_CHANNELS or "ГОРОД" in ch or o["kind"].lower() == "город"

@@ -176,6 +176,22 @@ class _Tabs(dict):
 
 
 _tabs: dict = _Tabs()
+
+# Один замок на всё, что читает таблицу заказов и следом пишет в неё по номерам строк (отметка «Доставлен»,
+# сортировка, отмены, перенос дат, добавление заказов). Бот в MAX и приложение работают в разных потоках:
+# без замка сортировка могла переставить строки между «прочитал» и «записал», и статус попадал в чужую строку
+# или затирался. RLock — потому что добавление заказов само вызывает сортировку и раскраску.
+write_lock = threading.RLock()
+
+
+def _locked(f):
+    import functools
+
+    @functools.wraps(f)
+    def run(*a, **kw):
+        with write_lock:
+            return f(*a, **kw)
+    return run
 _cache = {"t": 0.0, "rows": None}
 
 
@@ -395,6 +411,7 @@ def color_for(status: str, city: bool = False):
     return None
 
 
+@_locked
 def sync_colors() -> int:
     """Закрашивает строки заказов по статусу (зелёный / жёлтый / красный). Возвращает, сколько строк перекрашено.
     Работает и для ручных пометок менеджера («Отмена», «Возврат»): вызывается после изменений и раз в 5 минут."""
@@ -450,6 +467,7 @@ def ensure_status_dropdown(ws) -> None:
         _invalidate()
 
 
+@_locked
 def stamp_manual_delivered() -> list:
     """Менеджер выбрал в списке просто «Доставлен» — дописываем дату и время, как при нажатии у курьера
     (по дате потом считаются доставки и недельный итог). Возвращает отмеченные строки."""
@@ -464,6 +482,7 @@ def stamp_manual_delivered() -> list:
     return rows
 
 
+@_locked
 def cancel_rows(reasons: dict) -> list:
     """Площадка сообщила, что заказ отменён: у открытых строк (без статуса) пишем «Отмена ДД.ММ».
     reasons: {номер заказа без «#N»: причина}. Возвращает [(строка, причина)] — только то, что отмечено сейчас."""
@@ -584,6 +603,7 @@ def _order_event(kind: str, data) -> None:
             log.exception("Уведомления о заказах: обработчик упал")
 
 
+@_locked
 def add_orders(orders: list) -> list:
     """Добавляет только новые заказы (по номеру). Возвращает добавленные."""
     existing = {r["order_no"] for r in read_orders(force=True)}
@@ -612,6 +632,7 @@ def add_orders(orders: list) -> list:
     return new
 
 
+@_locked
 def fix_shifted_rows() -> int:
     """Чинит строки, которые старая версия бота записала в таблицу ДО добавления столбца «Количество»:
     все столбцы после «Размера» съехали на одну ячейку влево. Возвращает, сколько строк исправлено."""
@@ -637,6 +658,7 @@ def fix_shifted_rows() -> int:
     return len(data) // max(1, last - q + 1)
 
 
+@_locked
 def mark_delivered(order_nos: list) -> list:
     """Пишет в столбец «Статус» отметку о доставке. Строки остаются в таблице, но пропадают из списков."""
     wanted = set(order_nos)
@@ -1190,6 +1212,7 @@ def market_add(rows: list) -> None:
         _tab(config.MARKET_TAB, MARKET_HEADERS).append_rows(rows, value_input_option="RAW")
 
 
+@_locked
 def set_shipment_cell(row: int, value: str) -> None:
     """Вписывает номер отгрузки в столбец «Отгрузка / телефон» уже существующей строки."""
     orders_ws().update(values=[[value]], range_name=f"{_col_letter(layout()['phone'])}{row}", value_input_option="RAW")
@@ -1216,6 +1239,7 @@ def _ship_sort_key(ship: str, delivery: str, today, status: str = ""):
     return (_status_group(status), first, d[1] if d else date.max)
 
 
+@_locked
 def sort_orders() -> int:
     """Упорядочивает таблицу заказов: сверху отмены и возвраты, потом доставленные, внизу в работе;
     внутри каждой группы — по дате отгрузки. Внутри одной даты порядок сохраняется.
@@ -1262,6 +1286,7 @@ def safe_sort_orders() -> int:
         return 0
 
 
+@_locked
 def fill_cells(updates: list) -> None:
     """updates: [(номер строки, поле, текст)] — вписывает значения в ячейки (только вызывающий решает, что пусто)."""
     if updates:
@@ -1271,6 +1296,7 @@ def fill_cells(updates: list) -> None:
         _invalidate()
 
 
+@_locked
 def set_order_dates(updates: list) -> None:
     """updates: [(номер строки, поле 'ship' или 'delivery', текст)] — меняет даты в таблице заказов (перенос доставки)."""
     if updates:

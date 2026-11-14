@@ -94,8 +94,58 @@ def admin_codes() -> set:
     return {c for c in (norm_code(x) for x in os.getenv("ADMIN_CODES", "").split(",")) if c}
 
 
+# Роль «Администратор» из одной лишь Google Таблицы прав не даёт: лист «Приложение» может поправить любой,
+# у кого есть доступ к таблице, и так он выдал бы себе полные права (табель, деньги, смена ролей).
+# Администратор — это код из ADMIN_CODES на Bothost или тот, кого администратор назначил в самом приложении:
+# такие назначения сервер помнит у себя (в базе рядом с личными сообщениями), а не в таблице.
+_admins = {"loaded": False, "codes": set()}
+
+
+def admin_grants() -> set:
+    """Коды, которым администратор выдал роль администратора в приложении."""
+    if not _admins["loaded"]:
+        try:
+            with _dm_lock:
+                db = _dm_db()
+                base = db.execute("SELECT 1 FROM meta WHERE k='admins_base'").fetchone()
+                codes = {r[0] for r in db.execute("SELECT code FROM app_admins").fetchall()}
+            if not base:  # первый запуск после обновления: тех, кто уже администратор по таблице, запоминаем один раз
+                now = {c for c, d in devices().items() if d["role"] == "admin"}
+                with _dm_lock:
+                    db = _dm_db()
+                    db.executemany("INSERT OR IGNORE INTO app_admins VALUES(?,?,?)", [(c, "перенос", _stamp()) for c in now])
+                    db.execute("INSERT OR REPLACE INTO meta VALUES('admins_base', ?)", (_stamp(),))
+                    db.commit()
+                codes |= now
+                if now:
+                    log.info("Администраторы: запомнил назначенных ранее — %s", ", ".join(sorted(now)))
+            _admins.update(loaded=True, codes=codes)
+        except Exception:
+            log.exception("Администраторы: не смог прочитать список назначенных")
+            return set()
+    return _admins["codes"]
+
+
+def admin_grant(code: str, on: bool, who: str = "") -> None:
+    grants = admin_grants()
+    if (code in grants) == on:
+        return
+    with _dm_lock:
+        db = _dm_db()
+        if on:
+            db.execute("INSERT OR IGNORE INTO app_admins VALUES(?,?,?)", (code, who, _stamp()))
+        else:
+            db.execute("DELETE FROM app_admins WHERE code=?", (code,))
+        db.commit()
+    (grants.add if on else grants.discard)(code)
+
+
 def role_of(code: str, dev: dict) -> str:
-    return "admin" if code in admin_codes() else dev["role"]
+    if code in admin_codes():
+        return "admin"
+    if dev["role"] == "admin" and code not in admin_grants():
+        return "manager"  # «Администратор» вписан в таблицу руками, сервер такого назначения не делал — работает как менеджер
+    return dev["role"]
 
 
 RETURN_KINDS = {"ya": "Яндекс", "oz": "Озон", "wb": "Вайлдберриз"}
@@ -166,6 +216,7 @@ def add_device(code: str, role: str, name: str, who: str) -> None:
         ws.update(values=[row], range_name=f"A{r}:E{r}", value_input_option="RAW")
     else:
         ws.append_row(row, value_input_option="RAW")
+    admin_grant(code, role == "admin", who)  # назначение администратора сервер помнит у себя, таблице в этом не верит
     devices(force=True)
 
 
@@ -174,6 +225,7 @@ def remove_device(code: str) -> bool:
     if code not in have:
         return False
     _app_ws().delete_rows(have[code]["row"])
+    admin_grant(code, False)
     devices(force=True)
     return True
 
@@ -622,7 +674,22 @@ def courier_data(today: date, pay: bool = False) -> dict:
         rows = _rows(items)
         days.append({"label": label, "date": f"{day:%d.%m} ({logic.WEEKDAYS[day.weekday()]})", "today": n == 0,
                      "rows": rows, "qty": sum(r["qty"] for r in rows)})
-    return {"days": days, "pay": pay,
+    # Просроченные отгрузки по России: день отгрузки прошёл, а «Доставлен» не стоит. В «Сегодня» они не попадают,
+    # поэтому раньше курьер без вкладки «Менеджер» их не видел вовсе и отметить не мог.
+    late, since = [], {}
+    for o in orders:
+        if o["status"] or logic.is_city(o):
+            continue
+        r = logic.key_range(o, today)
+        if r is not None and r[1] < today:
+            late.append((o, True))
+            k = f"{o['channel']}|{o['phone']}"
+            since[k] = min(since.get(k, r[1]), r[1])
+    late_rows = _rows(late)
+    for row in late_rows:
+        row["since"] = f"{since[row['key']]:%d.%m}"
+    late_rows.sort(key=lambda x: since[x["key"]], reverse=True)
+    return {"days": days, "pay": pay, "late_ru": {"rows": late_rows[:60], "qty": sum(x["qty"] for x in late_rows)},
             "returns": {"kinds": RETURN_KINDS, "codes": [{"code": c, "name": logic.code_name(c)} for c in config.STOCK_CODES]}}
 
 
@@ -893,6 +960,7 @@ def _dm_db():
                 channel TEXT, title TEXT, body TEXT);
             CREATE TABLE IF NOT EXISTS feed_seen(no TEXT PRIMARY KEY, state TEXT);
             CREATE TABLE IF NOT EXISTS feed_read(code TEXT PRIMARY KEY, last INTEGER);
+            CREATE TABLE IF NOT EXISTS app_admins(code TEXT PRIMARY KEY, by TEXT, t TEXT);
         """)
         row = db.execute("SELECT v FROM meta WHERE k='epoch'").fetchone()
         if not row:
@@ -2042,6 +2110,20 @@ def report_send(d1: date, d2: date, who: str) -> dict:
     return summ
 
 
+def report_overlaps(d1: date, d2: date) -> list:
+    """Уже отправленные отчёты табеля, чей период пересекается с d1…d2 (чтобы одни и те же часы не оплатили дважды)."""
+    out = []
+    for v in _tt(REPORTS_TAB, REPORTS_HEADERS).get_all_values()[1:]:
+        v = list(v) + [""] * 4
+        try:
+            a, b = _d(v[2]), _d(v[3])
+        except ValueError:
+            continue
+        if a <= d2 and d1 <= b:
+            out.append({"from": a.isoformat(), "to": b.isoformat(), "sent": v[0].strip(), "who": v[1].strip()})
+    return out[-10:]
+
+
 def reports() -> list:
     out = []
     for i, v in enumerate(_tt(REPORTS_TAB, REPORTS_HEADERS).get_all_values()[1:], start=2):
@@ -2364,11 +2446,18 @@ def expense_add(day: date, name: str, qty, amount, who: str) -> dict:
     return {"ok": True}
 
 
-def expense_remove(eid: str, who: str) -> dict:
+def expense_remove(eid: str, who: str, any_row: bool = False) -> dict:
+    """Убрать трату. Тех. директор — только свою и только пока она не ушла в отчёт ген. директору;
+    администратор — любую (иначе остаток «на руках» можно было бы поправить задним числом)."""
     ws = _tt(ADV_TAB, ADV_HEADERS)
     rows = ws.get_all_values(fresh=True)
     for i, v in enumerate(rows[1:], start=2):
         if v and v[0].strip() == eid and eid:
+            v = list(v) + [""] * 8
+            if not any_row and not _same_person(v[5], who):
+                raise ValueError("Эту трату внёс другой человек — убрать её может он или администратор")
+            if not any_row and v[7].strip():
+                raise ValueError("Эта трата уже отправлена ген. директору в отчёте. Убрать её может только администратор")
             ws.delete_rows(i)
             log.info("Подотчёт: строка удалена (%s): %s", who, " | ".join(v[1:5]))
             return {"ok": True}
@@ -2521,7 +2610,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
     if path == "/api/me":
         if not me:
             return 200, {"code": code, "ok": False}
-        return 200, {"code": code, "ok": True, "name": me["name"], "role": me["role"],
+        return 200, {"code": code, "ok": True, "name": me["name"], "role": role_of(code, me),
                      "label": ROLE_LABELS[role_of(code, me)], "tabs": ROLE_TABS[role_of(code, me)],
                      "admin": role_of(code, me) == "admin"}
     if not me:
@@ -2615,7 +2704,9 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
             if path == "/api/tech/workers":
                 return 200, {"workers": workers()}
             if path == "/api/tech/summary":
-                return 200, period_summary(_d(body.get("from")), _d(body.get("to")))
+                summ = period_summary(_d(body.get("from")), _d(body.get("to")))
+                summ["overlap"] = report_overlaps(_d(summ["from"]), _d(summ["to"]))
+                return 200, summ
             if path == "/api/tech/sent":  # тех. директору — только часы, без денег
                 return 200, {"reports": [{k: r[k] for k in ("from", "to", "total", "sent", "who")}
                                          for r in reports() if r.get("who") == who][:20]}
@@ -2642,7 +2733,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
                         return 200, expense_add(_d(body.get("day")) if body.get("day") else today,
                                                 str(body.get("name") or ""), body.get("qty"), body.get("amount"), whor)
                     if path == "/api/tech/money/remove":
-                        return 200, expense_remove(str(body.get("id") or "").strip(), who)
+                        return 200, expense_remove(str(body.get("id") or "").strip(), who, is_admin)
                     if path == "/api/tech/money/send":
                         return 200, expense_send(_d(body.get("from")), _d(body.get("to")), whor, code)
                     if path == "/api/tech/bonus":
@@ -2935,6 +3026,43 @@ def site_order(key: str, body: dict) -> tuple:
     return 200, {"ok": True, "order_no": order_no}
 
 
+# Каждое действие (кнопка «Приход», «Добавить трату», «Доставлен»…) телефон помечает своим номером. Связь оборвалась,
+# телефон не получил ответ и повторил — сервер видит тот же номер и отдаёт прежний ответ, а не записывает второй раз.
+ACT_KEEP_SEC = 15 * 60
+_acts: dict = {}  # «код телефона:номер действия» -> {"ev": Event, "res": (код, данные) или None, "t": время}
+_acts_lock = threading.Lock()
+
+
+def once(key: str, run) -> tuple:
+    now = time.time()
+    with _acts_lock:
+        for k in [k for k, v in _acts.items() if now - v["t"] > ACT_KEEP_SEC]:
+            del _acts[k]
+        slot = _acts.get(key)
+        mine = slot is None
+        if mine:
+            slot = _acts[key] = {"ev": threading.Event(), "res": None, "t": now}
+    if not mine:
+        slot["ev"].wait(60)  # первый запрос ещё выполняется — ждём его, а не запускаем то же самое рядом
+        if slot["res"] is not None:
+            return slot["res"]
+        return 503, {"error": "Действие ещё выполняется, обновите экран через минуту"}
+    try:
+        res = run()
+    except Exception:
+        with _acts_lock:
+            _acts.pop(key, None)
+        slot["ev"].set()
+        raise
+    if res[0] >= 500:  # не получилось (Google перегружен и т.п.) — повтор должен выполниться заново
+        with _acts_lock:
+            _acts.pop(key, None)
+    else:
+        slot["res"] = res
+    slot["ev"].set()
+    return res
+
+
 class Handler(BaseHTTPRequestHandler):
     def _body(self) -> bytes:
         if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
@@ -2968,6 +3096,15 @@ class Handler(BaseHTTPRequestHandler):
 
     def _api(self, method: str, body: dict) -> None:
         path = self.path.split("?")[0].rstrip("/")
+        act = self.headers.get("X-Action") or ""
+        token = self.headers.get("X-Token") or ""
+        if method == "POST" and re.fullmatch(r"[A-Za-z0-9_-]{8,64}", act) and re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token):
+            code, data = once(code_for(token) + ":" + act, lambda: self._run(method, path, body))
+        else:
+            code, data = self._run(method, path, body)
+        self._json(code, data)
+
+    def _run(self, method: str, path: str, body: dict) -> tuple:
         try:
             code, data = api(method, path, self.headers.get("X-Token") or "", body)
         except Exception as e:
@@ -2977,7 +3114,7 @@ class Handler(BaseHTTPRequestHandler):
             else:
                 log.exception("Приложение: ошибка в %s", path)
                 code, data = 500, {"error": "Не получилось открыть таблицу, попробуйте ещё раз"}
-        self._json(code, data)
+        return code, data
 
     def do_GET(self):
         path = self.path.split("?")[0]

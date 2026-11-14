@@ -132,6 +132,24 @@ def shipped_done(today) -> int:
     return 0
 
 
+# «Расчёт доставок» (суммы, ссылка на таблицу, недельный итог) — только тем, чей ID в PAY_IDS.
+# Быть менеджером для этого недостаточно.
+PAY_DENY = "Расчёт доставок закрыт. Команда доступна только тому, чей ID записан в PAY_IDS на хостинге."
+
+
+def pay_ok(uid) -> bool:
+    return bool(uid) and uid in config.PAY_IDS
+
+
+def notify_pay(text: str) -> None:
+    """Сообщение в MAX только тем, кто видит расчёт доставок."""
+    for uid in config.PAY_IDS:
+        try:
+            mx.send({"type": "user", "id": uid}, text)
+        except Exception:
+            log.exception("Не смог отправить итог расчёта доставок")
+
+
 def banner_text(uid) -> str:
     """«📦 Отгрузок на сегодня: N шт.» + пустая строка; пусто, если человеку не положено или таблица недоступна."""
     if not known(uid):
@@ -465,13 +483,17 @@ def courier(ctx: Ctx, payload: str) -> None:
 def move_orders(orders: list, day) -> str:
     """Переносит заказы на другой день (меняет дату в таблице). Возвращает новую дату текстом, как в таблице."""
     new = f"{day.day:02d}.{ym_watch.MONTHS[day.month - 1]}"
-    updates = []
-    for o in orders:
-        key = logic.key_text(o)
-        cols = {c for c, v in (("ship", o["ship"]), ("delivery", o["delivery"])) if v and v == key}
-        for c in cols or {"delivery" if logic.is_city(o) else "ship"}:
-            updates.append((o["row"], c, new))
-    sheets.set_order_dates(updates)
+    wanted = {o["order_no"] for o in orders}
+    with sheets.write_lock:  # строки ищем заново прямо перед записью: пока человек выбирал дату, таблицу могли пересортировать
+        updates = []
+        for o in sheets.read_orders(force=True):
+            if o["order_no"] not in wanted or o["status"]:
+                continue
+            key = logic.key_text(o)
+            cols = {c for c, v in (("ship", o["ship"]), ("delivery", o["delivery"])) if v and v == key}
+            for c in cols or {"delivery" if logic.is_city(o) else "ship"}:
+                updates.append((o["row"], c, new))
+        sheets.set_order_dates(updates)
     return new
 
 
@@ -487,6 +509,34 @@ def deliver_orders(orders: list, who: str, today) -> list:
     except Exception:
         log.exception("Не смог записать стоимость доставки")
     return marked
+
+
+_odd_told: set = set()
+
+
+def odd_status_check() -> None:
+    """Менеджер вписал в «Статус» свой текст («ждём клиента», «перезвонить») — бот считает такой заказ закрытым,
+    и он молча пропадает у курьера и из плана. Сообщаем менеджерам один раз про каждую такую строку.
+    Смотрим только заказы с датой от вчера и позже: старые строки с давними пометками не трогаем."""
+    today = now_date()
+    fresh = []
+    for o in sheets.read_orders():
+        if not logic.odd_status(o):
+            continue
+        r = logic.key_range(o, today)
+        if r is not None and r[1] < today - timedelta(days=1):
+            continue
+        mark = (o["order_no"], o["status"])
+        if mark not in _odd_told:
+            _odd_told.add(mark)
+            fresh.append(o)
+    if fresh:
+        lines = [f"• № {o['order_no']} · {logic.item_line(o)} — «{logic.short(o['status'], 30)}»" for o in fresh[:15]]
+        if len(fresh) > 15:
+            lines.append(f"…и ещё {len(fresh) - 15}")
+        notify_managers("⚠️ В столбце «Статус» непонятная запись — такие заказы я считаю закрытыми, "
+                        "у курьера и в плане их нет:\n" + "\n".join(lines) +
+                        "\n\nЕсли заказ ещё в работе, выберите в списке «Доставляется», а пометку напишите в адресе.")
 
 
 def notify_managers(text: str, skip_uid=None) -> None:
@@ -1071,8 +1121,8 @@ def handle_message(u: dict) -> None:
         ctx.fresh = not mx.delete(user_mid, reply_to)  # не удалилось -> меню пришлём заново внизу
 
     if cmd == "/costsheet":  # создать закрытую таблицу «Стоимость доставок» и открыть её одному человеку
-        if sender_id not in config.MANAGER_IDS:
-            return
+        if not pay_ok(sender_id):
+            return ctx.show(PAY_DENY, [MENU_BTN]) if sender_id in config.MANAGER_IDS else None
         parts = raw.split()
         if costs.enabled():
             return ctx.show("Таблица стоимости доставок уже создана:\n" + costs.sheet_url(), [MENU_BTN])
@@ -1094,8 +1144,8 @@ def handle_message(u: dict) -> None:
         return ctx.show(f"✅ Таблица подключена, лист «Доставки» создан:\n{url}", [MENU_BTN])
 
     if cmd == "/costweek":  # раскрасить таблицу стоимости и подбить недели четверг–среда (только админ)
-        if sender_id not in config.MANAGER_IDS:
-            return
+        if not pay_ok(sender_id):
+            return ctx.show(PAY_DENY, [MENU_BTN]) if sender_id in config.MANAGER_IDS else None
         if not costs.enabled():
             return ctx.show("Сначала подключите таблицу стоимости: /costsheet ссылка", [MENU_BTN])
         try:
@@ -1107,8 +1157,8 @@ def handle_message(u: dict) -> None:
         return ctx.show(f"🎨 Раскрашено строк: {n}\n\n{text}\n\n" + costs.sheet_url(), [MENU_BTN])
 
     if cmd == "/costback":  # досчитать стоимость по уже доставленным заказам из таблицы (только админ)
-        if sender_id not in config.MANAGER_IDS:
-            return
+        if not pay_ok(sender_id):
+            return ctx.show(PAY_DENY, [MENU_BTN]) if sender_id in config.MANAGER_IDS else None
         if not costs.enabled():
             return ctx.show("Сначала подключите таблицу стоимости: /costsheet ссылка", [MENU_BTN])
         ctx.show("Считаю доставленные заказы…", [MENU_BTN])
@@ -1244,9 +1294,9 @@ def handle_message(u: dict) -> None:
             log.exception("Сортировка таблицы заказов")
             return ctx.show("⚠️ Не получилось: " + str(e)[:300], [MENU_BTN])
         return ctx.show(f"✅ Упорядочил по дате доставки: {n} строк." if n else "Таблица уже упорядочена по дате доставки.", [MENU_BTN])
-    if cmd == "/costsort":  # перевести таблицу расчёта на порядок по дате отгрузки (только менеджер)
-        if sender_id not in config.MANAGER_IDS:
-            return ctx.show("Команда только для менеджера.", [MENU_BTN])
+    if cmd == "/costsort":  # перевести таблицу расчёта на порядок по дате отгрузки (только тот, кто видит расчёт)
+        if not pay_ok(sender_id):
+            return ctx.show(PAY_DENY if sender_id in config.MANAGER_IDS else "Команда только для менеджера.", [MENU_BTN])
         if not costs or not costs.enabled():
             return ctx.show("Таблица стоимости доставок не подключена (/costsheet <ссылка>).", [MENU_BTN])
         try:
@@ -1452,7 +1502,7 @@ def main() -> None:
                     sheets.set_setting("cost_week_done", str(_now.date()))
                     res = costs.weekly(_now.date())
                     if res:
-                        broadcast_managers("📅 Среда, неделя закрыта.\n" + costs.weekly_text(res[-1:]))
+                        notify_pay("📅 Среда, неделя закрыта.\n" + costs.weekly_text(res[-1:]))  # сумма — только тем, кто в PAY_IDS
             except Exception:
                 log.exception("Не смог подбить неделю")
         if (config.OZ_CLIENT_ID and config.OZ_API_KEY and config.OZ_WATCH
@@ -1505,6 +1555,10 @@ def main() -> None:
                                        "Записал в отгрузки, списал каркасы и добавил в расчёт доставки.")
             except Exception:
                 log.exception("Не смог обработать ручную отметку «Доставлен»")
+            try:
+                odd_status_check()
+            except Exception:
+                log.exception("Не смог проверить непонятные статусы")
             if not sheets.safe_sort_orders():  # строки, внесённые вручную внизу таблицы, встают по дате доставки
                 sheets.safe_sync_colors()  # подхватываем ручные пометки менеджера («Отмена», «Возврат»)
             try:

@@ -129,7 +129,7 @@ def parse_pdf(path: str) -> list[Order]:
     или не нашлось ни одного заказа.
     """
     orders: list[Order] = []
-    seen: set[str] = set()
+    seen: dict = {}  # номер заказа -> какие кровати этого заказа уже взяли
     has_text = False
 
     with pdfplumber.open(path) as pdf:
@@ -139,9 +139,16 @@ def parse_pdf(path: str) -> list[Order]:
             for table in page.extract_tables():
                 for row in table:
                     order = _parse_row(row)
-                    if order and order.order_no not in seen:
-                        seen.add(order.order_no)
-                        orders.append(order)
+                    if not order:
+                        continue
+                    item = (order.size, order.color, order.article)
+                    had = seen.setdefault(order.order_no, [])
+                    if item in had:
+                        continue  # та же строка второй раз (таблица продолжилась на следующей странице)
+                    had.append(item)
+                    if len(had) > 1:  # в заказе несколько разных кроватей: вторая и следующие — «№…#2», «#3», как у Озона
+                        order.order_no = f"{order.order_no}#{len(had)}"
+                    orders.append(order)
 
     if not has_text:
         raise ValueError(

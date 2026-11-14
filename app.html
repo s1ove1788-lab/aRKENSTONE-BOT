@@ -547,15 +547,30 @@ function backOnline(){  // связь вернулась — тихо обнов
 window.addEventListener("online", () => { if (offline) netRetry(false); });
 window.addEventListener("offline", () => { if (me && me.ok) netState(false); });
 
+/* Номер действия: у каждого нажатия свой. Ответ не дошёл (связь оборвалась) — сервер мог уже всё записать.
+   Поэтому тот же запрос повторяем с тем же номером: сервер узнаёт его и отдаёт прежний ответ, второй раз не пишет.
+   Номер оборванного действия помним 10 минут — если человек сам нажмёт ту же кнопку ещё раз, двойной записи не будет. */
+const _actIds = {};
+const actNew = () => { const b = new Uint8Array(12); crypto.getRandomValues(b); return Array.from(b, x => x.toString(16).padStart(2, "0")).join(""); };
 async function call(path, body){
   let r;
+  const payload = body ? JSON.stringify(body) : undefined, sig = body ? path + "|" + payload : "";
+  const kept = body && _actIds[sig] && Date.now() - _actIds[sig].at < 600000 ? _actIds[sig].id : null;
+  const headers = {"X-Token": TOKEN, "Content-Type": "application/json"};
+  if (body) headers["X-Action"] = kept || actNew();
+  const send = () => fetch(path, {method: body ? "POST" : "GET", headers, body: payload});
   try {
-    r = await fetch(path, {method: body ? "POST" : "GET",
-      headers: {"X-Token": TOKEN, "Content-Type": "application/json"},
-      body: body ? JSON.stringify(body) : undefined});
-  } catch(e) {  // запрос не дошёл до сервера вообще
+    try { r = await send(); }
+    catch(e) {
+      if (!body) throw e;
+      await new Promise(ok => setTimeout(ok, 1500));  // одна тихая попытка ещё раз — с тем же номером действия
+      r = await send();
+    }
+    if (body) delete _actIds[sig];
+  } catch(e) {  // запрос не дошёл до сервера или ответ потерялся
+    if (body) _actIds[sig] = {id: headers["X-Action"], at: Date.now()};
     if (me && me.ok) netDoubt();
-    const err = new Error(body ? "Нет связи — действие не выполнено. Повторите, когда появится интернет" : "Нет связи с сервером");
+    const err = new Error(body ? "Нет связи — не знаю, записалось ли действие. Повторите, когда появится интернет: дважды оно не запишется" : "Нет связи с сервером");
     err.offline = true; throw err;
   }
   if (offline && r.status < 500) netState(true);
@@ -895,10 +910,21 @@ const num = id => parseFloat(String(document.getElementById(id).value).replace("
 
 /* ------------------------------ курьер */
 function drawCourier(d){
-  window._ret = d.returns; window._days = d.days;
+  window._ret = d.returns;
+  const lateRu = (d.late_ru && d.late_ru.rows) || [];
+  // просроченные отгрузки по России — отдельным «днём» в конце списка, чтобы карточка открывалась тем же окном
+  window._days = d.days.concat([{label: "Просрочено по России", date: "", late: true, rows: lateRu}]);
+  const lateDi = d.days.length;
   let h = d.pay ? `<div class="toolbar"><button class="btn" onclick="returnForm()">↩️ Возврат</button>
     <button class="btn" onclick="payView()">💰 Расчёт</button></div>`
     : `<button class="btn" style="width:100%;margin-bottom:6px" onclick="returnForm()">↩️ Возврат</button>`;
+  if (lateRu.length) h += `<details class="card" style="margin-top:6px;border-color:var(--warn)"><summary class="row"><span class="grow title" style="color:var(--warn)">⚠️ Просрочено по России</span>
+      <span class="badge">${d.late_ru.qty} шт. ▾</span></summary><div style="margin-top:8px">
+      <div class="muted" style="margin-bottom:6px">День отгрузки прошёл, а «Доставлен» не стоит. Если уже отгрузили — отметьте.</div>
+      <table class="dl"><tr><th>Куда</th><th>Кровать</th><th class="n">Шт</th></tr>
+      ${lateRu.map((r, ri) => `<tr class="tap short" onclick="deliveryView(${lateDi},${ri})">
+        <td><div class="pl">${esc(r.place)}</div><div class="ch">${esc(r.channel)} · срок был ${esc(r.since)}</div></td>
+        <td>${r.beds.map(esc).join("<br>")}</td><td class="n">${r.qty}</td></tr>`).join("")}</table></div></details>`;
   d.days.forEach((day, di) => {
     const table = day.rows.length ? `<table class="dl">
       <tr><th>Куда</th><th>Кровать</th><th class="n">Шт</th></tr>
@@ -928,6 +954,7 @@ function deliveryView(di, ri){
       <div class="wide" style="grid-column:1/-1"><label class="l">Перенести на дату</label>
         <input id="mv-date" type="date" min="${min}" value="${min}">
         <button class="btn" style="width:100%" onclick="moveCur(this)">📅 Перенести</button></div>`
+      : day.late ? `<button class="btn main wide" onclick="doneLate(this)">✅ Доставлен (срок прошёл)</button>`
       : r.kind === "city" ? `<button class="btn main wide" onclick="doneCur(this, true)">✅ Доставлен раньше срока</button>` : ""}
     </div>`);
 }
@@ -935,6 +962,13 @@ function deliveryView(di, ri){
 async function doneCur(btn, early){
   if (!confirm(early ? "Срок доставки ещё не наступил. Отметить как доставленный сегодня?" : "Отметить как доставленный?")) return;
   await act(btn, "/api/courier/done", {kind: window._cur.kind, key: window._cur.key});
+}
+
+async function doneLate(btn){
+  const r = window._cur;
+  if (!confirm(r.orders.length > 1 ? `Отметить доставленными ${plural(r.orders.length, "заказ", "заказа", "заказов")} этой отгрузки? Срок отгрузки прошёл.`
+                                   : `Отметить № ${r.orders[0]} доставленным? Срок отгрузки прошёл.`)) return;
+  await act(btn, "/api/orders/done", {nos: r.orders});
 }
 
 async function moveCur(btn){
@@ -1203,12 +1237,12 @@ function staffPage(){
     <h2>В приложении · ${d.devices.length}</h2>
     ${d.devices.length ? `<div class="card" style="padding:6px 10px"><table>
       <tr><th>Имя</th><th>Роль</th><th></th></tr>
-      ${d.devices.map(x => `<tr><td><b>${esc(x.name || "без имени")}</b><div class="ch">${esc(x.code)}</div></td><td>${esc(x.label)}</td>
+      ${d.devices.map((x, di) => `<tr><td><b>${esc(x.name || "без имени")}</b><div class="ch">${esc(x.code)}</div></td><td>${esc(x.label)}</td>
         <td class="n" style="white-space:nowrap">${x.code === me.code ? `<span class="badge">это вы</span>`
           : me.admin && !x.fixed ? `<button class="btn" style="padding:8px 12px" onclick="editDevice('${esc(x.code)}')">Изменить</button>`
           : x.role === "admin" ? `<span class="badge">админ</span>`
           : x.can_remove === false ? ""
-          : `<button class="btn" style="padding:8px 12px" onclick="removeDevice('${esc(x.code)}','${esc(x.name)}')">Убрать</button>`}</td></tr>`).join("")}
+          : `<button class="btn" style="padding:8px 12px" onclick="removeDevice(${di})">Убрать</button>`}</td></tr>`).join("")}
     </table></div>
     ${me.admin ? `<p class="muted">Роль и имя сотрудника меняет только администратор: нажмите «Изменить».</p>` : ""}` : `<div class="empty">Пока никого</div>`}`);
 }
@@ -1468,7 +1502,10 @@ async function addDevice(btn){
   btn.disabled = false;
 }
 
-async function removeDevice(code, name){
+async function removeDevice(i){
+  // имя и код берём из списка по номеру строки, а не подставляем в кнопку: апостроф в имени ломал её
+  const x = ((window._mgr || {}).devices || [])[i]; if (!x) return;
+  const code = x.code, name = x.name;
   if (!confirm(`Убрать ${name || code} из приложения?`)) return;
   try { await call("/api/manager/device/remove", {code}); toast("Убрано"); window._mgr = await call("/api/manager"); staffPage(); }
   catch(e) { toast(e.message); }
@@ -1622,7 +1659,7 @@ async function techStaffPage(){
           <div class="ch">${w.rate != null ? `<b style="color:var(--ink)">${rub(w.rate)}/ч</b>` : `${rub(t.rate_common)}/ч · общая`}${w.painter
             ? ` · ${w.bed_rate != null ? `<b style="color:var(--ink)">${rub(w.bed_rate)}/кр.</b>` : `${rub(t.bed_rate_common)}/кр. · общая`}` : ""}</div></td>
         <td class="n"><div style="display:flex;gap:6px;justify-content:flex-end"><button class="btn" style="padding:8px 12px" onclick="techEditWorker(${i})">Ставка</button>
-          <button class="btn" style="padding:8px 10px" onclick="techFire('${esc(w.id)}','${esc(w.name)}')" aria-label="Убрать">✕</button></div></td></tr>`).join("")}
+          <button class="btn" style="padding:8px 10px" onclick="techFire(${i})" aria-label="Убрать">✕</button></div></td></tr>`).join("")}
     </table></div>
     <p class="muted">Убранный сотрудник пропадает из списка, но его часы за прошлые дни остаются в итогах и отчётах.</p>`
     : `<div class="empty">Пока никого. Добавьте всех, кому нужно считать часы.</div>`}`, techStaffPage);
@@ -1655,7 +1692,9 @@ async function techAddWorker(btn){
   try { await call("/api/tech/worker", {name, area, rate: $("#w-rate").value, bed_rate: $("#w-brate").value}); toast("Добавлен"); window._tech = await call("/api/tech?day=" + techDay()); techStaffPage(); }
   catch(e) { toast(e.message); btn.disabled = false; }
 }
-async function techFire(id, name){
+async function techFire(i){
+  const w = ((window._tech || {}).workers || [])[i]; if (!w) return;
+  const id = w.id, name = w.name;
   if (!confirm(`Убрать ${name} из табеля? Часы за прошлые дни сохранятся.`)) return;
   try { await call("/api/tech/worker/remove", {id}); toast("Убран"); window._tech = await call("/api/tech?day=" + techDay()); techStaffPage(); }
   catch(e) { toast(e.message); }
@@ -1734,13 +1773,16 @@ async function techPreview(){
   try {
     const s = await call(`/api/tech/summary?from=${a}&to=${b}`);
     if (!$("#p-sum")) return;
-    box.innerHTML = `<h2>${esc(fmtPeriod(s.from, s.to))}</h2>` + summaryTable(s);
+    window._techOverlap = s.overlap || [];
+    box.innerHTML = `<h2>${esc(fmtPeriod(s.from, s.to))}</h2>` + summaryTable(s)
+      + (window._techOverlap.length ? `<p class="muted" style="color:var(--warn)">⚠️ За эти дни отчёт уже отправляли: ${window._techOverlap.map(o => esc(fmtPeriod(o.from, o.to))).join(", ")}. Если отправить ещё раз, те же часы попадут ген. директору повторно.</p>` : "");
     btn.disabled = !s.people.length;
   } catch(e) { box.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
 }
 async function techSend(btn){
   const a = $("#p-from").value, b = $("#p-to").value;
-  if (!confirm(`Отправить ген. директору табель за ${fmtPeriod(a <= b ? a : b, a <= b ? b : a)}?`)) return;
+  const dup = (window._techOverlap || []).length ? "\n\nВнимание: за часть этих дней отчёт уже отправляли — часы попадут повторно." : "";
+  if (!confirm(`Отправить ген. директору табель за ${fmtPeriod(a <= b ? a : b, a <= b ? b : a)}?` + dup)) return;
   btn.disabled = true;
   try { const r = await call("/api/tech/send", {from: a, to: b}); toast(`✅ Отправлено: ${hh(r.total)} ч`); techSendPage(); }
   catch(e) { toast(e.message); btn.disabled = false; }
