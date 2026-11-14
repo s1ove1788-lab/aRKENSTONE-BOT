@@ -2587,6 +2587,12 @@ def blanks_post(body: dict, who: str) -> tuple:
     return 200, {"ok": True, "message": f"✅ Заготовки {where}, {'добавлено' if sign > 0 else 'убрано'}:\n" + "\n".join(lines)}
 
 
+def token_ok(token: str) -> bool:
+    """Дешёвая проверка ключа телефона (без чтения из Google): формат + есть в списке устройств.
+    Нужна до чтения тела запроса — чтобы не держать в памяти до 8–20 МБ чужих данных без действительного ключа."""
+    return bool(re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token or "")) and code_for(token) in devices()
+
+
 def upload_pdf(token: str, filename: str, data: bytes) -> tuple:
     me = devices().get(code_for(token)) if re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token or "") else None
     if not me or "manager" not in ROLE_TABS.get(role_of(code_for(token), me), []):
@@ -3161,8 +3167,12 @@ class Handler(BaseHTTPRequestHandler):
                 code, res = 500, {"error": "server"}
             return self._json(code, res)
         if path == "/api/chat/photo":
+            if not token_ok(self.headers.get("X-Token") or ""):
+                self.close_connection = True  # тело не читаем — закрываем соединение, а не ждём остаток чужих данных
+                return self._json(403, {"error": "Телефон не добавлен"})
             size = max(0, _int(self.headers.get("Content-Length"), 0))
             if size > MAX_PHOTO:
+                self.close_connection = True
                 return self._json(400, {"error": "Фото больше 8 МБ"})
             data = self.rfile.read(size)
             from urllib.parse import unquote
@@ -3175,8 +3185,12 @@ class Handler(BaseHTTPRequestHandler):
                 code, res = 500, {"error": "Не получилось сохранить фото"}
             return self._json(code, res)
         if path == "/api/manager/pdf":
+            if not token_ok(self.headers.get("X-Token") or ""):
+                self.close_connection = True
+                return self._json(403, {"error": "Телефон не добавлен"})
             size = max(0, _int(self.headers.get("Content-Length"), 0))
             if size > MAX_PDF:
+                self.close_connection = True
                 return self._json(400, {"error": "Файл больше 20 МБ"})
             data = self.rfile.read(size)
             from urllib.parse import unquote

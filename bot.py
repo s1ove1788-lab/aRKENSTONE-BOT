@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tempfile
+import threading
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -814,19 +815,28 @@ def record_shipments(marked: list, who: str, today) -> None:
 # ---------------------------------------------------------- нажатия кнопок
 def run_sverka(ctx: Ctx) -> None:
     """Сверка заказов Яндекс Маркета и Озона с таблицей (кнопка «Сверка» и команда /sverka)."""
-    ctx.show("Сверяю заказы площадок с таблицей…", [MENU_BTN])
-    lines = []
-    if config.YM_TOKEN:
-        r = market_check()
-        lines.append("Яндекс Маркет: " + ("не получилось проверить, смотрите логи" if r is None else
-                     f"в обработке {r['total']}, не хватало в таблице — {r['new']}, добавлено — {r['added']}"))
-    if config.OZ_CLIENT_ID and config.OZ_API_KEY:
-        r = ozon_check()
-        lines.append("Озон: " + ("не получилось проверить, смотрите логи" if r is None else
-                     f"в обработке {r['total']}, не хватало в таблице — {r['new']}"))
-    lines.append("Вайлдберриз: пока не подключён.")
-    lines.append("\nО найденных заказах бот присылает отдельные уведомления.")
-    ctx.show("\n".join(lines), [MENU_BTN])
+    def work():
+        res = {}
+        if config.YM_TOKEN:
+            res["ym"] = market_check()
+        if config.OZ_CLIENT_ID and config.OZ_API_KEY:
+            res["oz"] = ozon_check()
+        return res
+
+    def show(ctx, res):
+        lines = []
+        if config.YM_TOKEN:
+            r = (res or {}).get("ym")
+            lines.append("Яндекс Маркет: " + ("не получилось проверить, смотрите логи" if r is None else
+                         f"в обработке {r['total']}, не хватало в таблице — {r['new']}, добавлено — {r['added']}"))
+        if config.OZ_CLIENT_ID and config.OZ_API_KEY:
+            r = (res or {}).get("oz")
+            lines.append("Озон: " + ("не получилось проверить, смотрите логи" if r is None else
+                         f"в обработке {r['total']}, не хватало в таблице — {r['new']}"))
+        lines.append("Вайлдберриз: пока не подключён.")
+        lines.append("\nО найденных заказах бот присылает отдельные уведомления.")
+        ctx.show("\n".join(lines), [MENU_BTN])
+    bg_check(ctx, "Сверяю заказы площадок с таблицей…", work, show)
 
 
 def on_payload(ctx: Ctx, name: str, payload: str) -> None:
@@ -879,9 +889,10 @@ def handle_callback(u: dict) -> None:
 
 
 # ------------------------------------------------------ PDF и уведомления
-def format_order(o) -> str:
+def format_order(o, with_address: bool = True) -> str:
     what = " ".join(x for x in (o.size, o.color) if x)
-    return (f"• {o.channel} · {what} · {o.address}\n"
+    where = f" · {o.address}" if with_address and o.address else ""
+    return (f"• {o.channel} · {what}{where}\n"
             f"  отгрузка {o.ship_date}, доставка {o.delivery_date} · № {o.order_no}")
 
 
@@ -920,12 +931,19 @@ def broadcast_managers(text: str) -> None:
             mx.send({"type": "user", "id": uid}, text)
 
 
-def broadcast(text: str, skip_uid=None) -> None:
-    """Рассылает текст всем, кто зарегистрирован (роли из NOTIFY_ROLES), и в подписанные группы."""
+# Адрес и телефон клиента — только тем, кто развозит и ведёт заказы. Остальным ролям из NOTIFY_ROLES
+# (например, производству) уходит версия без этих данных, если вызывающий её передал.
+PRIVATE_ROLES = {"manager", "courier"}
+
+
+def broadcast(text: str, skip_uid=None, safe_text: str = None) -> None:
+    """Рассылает текст всем, кто зарегистрирован (роли из NOTIFY_ROLES), и в подписанные группы.
+    safe_text, если дан, — версия без адреса/телефона клиента для ролей вне PRIVATE_ROLES."""
     for uid, u in list(users.items()):
         if u["role"] not in config.NOTIFY_ROLES or not allowed(uid, u["role"]):
             continue
-        mx.send({"type": "user", "id": uid}, text)
+        body = text if safe_text is None or u["role"] in PRIVATE_ROLES else safe_text
+        mx.send({"type": "user", "id": uid}, body)
         if config.CLEAN_CHAT and uid != skip_uid and uid not in pending:
             ctx = Ctx(uid)
             ctx.fresh = True  # уведомление пришло ниже меню — поднимаем меню вниз
@@ -940,9 +958,48 @@ def broadcast(text: str, skip_uid=None) -> None:
 
 
 def notify_all(new: list, who: str, skip_uid=None) -> None:
-    lines = [f"🆕 Новых заказов: {len(new)}" + (f" (загрузил(а): {who})" if who else "")]
-    lines += [format_order(o) for o in new]
-    broadcast("\n".join(lines), skip_uid)
+    head = f"🆕 Новых заказов: {len(new)}" + (f" (загрузил(а): {who})" if who else "")
+    full = "\n".join([head] + [format_order(o) for o in new])
+    safe = "\n".join([head] + [format_order(o, with_address=False) for o in new])
+    broadcast(full, skip_uid, safe_text=safe)
+
+
+# Проверка Маркета/Озона может занять минуты, если площадка не отвечает (retries с паузами внутри ym_watch._get).
+# Запускаем её отдельным потоком, чтобы на это время не вставал приём сообщений в MAX. lock не даёт двум
+# проверкам одной площадки наложиться друг на друга, если предыдущая ещё не закончилась к следующему тику.
+_oz_busy = threading.Lock()
+_ym_busy = threading.Lock()
+
+
+def _run_async(lock: threading.Lock, fn) -> None:
+    if not lock.acquire(blocking=False):
+        return
+    def run():
+        try:
+            fn()
+        finally:
+            lock.release()
+    threading.Thread(target=run, daemon=True).start()
+
+
+def bg_check(ctx: "Ctx", start_text: str, work, show_result) -> None:
+    """Для команд вроде /ymnow, /oznow, /sverka: запрос к площадке может зависнуть на минуты, если она не отвечает
+    (повторные попытки с паузами внутри ym_watch._get). Выполняем его в фоновом потоке, чтобы на это время
+    не вставал приём сообщений у остальных — тот же бот обслуживает всех в одном потоке.
+    show_result(ctx, res) рисует итог на том же экране, когда проверка закончится (res — None при ошибке)."""
+    ctx.show(start_text, [MENU_BTN])
+
+    def run():
+        try:
+            res = work()
+        except Exception:
+            log.exception("Фоновая проверка площадки (%s)", start_text)
+            res = None
+        try:
+            show_result(ctx, res)
+        except Exception:
+            log.exception("Не смог показать итог фоновой проверки")
+    threading.Thread(target=run, daemon=True).start()
 
 
 # ---------------------------------------------------------- Яндекс Маркет
@@ -1200,16 +1257,16 @@ def handle_message(u: dict) -> None:
             return
         if not (config.OZ_CLIENT_ID and config.OZ_API_KEY):
             return ctx.show("Не заданы переменные OZON_CLIENT_ID и OZON_API_KEY в настройках бота.", [MENU_BTN])
-        ctx.show("Сверяю заказы Озона с таблицей…", [MENU_BTN])
-        try:
-            found, added, manual = oz.backfill()
-        except Exception:
-            log.exception("Ошибка /ozadd")
-            return ctx.show("⚠️ Не получилось: подробности в логах бота.", [MENU_BTN])
-        text = f"Озон: активных заказов — {found}, добавил в таблицу — {added}."
-        if manual:
-            text += f"\nНе добавлено автоматически (несколько позиций или незнакомый артикул): {manual}."
-        return ctx.show(text, [MENU_BTN])
+
+        def _show(ctx, res):
+            if res is None:
+                return ctx.show("⚠️ Не получилось: подробности в логах бота.", [MENU_BTN])
+            found, added, manual = res
+            text = f"Озон: активных заказов — {found}, добавил в таблицу — {added}."
+            if manual:
+                text += f"\nНе добавлено автоматически (несколько позиций или незнакомый артикул): {manual}."
+            ctx.show(text, [MENU_BTN])
+        return bg_check(ctx, "Сверяю заказы Озона с таблицей…", oz.backfill, _show)
 
     if cmd in ("/oz", "/oznow"):  # Озон: разведка / проверка сейчас (только менеджер)
         if sender_id not in config.MANAGER_IDS:
@@ -1226,16 +1283,16 @@ def handle_message(u: dict) -> None:
             for p in parts:
                 mx.send(reply_to, p)
             return
-        ctx.show("Проверяю Озон…", [MENU_BTN])
-        res = ozon_check()
-        if res is None:
-            return ctx.show("⚠️ Не получилось проверить Озон. Выполните /oz, чтобы увидеть ответ Озона.", [MENU_BTN])
-        text = f"Проверил Озон: необработанных отправлений — {res['total']}, новых — {res['new']}."
-        if res["baseline"]:
-            text += "\nЭто первый запуск: текущие отправления запомнил без уведомлений, о новых скажу сразу."
-        if res["sample"] and not res["new"]:
-            text += "\n\nТак будет выглядеть уведомление (последнее отправление):\n" + res["sample"]
-        return ctx.show(text, [MENU_BTN])
+        def _show(ctx, res):
+            if res is None:
+                return ctx.show("⚠️ Не получилось проверить Озон. Выполните /oz, чтобы увидеть ответ Озона.", [MENU_BTN])
+            text = f"Проверил Озон: необработанных отправлений — {res['total']}, новых — {res['new']}."
+            if res["baseline"]:
+                text += "\nЭто первый запуск: текущие отправления запомнил без уведомлений, о новых скажу сразу."
+            if res["sample"] and not res["new"]:
+                text += "\n\nТак будет выглядеть уведомление (последнее отправление):\n" + res["sample"]
+            ctx.show(text, [MENU_BTN])
+        return bg_check(ctx, "Проверяю Озон…", ozon_check, _show)
 
     if cmd == "/app":  # пустить телефон в приложение: /app КОД роль Имя (только менеджер)
         if sender_id not in config.MANAGER_IDS:
@@ -1345,16 +1402,16 @@ def handle_message(u: dict) -> None:
             return ctx.show("Команда только для менеджера.", [MENU_BTN])
         if not config.YM_TOKEN:
             return ctx.show("Не задана переменная YANDEX_MARKET_TOKEN в настройках бота.", [MENU_BTN])
-        ctx.show("Проверяю Яндекс Маркет…", [MENU_BTN])
-        res = market_check()
-        if res is None:
-            return ctx.show("⚠️ Не получилось проверить Маркет, подробности в логах.", [MENU_BTN])
-        text = f"Проверил Маркет: заказов в обработке — {res['total']}, новых — {res['new']}, записано в таблицу — {res['added']}."
-        if res["baseline"]:
-            text += "\nЭто первый запуск: текущие заказы запомнил без уведомлений, о новых скажу сразу."
-        if res["sample"] and not res["new"]:
-            text += "\n\nТак будет выглядеть уведомление (последний заказ):\n" + res["sample"]
-        return ctx.show(text, [MENU_BTN])
+        def _show(ctx, res):
+            if res is None:
+                return ctx.show("⚠️ Не получилось проверить Маркет, подробности в логах.", [MENU_BTN])
+            text = f"Проверил Маркет: заказов в обработке — {res['total']}, новых — {res['new']}, записано в таблицу — {res['added']}."
+            if res["baseline"]:
+                text += "\nЭто первый запуск: текущие заказы запомнил без уведомлений, о новых скажу сразу."
+            if res["sample"] and not res["new"]:
+                text += "\n\nТак будет выглядеть уведомление (последний заказ):\n" + res["sample"]
+            ctx.show(text, [MENU_BTN])
+        return bg_check(ctx, "Проверяю Яндекс Маркет…", market_check, _show)
 
     if cmd == "/stop":
         users.pop(sender_id, None)
@@ -1508,10 +1565,10 @@ def main() -> None:
         if (config.OZ_CLIENT_ID and config.OZ_API_KEY and config.OZ_WATCH
                 and time.time() - oz_state["last"] >= config.YM_POLL_MINUTES * 60):
             oz_state["last"] = time.time()
-            ozon_check()
+            _run_async(_oz_busy, ozon_check)
         if config.YM_TOKEN and config.YM_WATCH and time.time() - ym_state["last"] >= config.YM_POLL_MINUTES * 60:
             ym_state["last"] = time.time()
-            market_check()
+            _run_async(_ym_busy, market_check)
         try:
             r = mx.get_updates(marker)
             if r.status_code in (401, 403):

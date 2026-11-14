@@ -405,7 +405,6 @@ def poll(notify) -> dict:
     in_table = sheets.table_order_ids()  # сверка: что есть в Озоне, но ещё не внесено в таблицу
     fresh = sorted((p for pn, p in current.items() if pn not in seen and pn not in in_table), key=lambda p: p.get("in_process_at") or "")
     if fresh:
-        sheets.oz_add([[p["posting_number"], now, "", "новый"] for p in fresh])  # сначала запоминаем
         tags, added = {}, 0
         if config.YM_AUTOADD:
             to_add, by_posting = [], {}
@@ -444,6 +443,8 @@ def poll(notify) -> dict:
                 return False
         head = "🔄 Сверка с таблицей: нашёл в Озоне заказы, которых в таблице не было.\n\n" if any(_old(p) for p in fresh) else ""
         notify(head + build_message(fresh, tags))
+        # как и у Маркета: отмечаем «видели» только теперь, после того как заказ уже в таблице или назван менеджерам
+        sheets.oz_add([[p["posting_number"], now, "", "новый"] for p in fresh])
         log.info("Озон: новых отправлений %d, добавлено в таблицу %d", len(fresh), added)
     try:
         fill_pek(current, notify)
@@ -452,8 +453,11 @@ def poll(notify) -> dict:
     try:
         gone = sheets.cancel_rows({k: v for k, v in cancelled.items() if k not in current})
         if gone:
-            notify("❌ Отменено на Озоне — строки в таблице отмечены «Отмена»:\n" + "\n".join(
-                f"• № {r['order_no']} · {logic.item_line(r)} · {logic.short(r['address'], 40)} — {why}" for r, why in gone))
+            head = "❌ Отменено на Озоне — строки в таблице отмечены «Отмена»:\n"
+            # как и у Маркета: не показываем адрес ролям, которым он не нужен (может быть точным уличным у городских заказов)
+            notify(head + "\n".join(
+                f"• № {r['order_no']} · {logic.item_line(r)} · {logic.short(r['address'], 40)} — {why}" for r, why in gone),
+                safe_text=head + "\n".join(f"• № {r['order_no']} · {logic.item_line(r)} — {why}" for r, why in gone))
             log.info("Озон: отменено заказов %d", len(gone))
     except Exception:
         log.exception("Не смог отметить отменённые заказы Озона")

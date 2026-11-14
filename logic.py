@@ -8,8 +8,14 @@ MONTHS = {"янв": 1, "фев": 2, "мар": 3, "апр": 4, "мая": 5, "ма
 
 _RANGE = re.compile(r"(\d{1,2})\s*[-–—]\s*(\d{1,2})\s*[.\s]?\s*([а-яё]{3,})", re.I)
 _FULL = re.compile(r"(\d{1,2})\s*[.\s]\s*([а-яё]{3,})\s*[-–—]\s*(\d{1,2})\s*[.\s]\s*([а-яё]{3,})", re.I)
-_NUM = re.compile(r"(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?")
+# день.месяц — разделитель бывает «.», «/» или «,» (вводят и с цифровой клавиатуры, и как в Excel)
+_NUM = re.compile(r"(\d{1,2})[./,](\d{1,2})(?:[./,](\d{2,4}))?")
+# «14-16.11», «14-16/11» — диапазон одним месяцем без названия словом. (?<![.\d/]) слева — чтобы не перехватить
+# хвост полного диапазона «30.10-06.11» (там после дефиса идёт второй ПОЛНЫЙ «день.месяц», это другой случай)
+_DAYRANGE_NUM = re.compile(r"(?<![.\d/])(\d{1,2})\s*[-–—]\s*(\d{1,2})[./,](\d{1,2})(?!\d)")
+_ISO = re.compile(r"(\d{4})-(\d{1,2})-(\d{1,2})(?!\d)")  # «2026-11-14», как вставляет Excel/Google Таблицы
 _SINGLE = re.compile(r"(\d{1,2})\s*[.\s]\s*([а-яё]{3,})", re.I)
+RELATIVE_DAYS = {"сегодня": 0, "завтра": 1, "послезавтра": 2}
 
 import config
 from pdf_parser import parse_article
@@ -35,6 +41,17 @@ def _mk(day: int, month: int, today: date, year=None):
 def parse_range(text: str, today: date):
     """'26.окт' -> (26 окт, 26 окт); '22-26 окт' -> (22 окт, 26 окт); непонятное -> None."""
     t = (text or "").strip().lower()
+    m = re.fullmatch(r"[а-яё]+", t)  # «сегодня», «завтра», «послезавтра» — как их пишут от руки
+    if m and m.group(0) in RELATIVE_DAYS:
+        d = today + timedelta(days=RELATIVE_DAYS[m.group(0)])
+        return (d, d)
+    m = _ISO.search(t)
+    if m:
+        try:
+            d = date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+            return (d, d)
+        except ValueError:
+            pass
     m = _FULL.search(t)  # «30.окт–06.ноя»: месяц указан у обеих дат
     if m and MONTHS.get(m.group(2)[:3]) and MONTHS.get(m.group(4)[:3]):
         a = _mk(int(m.group(1)), MONTHS[m.group(2)[:3]], today)
@@ -56,7 +73,7 @@ def parse_range(text: str, today: date):
         a, b = _mk(d1, month, today), _mk(d2, month, today)
         if a and b:
             return (a, b) if a <= b else (b, a)
-    m = re.search(r"(\d{1,2})\.(\d{1,2})\s*[-–—]\s*(\d{1,2})\.(\d{1,2})(?!\d)", t)  # «30.10-06.11»
+    m = re.search(r"(\d{1,2})[./,](\d{1,2})\s*[-–—]\s*(\d{1,2})[./,](\d{1,2})(?!\d)", t)  # «30.10-06.11», «30/10-06/11»
     if m:
         a = _mk(int(m.group(1)), int(m.group(2)), today)
         b = _mk(int(m.group(3)), int(m.group(4)), today)
@@ -65,6 +82,18 @@ def parse_range(text: str, today: date):
                 b = _mk(int(m.group(3)), int(m.group(4)), today, a.year + 1)
             if b and a <= b:
                 return (a, b)
+    m = _DAYRANGE_NUM.search(t)  # «14-16.11» — диапазон одним месяцем, без названия словом (после полного — см. выше)
+    if m:
+        d1, d2, month = int(m.group(1)), int(m.group(2)), int(m.group(3))
+        if d1 > d2:  # «28-03.01»: первое число — в прошлом месяце (как у словесного варианта выше)
+            pm = month - 1 or 12
+            a = _mk(d1, pm, today, today.year - 1 if pm == 12 and month == 1 else None)
+            b = _mk(d2, month, today)
+            if a and b and a <= b:
+                return (a, b)
+        a, b = _mk(d1, month, today), _mk(d2, month, today)
+        if a and b:
+            return (a, b) if a <= b else (b, a)
     m = _NUM.search(t)
     if m:
         year = int(m.group(3)) if m.group(3) else None

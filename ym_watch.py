@@ -355,7 +355,6 @@ def poll(notify) -> dict:
                    key=lambda x: _created(x[2]))
     added = 0
     if fresh:
-        sheets.market_add([[oid, now, str(cid), "новый"] for oid, cid, _ in fresh])  # сначала запоминаем
         tags, smap = {}, {}
         if config.YM_AUTOADD:
             to_add = []
@@ -387,13 +386,20 @@ def poll(notify) -> dict:
         recon = any(_created(o) < datetime.now() - timedelta(hours=3) for _, _, o in fresh)
         head = ("🔄 Сверка с таблицей: нашёл в Маркете заказы, которых в таблице не было.\n\n" if recon else "")
         notify(head + build_message([o for _, _, o in fresh], tags, smap))
+        # «Видели» отмечаем только теперь, когда заказ уже либо в таблице, либо названа менеджерам в чате.
+        # Если упасть раньше этой строки, при следующем проходе заказ обработается заново, а не потеряется молча.
+        sheets.market_add([[oid, now, str(cid), "новый"] for oid, cid, _ in fresh])
         log.info("Яндекс Маркет: новых заказов %d, добавлено в таблицу %d", len(fresh), added)
 
     try:
         gone = sheets.cancel_rows({k: v for k, v in cancelled.items() if k not in current})
         if gone:
-            notify("❌ Отменено в Яндекс Маркете — строки в таблице отмечены «Отмена»:\n" + "\n".join(
-                f"• № {r['order_no']} · {logic.item_line(r)} · {logic.short(r['address'], 40)} — {why}" for r, why in gone))
+            head = "❌ Отменено в Яндекс Маркете — строки в таблице отмечены «Отмена»:\n"
+            # адрес в этой строке у городских заказов — полный (улица, квартира), у отгрузок по России — только регион;
+            # чтобы не гадать какой именно, в версии для ролей вне PRIVATE_ROLES адрес просто не показываем
+            notify(head + "\n".join(
+                f"• № {r['order_no']} · {logic.item_line(r)} · {logic.short(r['address'], 40)} — {why}" for r, why in gone),
+                safe_text=head + "\n".join(f"• № {r['order_no']} · {logic.item_line(r)} — {why}" for r, why in gone))
             log.info("Яндекс Маркет: отменено заказов %d", len(gone))
     except Exception:
         log.exception("Не смог отметить отменённые заказы Маркета")
