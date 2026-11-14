@@ -2891,6 +2891,50 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
     return 404, {"error": "Нет такого раздела"}
 
 
+# ---------- Заявки с сайта (order.php на сайте шлёт сюда по секретному ключу SITE_ORDER_KEY)
+def site_order(key: str, body: dict) -> tuple:
+    """Заявка с сайта -> строка в таблице заказов (канал «САЙТ») + уведомление менеджерам в MAX."""
+    import os
+    secret = os.getenv("SITE_ORDER_KEY", "").strip()
+    if not secret:
+        return 503, {"error": "SITE_ORDER_KEY не задан"}
+    if not hmac.compare_digest(secret.encode(), (key or "").encode()):
+        return 403, {"error": "forbidden"}
+    from pdf_parser import Order
+    name = re.sub(r"\s+", " ", str(body.get("name") or "")).strip()[:80]
+    phone = re.sub(r"[^\d+()\- ]", "", str(body.get("phone") or "")).strip()[:30]
+    if not name or len(re.sub(r"\D", "", phone)) < 10:
+        return 422, {"error": "invalid"}
+    cfg = body.get("config") if isinstance(body.get("config"), dict) else {}
+
+    def num(k, default):
+        try:
+            return int(float(cfg.get(k)))
+        except (TypeError, ValueError):
+            return default
+    width, legs = num("size", 160), num("leg", 30)
+    color = {"white": "Белый", "black": "Чёрный", "graphite": "Графит"}.get(str(cfg.get("color")), "")
+    code = {"Белый": "06", "Чёрный": "04"}.get(color, "")
+    extra = []
+    if cfg.get("headboard"):
+        extra.append("изголовье X")
+    if cfg.get("led"):
+        extra.append("подсветка")
+    notes = "Заявка с сайта: " + name + (" · " + ", ".join(extra) if extra else "") + " · адрес уточнить"
+    order_no = "S" + datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%y%m%d%H%M%S")
+    o = Order(kind="город", ship_date="", delivery_date="", size=f"{width}×{legs}", color=color,
+              order_no=order_no, article=(f"DY.{legs}.{width}.{code}" if code else ""),
+              shipment_or_phone=phone, channel="САЙТ", address=notes, qty=1)
+    sheets.add_orders([o])
+    text = (f"🌐 Новая заявка с сайта\n\n{name} · {phone}\n{width}×{legs} {color}".rstrip() +
+            (("\n" + ", ".join(extra)) if extra else "") + f"\n№ {order_no}\nПерезвоните клиенту и уточните адрес.")
+    try:
+        _deps["notify"](text)
+    except Exception:
+        log.exception("Заявка с сайта: не смог уведомить менеджеров")
+    return 200, {"ok": True, "order_no": order_no}
+
+
 class Handler(BaseHTTPRequestHandler):
     def _body(self) -> bytes:
         if "chunked" in (self.headers.get("Transfer-Encoding") or "").lower():
@@ -2968,6 +3012,17 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split("?")[0].rstrip("/")
+        if path == "/api/site-order":
+            try:
+                body = json.loads(self._body() or b"{}")
+            except ValueError:
+                body = {}
+            try:
+                code, res = site_order(self.headers.get("X-Site-Key") or "", body if isinstance(body, dict) else {})
+            except Exception:
+                log.exception("Заявка с сайта: ошибка")
+                code, res = 500, {"error": "server"}
+            return self._json(code, res)
         if path == "/api/chat/photo":
             size = max(0, _int(self.headers.get("Content-Length"), 0))
             if size > MAX_PHOTO:
