@@ -2819,7 +2819,7 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         return 200, prod_data(today)
     if path == "/api/keeper" and "keeper" in tabs:
         return 200, keeper_data()
-    if path == "/api/manager/orders" and "manager" in tabs:
+    if path == "/api/manager/orders" and ({"manager", "courier"} & set(tabs)):  # курьеру — тот же список заказов, что у менеджера
         return 200, open_orders(today)
     if path == "/api/manager" and "manager" in tabs:
         return 200, manager_data(today, pay, me["role"])

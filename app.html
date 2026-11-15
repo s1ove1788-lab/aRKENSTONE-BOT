@@ -382,6 +382,7 @@ body.chat{background-color:var(--bg);background-size:220px;background-image:url(
 .clist{background:var(--card);border-radius:16px;overflow:hidden;margin-bottom:10px}
 .clist .dm-row{margin:0;border:0;border-radius:0;background:none;border-top:1px solid var(--line);padding:11px 12px;cursor:pointer}
 .clist .dm-row:first-child{border-top:0}
+.qa{display:flex;flex-wrap:wrap;gap:6px;margin-top:6px}.qa a{padding:6px 10px;border-radius:10px;background:var(--chip);color:var(--ink);text-decoration:none;font-size:13px;font-weight:600}
 .dm-more{display:flex;align-items:center;justify-content:space-between;width:100%;margin:6px 0 10px;padding:12px 14px;border:0;border-radius:14px;background:var(--card);color:var(--ink);font:inherit;font-weight:600;cursor:pointer}
 .dm-more i{font-style:normal;color:var(--muted)}
 .dm-more:active{background:var(--chip)}
@@ -919,9 +920,12 @@ function drawCourier(d){
   // просроченные отгрузки по России — отдельным «днём» в конце списка, чтобы карточка открывалась тем же окном
   window._days = d.days.concat([{label: "Просрочено по России", date: "", late: true, rows: lateRu}]);
   const lateDi = d.days.length;
-  let h = d.pay ? `<div class="toolbar"><button class="btn" onclick="returnForm()">↩️ Возврат</button>
-    <button class="btn" onclick="payView()">💰 Расчёт</button></div>`
-    : `<button class="btn" style="width:100%;margin-bottom:6px" onclick="returnForm()">↩️ Возврат</button>`;
+  const q = i => (d.days[i] || {}).qty || 0;
+  let h = `<div class="stats"><div class="stat tap" onclick="ordersPage(true,{tab:'today',q:''})"><b>${q(0)}</b><small>сегодня</small></div>
+      <div class="stat tap" onclick="ordersPage(true,{tab:'ahead',q:''})"><b>${q(1) + q(2)}</b><small>завтра и позже</small></div>
+      <div class="stat tap" onclick="ordersPage(true,{tab:'late',q:''})"><b>${(d.late_ru && d.late_ru.qty) || 0}</b><small>просрочено</small></div></div>
+    <div class="toolbar"><button class="btn" onclick="ordersPage(true,{q:''})">📊 Заказы</button>
+    <button class="btn" onclick="returnForm()">↩️ Возврат</button>${d.pay ? `<button class="btn" onclick="payView()">💰 Расчёт</button>` : ""}</div>`;
   if (lateRu.length) h += `<details class="card" style="margin-top:6px;border-color:var(--warn)"><summary class="row"><span class="grow title" style="color:var(--warn)">⚠️ Просрочено по России</span>
       <span class="badge">${d.late_ru.qty} шт. ▾</span></summary><div style="margin-top:8px">
       <div class="muted" style="margin-bottom:6px">День отгрузки прошёл, а «Доставлен» не стоит. Если уже отгрузили — отметьте.</div>
@@ -933,7 +937,8 @@ function drawCourier(d){
     const table = day.rows.length ? `<table class="dl">
       <tr><th>Куда</th><th>Кровать</th><th class="n">Шт</th></tr>
       ${day.rows.map((r, ri) => `<tr class="tap ${r.late ? "short" : ""}" onclick="deliveryView(${di},${ri})">
-        <td><div class="pl">${esc(r.place)}</div><div class="ch">${esc(r.channel)}${r.late ? " · просрочен" : ""}</div></td>
+        <td><div class="pl">${esc(r.place)}</div><div class="ch">${esc(r.channel)}${r.late ? " · просрочен" : ""}</div>
+          ${r.tel || r.address ? `<div class="qa">${r.tel ? `<a href="tel:${esc(r.tel)}" onclick="event.stopPropagation()">📞 ${esc(r.phone || "Позвонить")}</a>` : ""}${r.address ? `<a target="_blank" href="${esc(mapUrl(r.address))}" onclick="event.stopPropagation()">🗺 Карта</a>` : ""}</div>` : ""}</td>
         <td>${r.beds.map(esc).join("<br>")}</td><td class="n">${r.qty}</td></tr>`).join("")}
       </table>` : `<div class="muted" style="text-align:center;padding:8px">${day.today ? "Доставок нет 🎉" : "Доставок пока нет"}</div>`;
     if (day.today) h += `<h2>${day.label} · ${day.date}</h2><div class="card">${table}</div>`;
