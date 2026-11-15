@@ -1265,7 +1265,7 @@ function editDevice(code){
       closeSheet(); toast("Сохранено"); window._mgr = await call("/api/manager"); staffPage(); }
     catch(e) { toast(e.message); btn.disabled = false; }
   };
-  $("#e-rm").onclick = () => { closeSheet(); removeDevice(code, x.name); };
+  $("#e-rm").onclick = () => { closeSheet(); removeDevice(window._mgr.devices.findIndex(d => d.code === code)); };  // по номеру в списке: апостроф в имени ничего не ломает
 }
 
 /* ------------------------------ страницы менеджера: заказы и остатки */
@@ -2592,6 +2592,13 @@ function downSync(){
   if (atBottom) chat.below = 0;
   b.hidden = atBottom; b.querySelector("b").textContent = chat.below || "";
 }
+/* Пока человек сам не листал, держим ленту внизу: дорисовка, панель ввода, шрифты и фото сдвигают высоту уже после первого скролла */
+function stickBottom(){
+  const go = () => { if (!window._chatTouched && tab === "chat" && chatView === "feed") window.scrollTo(0, document.body.scrollHeight); };
+  window._chatTouched = false; go();
+  requestAnimationFrame(go); setTimeout(go, 120); setTimeout(go, 400);
+}
+["touchstart", "wheel", "keydown"].forEach(ev => window.addEventListener(ev, () => { window._chatTouched = true; }, {passive: true}));
 function chatBottom(){ window.scrollTo({top: document.body.scrollHeight, behavior: "smooth"}); }
 window.addEventListener("scroll", () => { if (tab === "chat" && chatView === "feed") downSync(); }, {passive: true});
 /* Смахнули сообщение влево — ответ на него */
@@ -2660,9 +2667,8 @@ function chatDraw(fresh, keepScroll){
     list = document.querySelector(".chat-list");
     list.innerHTML = chat.msgs.map((m, i) => msgHtml(m, chat.msgs[i - 1])).join("");
     pendingSync(); chatBadge();
-    const mark = document.getElementById("chat-new");
-    if (mark && !chat.newShown) { chat.newShown = true; mark.scrollIntoView({block: "center"}); }
-    else window.scrollTo(0, document.body.scrollHeight);
+    chat.newShown = true;  // «Новые сообщения» остаются отметкой в ленте, но чат всегда открывается на самом последнем сообщении
+    stickBottom();
     return downSync();
   }
   const e = $("#chat-empty"); if (e) e.remove();
