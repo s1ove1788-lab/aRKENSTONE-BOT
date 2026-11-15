@@ -1244,7 +1244,8 @@ function staffPage(){
           : x.can_remove === false ? ""
           : `<button class="btn" style="padding:8px 12px" onclick="removeDevice(${di})">Убрать</button>`}</td></tr>`).join("")}
     </table></div>
-    ${me.admin ? `<p class="muted">Роль и имя сотрудника меняет только администратор: нажмите «Изменить».</p>` : ""}` : `<div class="empty">Пока никого</div>`}`);
+    ${me.admin ? `<p class="muted">Роль и имя сотрудника меняет только администратор: нажмите «Изменить».</p>` : ""}` : `<div class="empty">Пока никого</div>`}
+    <p class="muted" style="text-align:center;font-size:12px">версия ${esc(BUILD)}</p>`);
 }
 function roleOptions(on){
   const can = (window._mgr || {}).roles;  // сервер говорит, какие роли этот человек вправе выдавать

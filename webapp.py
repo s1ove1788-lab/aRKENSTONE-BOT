@@ -3269,6 +3269,7 @@ def start(**hooks) -> None:
     srv = _Server(("0.0.0.0", config.APP_PORT), Handler)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     log.info("Приложение для сотрудников: слушаю порт %d", config.APP_PORT)
+    log.info("Версия приложения (app.html): %s", app_build())
     threading.Thread(target=_update_watch, daemon=True).start()
     try:
         sheets.start_warmer()  # таблица в памяти сервера: кнопки не ждут Google
