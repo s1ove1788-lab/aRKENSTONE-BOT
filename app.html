@@ -382,6 +382,10 @@ body.chat{background-color:var(--bg);background-size:220px;background-image:url(
 .clist{background:var(--card);border-radius:16px;overflow:hidden;margin-bottom:10px}
 .clist .dm-row{margin:0;border:0;border-radius:0;background:none;border-top:1px solid var(--line);padding:11px 12px;cursor:pointer}
 .clist .dm-row:first-child{border-top:0}
+.dm-more{display:flex;align-items:center;justify-content:space-between;width:100%;margin:6px 0 10px;padding:12px 14px;border:0;border-radius:14px;background:var(--card);color:var(--ink);font:inherit;font-weight:600;cursor:pointer}
+.dm-more i{font-style:normal;color:var(--muted)}
+.dm-more:active{background:var(--chip)}
+body{overflow-x:hidden;overflow-x:clip}  /* страница не тянется вбок */
 .clist .dm-row .grow{flex:1;min-width:0}
 .clist .dm-row:active{background:var(--chip)}
 .clist .ava{width:48px;height:48px;font-size:19px}
@@ -2866,6 +2870,7 @@ async function dmListPoll(){
   }
   window._dmListT = setTimeout(dmListPoll, 3000);
 }
+function dmRestToggle(){ window._dmRestOpen = !window._dmRestOpen; dmListDraw(); }
 function dmListDraw(){
   const d = window._dmList, y = window.scrollY, g = d.general || {};
   const time = t => { const day = chatDay(t); return day === "Сегодня" ? (t || "").slice(11, 16) : day; };
@@ -2886,7 +2891,8 @@ function dmListDraw(){
   $("#main").innerHTML = LIST_TOP +
     (me.admin && !d.persistent ? `<div class="card late" style="font-size:14px">⚠️ Личная переписка сейчас хранится во временной папке и пропадёт при обновлении бота.</div>` : "") +
     `<div class="clist">${all}${talk.map(row).join("")}</div>` +
-    (rest.length ? `<h2>Написать лично</h2><div class="clist">${rest.map(row).join("")}</div>` : "") +
+    (rest.length ? `<button class="dm-more" onclick="dmRestToggle()" aria-expanded="${window._dmRestOpen ? "true" : "false"}"><span>Написать лично · ${rest.length}</span><i>${window._dmRestOpen ? "▴" : "▾"}</i></button>`
+      + (window._dmRestOpen ? `<div class="clist">${rest.map(row).join("")}</div>` : "") : "") +
     `<p class="muted" style="text-align:center;margin-top:14px">Личную переписку видите только вы и собеседник</p>`;
   window.scrollTo(0, y);
 }
