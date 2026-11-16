@@ -1227,6 +1227,7 @@ function drawManager(d){
     <label class="btn main big" style="margin:10px 0">📄 Загрузить PDF с заказами
       <input type="file" accept="application/pdf,.pdf" hidden onchange="uploadPdf(this)"></label>
     <div class="toolbar"><button class="btn" onclick="ordersPage(true,{q:''})">📊 Заказы</button>
+      <button class="btn" onclick="deliveriesPage()">🚚 Доставки</button>
       <button class="btn" onclick="stockPage()">📦 Остатки</button></div>
     ${d.links.filter(l => !l.hidden).map(l => `<a class="btn" style="margin-top:8px" target="_blank" href="${esc(l.url)}">${esc(l.title)}</a>`).join("")}
     <button class="btn" style="width:100%;margin-top:8px" onclick="staffPage()">👥 Сотрудники · ${d.devices.length}</button>`;
@@ -1465,6 +1466,30 @@ async function obDone(btn, i){
     window._obScroll = window.scrollY;
     ordersPage(true);
   } catch(e) { toast(e.message); btn.disabled = false; }
+}
+
+/* ------------------------------ менеджер: «Доставки» — только сегодня, доставлено и ещё нет */
+async function deliveriesPage(fresh, tabk){
+  const my = ++nav;
+  window._dv = Object.assign(window._dv || {tab: "todo"}, tabk ? {tab: tabk} : {});
+  if (fresh !== false || !window._dvData) {
+    if (!window._dvData) page("Доставки сегодня", `<div class="muted">Загрузка…</div>`, () => deliveriesPage(true));
+    try { window._dvData = await call("/api/manager/deliveries"); } catch(e) { return toast(e.message); }
+    if (my !== nav) return;
+  }
+  const d = window._dvData, tabn = window._dv.tab, rows = d[tabn];
+  const card = r => `<div class="card oc"><div class="no">№ ${esc(r.order_no)}${r.at ? ` <small class="muted">· доставлен в ${esc(r.at)}</small>` : ""}</div>
+      <div class="nm">Кровать ${esc(r.title)}${r.qty > 1 ? ` ×${r.qty}` : ""}</div>
+      <div class="muted" style="margin-top:4px">${esc(r.channel || "—")} · ${r.city ? esc(r.address || "адрес не указан") : (r.shipment ? "отгрузка № " + esc(r.shipment) : "по России")}</div>
+      ${r.tel ? `<div class="qa"><a href="tel:${esc(r.tel)}">📞 ${esc(r.phone)}</a>${r.address ? `<a target="_blank" href="${esc(mapUrl(r.address))}">🗺 Карта</a>` : ""}</div>` : ""}</div>`;
+  const city = rows.filter(r => r.city), ru = rows.filter(r => !r.city);
+  const sect = (t, a) => a.length ? `<h2>${t} · ${a.length}</h2>${a.map(card).join("")}` : "";
+  page("Доставки сегодня", `
+    <div class="ob-sw"><button class="${tabn === "todo" ? "on" : ""}" onclick="deliveriesPage(false,'todo')">Ещё не доставлено · ${d.todo.length}</button>
+      <button class="${tabn === "done" ? "on" : ""}" onclick="deliveriesPage(false,'done')">Доставлено · ${d.done.length}</button></div>
+    ${rows.length ? sect("Город", city) + sect("По России", ru)
+      : `<div class="empty">${tabn === "done" ? "Сегодня пока ничего не доставлено" : "На сегодня всё доставлено 🎉"}</div>`}`,
+    () => deliveriesPage(true));
 }
 
 async function stockPage(){

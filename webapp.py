@@ -1454,6 +1454,31 @@ def push_safe(*a, **k) -> None:
         log.exception("Уведомления: не смог поставить событие")
 
 
+def push_delivery(head: str, body: str) -> None:
+    """Курьер отметил «Доставлен» — уведомление на телефоны менеджеров (только менеджеров)."""
+    push_safe("delivery", head, body, _codes({"manager"}), "manager", group="delivery")
+
+
+_DONE_RE = re.compile(r"достав\w*\s+(\d{1,2})\.(\d{1,2})(?:\s+(\d{1,2}:\d{2}))?", re.I)
+
+
+def deliveries_today(today: date) -> dict:
+    """Раздел «Доставки» у менеджера: только сегодняшний день — что уже доставлено и что ещё нет."""
+    done, todo = [], []
+    for o in sheets.read_orders():
+        item = board_item(o, today)
+        if item["tab"] == "done":
+            m = _DONE_RE.search(o["status"] or "")
+            if m and int(m.group(1)) == today.day and int(m.group(2)) == today.month:
+                item["at"] = m.group(3) or ""
+                done.append(item)
+        elif item["tab"] == "today":
+            todo.append(item)
+    done.sort(key=lambda x: x["at"] or "", reverse=True)
+    todo.sort(key=lambda x: (not x["city"], x["channel"], x["shipment"], x["address"], x["id"]))
+    return {"done": done, "todo": todo, "today": str(today)}
+
+
 def push_order_text(text: str) -> None:
     """Вызывается из рассылки бота: уведомления о новых заказах получают все роли."""
     t = (text or "").strip()
@@ -2821,6 +2846,8 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         return 200, keeper_data()
     if path == "/api/manager/orders" and ({"manager", "courier"} & set(tabs)):  # курьеру — тот же список заказов, что у менеджера
         return 200, open_orders(today)
+    if path == "/api/manager/deliveries" and "manager" in tabs:
+        return 200, deliveries_today(today)
     if path == "/api/manager" and "manager" in tabs:
         return 200, manager_data(today, pay, me["role"])
 

@@ -509,7 +509,31 @@ def deliver_orders(orders: list, who: str, today) -> list:
         costs.record(marked, today)
     except Exception:
         log.exception("Не смог записать стоимость доставки")
+    try:
+        notify_delivered(marked, who)
+    except Exception:
+        log.exception("Не смог уведомить менеджеров о доставке")
     return marked
+
+
+def notify_delivered(marked: list, who: str) -> None:
+    """Курьер нажал «Доставлен» — менеджерам: «Доставлен заказ № …, курьер Валерий» (в MAX и пушем в приложение)."""
+    if not marked:
+        return
+    name = (who or "курьер").replace(" (приложение)", "").strip() or "курьер"
+    lines = []
+    for o in marked[:8]:
+        where = logic.short(o["address"], 45) if logic.is_city(o) else (f"отгрузка {o['phone']}" if o["phone"] else "")
+        lines.append("• " + " · ".join(x for x in (f"№ {o['order_no']}", logic.item_line(o), where) if x))
+    if len(marked) > 8:
+        lines.append(f"…и ещё {len(marked) - 8}")
+    head = (f"✅ Доставлен заказ № {marked[0]['order_no']}" if len(marked) == 1 else f"✅ Доставлено заказов: {len(marked)}")
+    notify_managers(f"{head}, курьер {name}\n" + "\n".join(lines))
+    try:
+        import webapp
+        webapp.push_delivery(head, f"Курьер {name}\n" + "\n".join(lines))
+    except Exception:
+        log.exception("Не смог отправить пуш о доставке")
 
 
 _odd_told: set = set()
