@@ -173,6 +173,11 @@ tr.short .ch{color:inherit}
 .oc .kv div{padding:9px 0;border-top:1px solid var(--line)}
 .oc .kv div:nth-child(odd){color:var(--muted)}
 .oc .kv small{display:block;color:var(--muted);font-size:13px}
+.card.lp{position:relative;transition:transform .12s ease}
+.card.lp.showdel{transform:scale(.97)}
+.card.lp .del-x{display:none;position:absolute;top:-8px;right:-8px;width:28px;height:28px;border-radius:50%;border:0;
+  background:var(--warn);color:#fff;font-size:16px;font-weight:700;align-items:center;justify-content:center;cursor:pointer;z-index:1}
+.card.lp.showdel .del-x{display:flex}
 .plate{width:52px;height:66px;border-radius:10px;display:flex;flex-direction:column;align-items:center;justify-content:center;
   font-weight:800;font-size:18px;line-height:1.1;flex:none;position:relative}
 .plate small{font-size:10px;font-weight:600;opacity:.75;letter-spacing:.2px}
@@ -1584,7 +1589,10 @@ async function siteRequestsPage(fresh){
     if (my !== nav) return;
   }
   const rows = window._siteReq.rows;
-  const card = r => `<div class="card oc" id="sr-${esc(r.order_no)}">
+  const card = r => `<div class="card oc lp" id="sr-${esc(r.order_no)}"
+      onmousedown="lpStart('${esc(r.order_no)}')" ontouchstart="lpStart('${esc(r.order_no)}')"
+      onmouseup="lpEnd()" onmouseleave="lpEnd()" ontouchend="lpEnd()" ontouchmove="lpEnd()">
+      <button class="del-x" onclick="event.stopPropagation();siteRequestDelete('${esc(r.order_no)}',this)" aria-label="Удалить">✕</button>
       <div class="no">№ ${esc(r.order_no)}<small class="muted"> · ${esc(r.added)}</small></div>
       <div class="nm">${esc(r.name || "Без имени")}</div>
       <div class="muted" style="margin-top:4px">${esc(r.size)}${r.color === "black" ? " чёрн." : r.color === "white" ? " бел." : ""}${r.extra ? " · " + esc(r.extra) : ""}</div>
@@ -1593,6 +1601,29 @@ async function siteRequestsPage(fresh){
     </div>`;
   page("Заявки с сайта", rows.length ? rows.map(card).join("") : `<div class="empty">Необработанных заявок нет 🎉</div>`,
     () => siteRequestsPage(true));
+}
+let _lpTimer = null;
+function lpStart(orderNo){
+  lpEnd();
+  document.querySelectorAll(".card.lp.showdel").forEach(c => { if (c.id !== "sr-" + orderNo) c.classList.remove("showdel"); });
+  const el = $("#sr-" + orderNo); if (!el) return;
+  _lpTimer = setTimeout(() => { el.classList.add("showdel"); _lpTimer = null; }, 450);
+}
+function lpEnd(){ if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; } }
+document.addEventListener("click", ev => {
+  if (!ev.target.closest(".card.lp")) document.querySelectorAll(".card.lp.showdel").forEach(c => c.classList.remove("showdel"));
+});
+async function siteRequestDelete(orderNo, btn){
+  if (!confirm(`Удалить заявку № ${orderNo}?`)) return;
+  btn.disabled = true;
+  try {
+    await call("/api/manager/site-requests/delete", {order_no: orderNo});
+    window._siteReq.rows = window._siteReq.rows.filter(r => r.order_no !== orderNo);
+    const el = $("#sr-" + orderNo); if (el) el.remove();
+    if (window._mgr) window._mgr.site_new = Math.max(0, (window._mgr.site_new || 1) - 1);
+    toast("Заявка удалена");
+    if (!window._siteReq.rows.length) siteRequestsPage(false);
+  } catch(e) { toast(e.message); btn.disabled = false; }
 }
 async function siteRequestDone(orderNo, btn){
   btn.disabled = true;

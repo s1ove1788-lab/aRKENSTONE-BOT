@@ -696,6 +696,18 @@ def mark_site_processed(order_nos: list, who: str) -> list:
     return marked
 
 
+@_locked
+def delete_site_request(order_no: str) -> bool:
+    """Полностью удаляет строку заявки с сайта (длинное нажатие → крестик в приложении менеджера)."""
+    rows = [r["row"] for r in read_orders(force=True)
+            if r["order_no"] == order_no and r["channel"] == "САЙТ"]
+    if not rows:
+        return False
+    orders_ws().delete_rows(rows[0])
+    _invalidate()
+    return True
+
+
 # ---------------------------------------------------------- пользователи
 _LABEL_TO_KEY = {v.lower(): k for k, v in config.ROLE_LABELS.items()}
 

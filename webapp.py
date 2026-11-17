@@ -3005,6 +3005,13 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         marked = sheets.mark_site_processed([order_no], who)
         return 200, {"ok": True, "marked": bool(marked)}
 
+    if method == "POST" and path == "/api/manager/site-requests/delete" and "manager" in tabs:
+        order_no = str(body.get("order_no") or "").strip()
+        if not order_no:
+            return 400, {"error": "Не передан номер заявки"}
+        deleted = sheets.delete_site_request(order_no)
+        return 200, {"ok": True, "deleted": deleted}
+
     # «Доставлен» для заказов по России с экрана «Заказы»: на сегодня и просроченные (отгрузили позже срока).
     # Будущие отгрузки отметить нельзя — как и раньше, только когда день отгрузки наступил.
     if method == "POST" and path == "/api/orders/done" and "courier" in tabs:
