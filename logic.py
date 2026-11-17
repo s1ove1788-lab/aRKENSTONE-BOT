@@ -330,9 +330,9 @@ def code_name(code: str, legs: str = "") -> str:
     return f"{width}/{legs or 30} " + {"04": "чёрная", "06": "белая"}.get(color, color)
 
 
-def ship_plan(orders: list, today: date) -> Counter:
-    """Что по таблице нужно отгрузить сегодня: {'160.04': 1}."""
-    plan: Counter = Counter()
+def _ship_orders(orders: list, today: date):
+    """Заказы, которые по таблице уходят в отгрузку сегодня: [(заказ, код '160.04')]."""
+    res = []
     for o in orders:
         st = o["status"].lower()
         if st and not st.startswith("доставлен"):  # «Отмена» и т.п. не считаем
@@ -344,8 +344,78 @@ def ship_plan(orders: list, today: date) -> Counter:
         if r and r[0] <= today <= r[1]:
             code = order_code(o)
             if code:
-                plan[code] += qty(o)
+                res.append((o, code))
+    return res
+
+
+def ship_plan(orders: list, today: date) -> Counter:
+    """Что по таблице нужно отгрузить сегодня: {'160.04': 1}."""
+    plan: Counter = Counter()
+    for o, code in _ship_orders(orders, today):
+        plan[code] += qty(o)
     return plan
+
+
+def order_legs(o: dict) -> str:
+    """Высота ножек заказа: из артикула, иначе из размера «140×35»; не нашли — 30 (как везде в боте)."""
+    a = parse_article(o.get("article") or "")
+    if a and a["legs"] in ("25", "30", "35"):
+        return a["legs"]
+    m = re.search(r"[×x/хХ*]\s*(25|30|35)\b", o.get("size") or "")
+    return m.group(1) if m else "30"
+
+
+# ------------------------------------------------- упаковочная: склад в упаковке и отгрузка на сегодня
+LEGS = ("25", "30", "35")
+
+
+def pack_key(width, legs, color: str) -> str:
+    """'140.30.04' — ширина, высота ножек, цвет (04 чёрная, 06 белая)."""
+    return f"{width}.{legs or 30}.{color}"
+
+
+def pack_name(key: str) -> str:
+    """'140.30.04' -> '140/30 ч'."""
+    width, legs, color = key.split(".")
+    return f"{width}/{legs} " + {"04": "ч", "06": "б"}.get(color, color)
+
+
+def pack_keys() -> list:
+    """Все возможные кровати в упаковке: размер × ножки × цвет."""
+    return [pack_key(w, l, c) for w in _WIDTHS for l in LEGS for c in ("04", "06")]
+
+
+def ship_lines(orders: list, today: date) -> list:
+    """Что отгружаем сегодня, по площадкам: [{'channel': 'ПЭК', 'key': '140.30.04', 'name': '140/30 ч', 'qty': 1}]."""
+    agg: Counter = Counter()
+    for o, code in _ship_orders(orders, today):
+        width, color = code.split(".")
+        agg[((o["channel"] or "").strip() or "—", pack_key(width, order_legs(o), color))] += qty(o)
+    return [{"channel": ch, "key": k, "name": pack_name(k), "qty": n}
+            for (ch, k), n in sorted(agg.items(), key=lambda kv: (kv[0][0], int(kv[0][1].split(".")[0]), kv[0][1]))]
+
+
+def minus_logged(lines: list, logged: dict) -> list:
+    """Вычитает то, что уже внесено в таблицу отгрузки сегодня ({(площадка, ключ): шт.}); остаток — что ещё не отгружено."""
+    rest = []
+    for l in lines:
+        n = l["qty"] - logged.get((l["channel"], l["key"]), 0)
+        if n > 0:
+            rest.append({**l, "qty": n})
+    return rest
+
+
+def pack_check(lines: list, stock: dict) -> list:
+    """Хватает ли кроватей в упаковке на отгрузку: пусто — хватает, иначе [{'key','name','need','have','lack'}]."""
+    need: Counter = Counter()
+    for l in lines:
+        need[l["key"]] += l["qty"]
+    res = []
+    for k, n in sorted(need.items(), key=lambda kv: (int(kv[0].split(".")[0]), kv[0])):
+        have = stock.get(k, 0)
+        if have < n:
+            res.append({"key": k, "name": pack_name(k), "need": n, "have": have, "lack": n - have})
+    return res
 
 
 def today_total(orders: list, today: date) -> int:
@@ -508,16 +578,29 @@ def plan_check(orders: list, today: date) -> str:
 BLANKS_BOM = {"Изголовье": 2, "Левая ответка": 1, "Правая ответка": 1,
               "Длинная с ногой": 1, "Длинная глухая": 1, "Ноги": 2,
               "Подножки": 4, "Ламель": 22}
+# Длинные детали одинаковы у кроватей любого размера (120…200 различаются только шириной), поэтому
+# считаются одной общей кучей: 4 детали = 1 кровать любого размера. Остальные — поперечные, у каждого размера свои.
+LONG_PARTS = ("Левая ответка", "Правая ответка", "Длинная с ногой", "Длинная глухая")
+LONG_BOM = {n: k for n, k in BLANKS_BOM.items() if n in LONG_PARTS}
+CROSS_BOM = {n: k for n, k in BLANKS_BOM.items() if n not in LONG_PARTS}
 
 
-def blanks_enough(parts: dict) -> tuple:
-    """parts: {деталь: сколько есть} для одного размера -> (на сколько кроватей хватает, чего не хватает текстом).
-    «Не хватает» — каких деталей недостаточно, чтобы собрать ещё одну кровать сверх возможного."""
-    n = min((int(parts.get(name, 0) // k) for name, k in BLANKS_BOM.items()), default=0)
-    n = max(0, n)
+def _enough(parts: dict, bom: dict) -> tuple:
+    n = max(0, min((int(parts.get(name, 0) // k) for name, k in bom.items()), default=0))
     short = []
-    for name, k in BLANKS_BOM.items():
+    for name, k in bom.items():
         lack = k * (n + 1) - max(0, parts.get(name, 0))
         if lack > 0:
             short.append(f"{name} — {fmt_qty(lack)} шт.")
     return n, ", ".join(short)
+
+
+def blanks_enough(parts: dict) -> tuple:
+    """Поперечные заготовки одного размера: (на сколько кроватей хватает, чего не хватает текстом).
+    «Не хватает» — каких деталей недостаточно, чтобы собрать ещё одну кровать сверх возможного."""
+    return _enough(parts, CROSS_BOM)
+
+
+def long_enough(parts: dict) -> tuple:
+    """Длинные заготовки (общие для всех размеров): (на сколько кроватей хватает, чего не хватает текстом)."""
+    return _enough(parts, LONG_BOM)

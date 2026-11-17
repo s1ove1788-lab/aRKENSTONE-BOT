@@ -749,7 +749,38 @@ def prod_data(today: date) -> dict:
         weld.append({"width": w, "need": need_w, "painted": have_w, "frames": fr.get(w, 0),
                      "todo": max(0, need_w - have_w - fr.get(w, 0))})
     return {"plan": logic.production_plan(orders, today), "stock": rows, "frames": frames, "weld": weld,
-            "today": max(0, total - done), "shipped": done, "blanks": blanks_data(), "legs": legs_data(), "legs_painted": legs_data("painted")}
+            "today": max(0, total - done), "shipped": done, "blanks": blanks_data(), "legs": legs_data(), "legs_painted": legs_data("painted"),
+            "pack": pack_data(orders, today, done)}
+
+
+def pack_data(orders: list, today: date, done: int) -> dict:
+    """Упаковочная: что на складе в упаковке, что сегодня на отгрузку, хватает ли, и таблица отгрузки за две недели."""
+    try:
+        stock = sheets.pack_get()
+    except Exception:
+        log.exception("Приложение: лист «%s»", config.PACK_TAB)
+        return {"ok": False}
+    try:
+        logged = sheets.packship_rows(today)
+        history = sheets.packship_log(today)
+    except Exception:
+        log.exception("Приложение: лист «%s»", config.PACKSHIP_TAB)
+        logged, history = {}, []
+    plan = logic.ship_lines(orders, today)
+    # то, что ещё не отгружено; если «Кровати отгружены» уже нажимали (счётчик на листе «Настройки»), а в таблице строк нет — всё отгружено
+    left = [] if done >= sum(x["qty"] for x in plan) else logic.minus_logged(plan, logged)
+    lack = logic.pack_check(left, stock)
+    return {
+        "ok": True, "date": f"{today:%d.%m.%y}",
+        "stock": [{"key": k, "name": logic.pack_name(k), "qty": n, "black": k.endswith(".04")}
+                  for k, n in sorted(stock.items(), key=lambda kv: (int(kv[0].split(".")[0]), kv[0]))],
+        "black": sum(n for k, n in stock.items() if k.endswith(".04")),
+        "white": sum(n for k, n in stock.items() if k.endswith(".06")),
+        "lines": left, "qty": sum(x["qty"] for x in left), "lack": lack,
+        "shipped": done, "history": history,
+        "keys": [{"key": k, "name": logic.pack_name(k)} for k in logic.pack_keys()],
+        "widths": sheets.frame_widths(), "legs": list(logic.LEGS),
+    }
 
 
 def legs_data(kind: str = "welded") -> list:
@@ -767,10 +798,13 @@ def blanks_data() -> dict:
     except Exception:
         log.exception("Приложение: лист «%s»", config.BLANKS_TAB)
         return {"ok": False}
-    enough = {w: logic.blanks_enough(parts) for w, parts in b["sizes"].items()}
+    long_n, long_short = logic.long_enough(b["long"])
+    enough = {w: logic.blanks_enough(parts) for w, parts in b["sizes"].items()}  # поперечные по размерам
     return {"ok": True, "per": b["per"], "common": b["common"], "bom": logic.BLANKS_BOM,
             "sizes": {str(w): v for w, v in b["sizes"].items()}, "common_qty": b["common_qty"],
-            "enough": [{"width": w, "n": n, "short": t} for w, (n, t) in enough.items()]}
+            # длинные: одни на все размеры; «total» — на сколько каркасов размера хватает всех заготовок вместе
+            "long": {"names": list(logic.LONG_BOM), "qty": b["long"], "n": long_n, "short": long_short},
+            "enough": [{"width": w, "n": n, "short": t, "total": min(n, long_n)} for w, (n, t) in enough.items()]}
 
 
 def keeper_data() -> dict:
@@ -2589,12 +2623,13 @@ def _num(x) -> float:
 
 
 def blanks_post(body: dict, who: str) -> tuple:
-    """Добавить (sign=in) или убрать заготовки: {width: 160 или "common", sign, items: [{name, qty}]}."""
+    """Добавить (sign=in) или убрать заготовки: {width: 160, "common" или "long", sign, items: [{name, qty}]}."""
     b = sheets.blanks_get()
-    common = str(body.get("width")) == "common"
-    width = None if common else _int(body.get("width"), 0)
-    names = b["common"] if common else b["per"]
-    if not common and width not in b["sizes"]:
+    kind = str(body.get("width"))
+    common, long_ = kind == "common", kind == "long"
+    width = None if common or long_ else _int(body.get("width"), 0)
+    names = b["common"] if common else list(logic.LONG_BOM) if long_ else b["per"]
+    if not common and not long_ and width not in b["sizes"]:
         return 400, {"error": "Выберите размер"}
     sign = 1 if body.get("sign") == "in" else -1
     changes = []
@@ -2606,10 +2641,28 @@ def blanks_post(body: dict, who: str) -> tuple:
         return 400, {"error": "Впишите количество хотя бы у одной детали"}
     res = sheets.blanks_add(changes)
     sheets.blanks_refresh()
-    where = "общие" if common else str(width)
+    where = "общие" if common else "длинные (для всех размеров)" if long_ else str(width)
     lines = [f"{name}: {before} → {after}" for _, name, before, after in res]
     log.info("Приложение: заготовки %s %s (%s): %s", "приход" if sign > 0 else "расход", where, who, "; ".join(lines))
     return 200, {"ok": True, "message": f"✅ Заготовки {where}, {'добавлено' if sign > 0 else 'убрано'}:\n" + "\n".join(lines)}
+
+
+def pack_post(body: dict, who: str) -> tuple:
+    """Кровати в упаковке: {width, legs, color: black|white, delta} — плюс добавить, минус убрать."""
+    width, legs = _int(body.get("width"), 0), str(body.get("legs") or "")
+    color = {"black": "04", "white": "06"}.get(body.get("color"), "")
+    delta = _int(body.get("delta"), 0)
+    if width not in sheets.frame_widths() or legs not in logic.LEGS or not color:
+        return 400, {"error": "Выберите размер, ножки и цвет"}
+    if not delta or abs(delta) > 999:
+        return 400, {"error": "Укажите количество"}
+    key = logic.pack_key(width, legs, color)
+    try:
+        (_, before, after), = sheets.pack_add([(key, delta)])
+    except ValueError as e:
+        return 400, {"error": str(e)}
+    log.info("Приложение: упаковка %s %+d -> %d (%s)", logic.pack_name(key), delta, after, who)
+    return 200, {"ok": True, "message": f"✅ В упаковке {logic.pack_name(key)}: {'+' if delta > 0 else ''}{delta} → теперь {after} шт."}
 
 
 def token_ok(token: str) -> bool:
@@ -2915,6 +2968,8 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
                 return 200, {"ok": True, "message": _deps["shipped"](f"{who} (приложение)")}
             if path == "/api/prod/blanks":
                 return blanks_post(body, who)
+            if path == "/api/prod/pack":
+                return pack_post(body, who)
             delta = _int(body.get("delta"), 0)
             if not delta or abs(delta) > 999:
                 return 400, {"error": "Укажите количество"}

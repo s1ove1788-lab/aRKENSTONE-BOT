@@ -1009,7 +1009,8 @@ async function payView(){
 /* Производство делится на три цеха; выбор запоминается на телефоне */
 const SHOPS = {weld:["🔥","Сварочный цех","сваренные каркасы и что сварить"],
                paint:["🎨","Малярный цех","окрашенные кровати и чего не хватает"],
-               blanks:["🪚","Заготовочный цех","заготовки и на сколько кроватей хватает"]};
+               blanks:["🪚","Заготовочный цех","заготовки и на сколько кроватей хватает"],
+               pack:["📦","Упаковочная","склад в упаковке и отгрузка на сегодня"]};
 function shop(k){ try { k ? localStorage.setItem("ark_shop", k) : localStorage.removeItem("ark_shop"); } catch(e) {} drawProd(window._prod); window.scrollTo(0,0); }
 
 function drawProd(d){
@@ -1017,23 +1018,21 @@ function drawProd(d){
   let k = null; try { k = localStorage.getItem("ark_shop"); } catch(e) {}
   if (!SHOPS[k]) return drawShops(d);
   const back = `<button class="btn" style="margin-bottom:10px" onclick="shop()">← Цеха</button><h2 style="margin-top:0">${SHOPS[k][0]} ${SHOPS[k][1]}</h2>`;
-  $("#main").innerHTML = back + ({weld: drawWeld, paint: drawPaint, blanks: drawBlanks})[k](d);
+  $("#main").innerHTML = back + ({weld: drawWeld, paint: drawPaint, blanks: drawBlanks, pack: drawPack})[k](d);
 }
 
 function drawShops(d){
   $("#main").innerHTML = `
-    ${d.today ? `<button class="btn main big" style="width:100%;margin-bottom:10px" onclick="shippedForm()">✅ Кровати отгружены · ${d.today} шт.</button>`
-      : `<div class="card muted" style="text-align:center">${d.shipped ? `Сегодня отгружено ${d.shipped} шт. ✅` : "На сегодня отгрузок нет"}</div>`}
     <h2>Выберите цех</h2>
     ${Object.entries(SHOPS).map(([k, v]) => `<div class="card tap row" onclick="shop('${k}')">
-      <span style="font-size:30px">${v[0]}</span><div class="grow"><div class="title">${v[1]}</div><div class="sub">${v[2]}</div></div><span class="muted">›</span></div>`).join("")}
+      <span style="font-size:30px">${v[0]}</span><div class="grow"><div class="title">${v[1]}</div><div class="sub">${k === "pack" ? packSub(d) : v[2]}</div></div><span class="muted">›</span></div>`).join("")}
     <details class="card" style="margin-top:22px"><summary class="row"><span class="grow title">📋 План производства</span><span class="badge">${(d.plan.match(/Всего: (\d+)/) || [,"0"])[1]} шт. ▾</span></summary>
       <pre style="margin-top:12px">${esc(d.plan.split("\n").slice(2).join("\n"))}</pre></details>`;
 }
 
 function drawWeld(d){
   const todo = d.weld.reduce((a, w) => a + w.todo, 0);
-  const en = Object.fromEntries((d.blanks.enough || []).map(e => [e.width, e.n]));
+  const en = Object.fromEntries((d.blanks.enough || []).map(e => [e.width, e.total]));  // хватает и длинных, и поперечных
   return `
     <button class="btn main big" style="width:100%;margin-bottom:6px" onclick="frameForm()">🔩 Внести сваренные каркасы</button>
     <h2>Нужно сварить · ${todo} шт.</h2>
@@ -1099,16 +1098,33 @@ function shortText(e){
 function drawBlanks(d){
   const b = d.blanks;
   if (!b.ok) return `<div class="card muted">Не нашёл лист «Заготовки» в таблице.</div>`;
+  const L = b.long;
   return `
     <button class="btn main big" style="width:100%;margin-bottom:6px" onclick="blanksForm()">➕ Добавить / убрать заготовки</button>
-    <h2>На сколько кроватей хватает</h2>
+    <h2>Длинные · одни на все размеры</h2>
+    <div class="card tap row" onclick="blanksLong()" style="${L.n ? "" : "border-color:var(--warn)"}"><div class="grow">
+      <div class="title">Длинных хватает: <b>${L.n} шт.</b></div><div class="sub">${esc(shortText(L))}</div></div><span class="muted">›</span></div>
+    <h2>Поперечные · по размерам</h2>
     <div class="card" style="padding:6px 10px"><table>
       <tr><th>Размер</th><th class="n">Хватает</th><th>Подробно</th></tr>
       ${b.enough.map(e => `<tr class="tap ${e.n ? "" : "short"}" onclick="blanksSize('${e.width}')"><td><b>${e.width}</b></td>
         <td class="n"><b>${e.n}</b></td><td style="font-size:13px">${esc(shortText(e))}</td></tr>`).join("")}
     </table></div>
-    <div class="muted" style="margin:6px 4px">Нажмите на размер — откроется, каких деталей сколько есть и сколько не хватает.</div>
+    <div class="muted" style="margin:6px 4px">Левая и правая ответка, длинная с ногой и длинная глухая у всех размеров одинаковы: 4 детали = 1 кровать любого размера, поэтому они считаются отдельно.
+    Поперечные у каждого размера свои. Нажмите на строку — откроется, каких деталей сколько есть и сколько не хватает.</div>
     <button class="btn" style="width:100%;margin-top:6px" onclick="blanksAll()">📦 Все остатки заготовок</button>`;
+}
+
+function blanksLong(){
+  const b = window._prod.blanks, L = b.long;
+  const rows = L.names.map(n => {
+    const k = b.bom[n], have = L.qty[n] || 0, lack = Math.max(0, k * (L.n + 1) - have);
+    return `<tr class="${lack ? "short" : ""}"><td>${esc(n)}</td><td class="n">${have}</td><td class="n">${k}</td><td class="n">${lack || ""}</td></tr>`;
+  }).join("");
+  sheet(`<h3>🪚 Длинные заготовки</h3><div class="muted">Одни на все размеры. Хватает на <b>${L.n}</b> кров. любого размера. «Не хватает» — сколько нарезать, чтобы собрать ещё одну.</div>
+    <table><tr><th>Деталь</th><th class="n">Есть</th><th class="n">На 1</th><th class="n">Не хват.</th></tr>${rows}</table>
+    <div class="actions"><button class="btn" onclick="closeSheet()">Закрыть</button>
+    <button class="btn main" onclick="blanksForm('long')">➕ Внести</button></div>`);
 }
 
 function blanksSize(w){
@@ -1128,18 +1144,19 @@ function blanksAll(){
   page("Остатки заготовок", `
     <div class="card" style="padding:6px 10px;overflow-x:auto"><table class="bt"><tr><th>Деталь</th>${sizes.map(w => `<th class="n">${w}</th>`).join("")}</tr>
       ${b.per.map(n => `<tr><td>${esc(n)}</td>${sizes.map(w => `<td class="n">${b.sizes[w][n] || 0}</td>`).join("")}</tr>`).join("")}
-      <tr><td><b>Хватает на</b></td>${sizes.map(w => `<td class="n"><b>${(b.enough.find(e => String(e.width) === w) || {}).n ?? 0}</b></td>`).join("")}</tr></table></div>
+      <tr><td><b>Поперечных хватает на</b></td>${sizes.map(w => `<td class="n"><b>${(b.enough.find(e => String(e.width) === w) || {}).n ?? 0}</b></td>`).join("")}</tr></table></div>
+    <h2>Длинные (для всех размеров) · хватает на ${b.long.n}</h2><div class="card" style="padding:6px 10px"><table>${b.long.names.map(n => `<tr><td>${esc(n)}</td><td class="n">${b.long.qty[n] || 0}</td></tr>`).join("")}</table></div>
     ${b.common.length ? `<h2>Общие</h2><div class="card" style="padding:6px 10px"><table>${b.common.map(n => `<tr><td>${esc(n)}</td><td class="n">${b.common_qty[n] || 0}</td></tr>`).join("")}</table></div>` : ""}
     <button class="btn main" style="width:100%;margin-top:10px" onclick="blanksForm()">➕ Добавить / убрать заготовки</button>`);
 }
 
 function blanksForm(size){
   const b = window._prod.blanks;
-  const sizes = Object.fromEntries([...Object.keys(b.sizes).map(w => [w, w]), ["common", "Общие"]]);
+  const sizes = Object.fromEntries([...Object.keys(b.sizes).map(w => [w, w]), ["long", "Длинные"], ["common", "Общие"]]);
   size = size || Object.keys(b.sizes)[0];
-  const names = size === "common" ? b.common : b.per;
-  const have = n => size === "common" ? (b.common_qty[n] || 0) : (b.sizes[size][n] || 0);
-  sheet(`<h3>🪚 Заготовки</h3><div class="muted">Выберите размер и впишите количество у нужных деталей.</div>
+  const names = size === "common" ? b.common : size === "long" ? b.long.names : b.per;
+  const have = n => size === "common" ? (b.common_qty[n] || 0) : size === "long" ? (b.long.qty[n] || 0) : (b.sizes[size][n] || 0);
+  sheet(`<h3>🪚 Заготовки</h3><div class="muted">Выберите размер (или «Длинные» — они одни на все размеры) и впишите количество у нужных деталей.</div>
     <label class="l">Размер</label>${seg("b-size", sizes, size).replace(/onclick="pick\(this\)"/g, 'onclick="blanksForm(this.dataset.k)"')}
     <table class="bf">${names.map((n, i) => `<tr><td>${esc(n)}${b.bom[n] ? `<div class="ch">на кровать: ${b.bom[n]}</div>` : ""}</td>
       <td class="n muted">есть ${have(n)}</td>
@@ -1160,8 +1177,74 @@ async function blanksSave(btn, sign, size){
   await act(btn, "/api/prod/blanks", {width: size, sign, items}, true);
 }
 
+/* ------------------------------ упаковочная */
+function packSub(d){
+  const p = d.pack;
+  if (!p || !p.ok) return SHOPS.pack[2];
+  return p.qty ? `сегодня на отгрузку ${p.qty} шт.${p.lack.length ? " · ⚠️ не хватает" : ""}` : (p.shipped ? `сегодня отгружено ${p.shipped} шт. ✅` : "сегодня отгрузок нет");
+}
+
+function drawPack(d){
+  const p = d.pack;
+  if (!p || !p.ok) return `<div class="card muted">Не получилось открыть лист «Упаковка» в таблице.</div>`;
+  const lackKeys = new Set(p.lack.map(x => x.key));
+  const status = !p.qty ? "" : p.lack.length
+    ? `<div class="card" style="border-color:var(--warn)"><b style="color:var(--warn)">⚠️ Кроватей на упаковку ${esc(p.date)} не хватает:</b>
+        <div style="margin-top:6px">${p.lack.map(x => `${esc(x.name)} — ${x.lack} шт.`).join("<br>")}</div></div>`
+    : `<div class="card">✅ Кроватей на упаковку ${esc(p.date)} хватает</div>`;
+  const ship = p.qty ? `<button class="btn main big" style="width:100%;margin:10px 0" onclick="shippedForm()">✅ Кровати отгружены · ${p.qty} шт.</button>`
+    : `<div class="card muted" style="text-align:center;margin:10px 0">${p.shipped ? `Сегодня отгружено ${p.shipped} шт. ✅` : "На сегодня отгрузок нет"}</div>`;
+  return `
+    <button class="btn main big" style="width:100%;margin-bottom:6px" onclick="packForm()">➕ Внести кровати на склад</button>
+    <h2>Сегодня на отгрузку · ${esc(p.date)}${p.qty ? ` · ${p.qty} шт.` : ""}</h2>
+    ${p.lines.length ? `<div class="card" style="padding:6px 10px"><table>
+      <tr><th>Площадка</th><th>Кровать</th><th class="n">Шт</th></tr>
+      ${p.lines.map(x => `<tr class="${lackKeys.has(x.key) ? "short" : ""}"><td>${esc(x.channel)}</td><td>${esc(x.name)}</td><td class="n">${x.qty}</td></tr>`).join("")}
+    </table></div>` : `<div class="card muted">${p.shipped ? "Всё, что было на сегодня, отгружено ✅" : "На сегодня отгрузок нет"}</div>`}
+    ${status}
+    ${ship}
+    <h2>Склад в упаковке · ${p.black + p.white} шт.</h2>
+    <div class="card" style="padding:6px 10px">${p.stock.length ? `<table>
+      <tr><th>Кровать</th><th class="n">Шт</th></tr>
+      ${p.stock.map(x => `<tr class="tap" onclick="packForm('${x.key}')"><td>${esc(x.name)}</td><td class="n">${x.qty}</td></tr>`).join("")}
+    </table>` : `<div class="muted" style="padding:8px 0">Пока пусто — внесите упакованные кровати кнопкой выше.</div>`}</div>
+    <div class="muted" style="margin:6px 4px">Чёрных: ${p.black} · Белых: ${p.white}. «Кровати отгружены» вписывает отгрузку в таблицу и убирает эти кровати со склада в упаковке.</div>
+    <button class="btn" style="width:100%;margin-top:6px" onclick="shipLog()">📋 Таблица отгрузки</button>`;
+}
+
+const gv = id => document.getElementById(id).dataset.v;
+function packForm(key){
+  const p = window._prod.pack, [w, l, c] = (key || "").split(".");
+  const widths = Object.fromEntries(p.widths.map(x => [String(x), String(x)]));
+  sheet(`<h3>📦 Кровати в упаковке</h3><div class="muted">Выберите размер, ножки и цвет, впишите сколько упаковали. Ошиблись — «Убрать».</div>
+    <label class="l">Размер</label>${seg("pk-w", widths, w || String(p.widths[0]))}
+    <label class="l">Ножки</label>${seg("pk-l", Object.fromEntries(p.legs.map(x => [x, x])), l || "30")}
+    <label class="l">Цвет</label>${seg("pk-c", {black: "Чёрная", white: "Белая"}, c === "06" ? "white" : "black")}
+    <label class="l">Сколько</label>${stepper("pk-n", 1)}
+    <div class="actions"><button class="btn" onclick="packSave(this,-1)">− Убрать</button>
+      <button class="btn main" onclick="packSave(this,1)">+ Добавить</button></div>`);
+}
+function packSave(btn, sign){
+  const n = num("pk-n");
+  if (n <= 0) return toast("Впишите, сколько штук");
+  act(btn, "/api/prod/pack", {width: +gv("pk-w"), legs: gv("pk-l"), color: gv("pk-c"), delta: sign * n}, true);
+}
+
+function shipLog(){
+  const h = ((window._prod.pack || {}).history) || [], days = {};
+  h.forEach(x => (days[x.day] = days[x.day] || []).push(x));
+  const body = Object.keys(days).length ? Object.values(days).map(list => `
+    <h2>${esc(list[0].date)} · ${list.reduce((a, x) => a + x.qty, 0)} шт.</h2>
+    <div class="card" style="padding:6px 10px;overflow-x:auto"><table>
+      <tr><th>Время</th><th>Площадка</th><th>Кровать</th><th class="n">Шт</th><th>Кто</th></tr>
+      ${list.map(x => `<tr><td>${esc(x.time)}</td><td>${esc(x.channel)}</td><td>${esc(x.name)}</td><td class="n">${x.qty}</td>
+        <td style="font-size:13px">${esc((x.who || "").replace(" (приложение)", ""))}</td></tr>`).join("")}
+    </table></div>`).join("") : `<div class="card muted">За две недели отгрузок ещё нет. Они появятся здесь после нажатия «Кровати отгружены».</div>`;
+  page("📋 Таблица отгрузки", `<div class="muted" style="margin-bottom:6px">Последние две недели. Полная таблица — на листе «Таблица отгрузки» в Google Таблице.</div>` + body);
+}
+
 function shippedForm(){
-  sheet(`<h3>Кровати отгружены?</h3><div class="muted">Отметим ${window._prod.today} шт. на сегодня и сообщим менеджеру.</div>
+  sheet(`<h3>Кровати отгружены?</h3><div class="muted">Отметим ${window._prod.today} шт. на сегодня: впишем в таблицу отгрузки, спишем со склада в упаковке и сообщим менеджеру.</div>
     <div class="actions"><button class="btn" onclick="closeSheet()">Отмена</button>
     <button class="btn main" onclick="act(this,'/api/prod/shipped',{})">Да, отгружены</button></div>`);
 }

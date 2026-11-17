@@ -606,16 +606,33 @@ def save_move(ctx: Ctx, name: str, text: str, kind: str, ident: str) -> None:
 
 # ------------------------------------------------------------ производство
 def mark_shipped(who: str, skip_uid=None) -> str:
-    """«Кровати отгружены»: фиксируем, сколько отгружено сегодня, и обнуляем счётчик отгрузок на сегодня."""
+    """«Кровати отгружены» (упаковочная): всё, что уходит сегодня, попадает в «Таблицу отгрузки», эти кровати списываются
+    со склада в упаковке, счётчик «отгрузок на сегодня» обнуляется. Повторное нажатие дописывает только новое."""
     today = now_date()
-    total = logic.today_total(sheets.read_orders(force=True), today)
+    orders = sheets.read_orders(force=True)
+    total = logic.today_total(orders, today)
     done = shipped_done(today)
     if total - done <= 0:
         return f"Сегодня уже отмечено: отгружено {done} шт. Новых отгрузок на сегодня нет."
+    new = logic.minus_logged(logic.ship_lines(orders, today), sheets.packship_rows(today))
+    sheets.packship_add(new, who, today)  # сначала таблица: не записалась — ничего не отмечаем, можно нажать ещё раз
     sheets.set_setting("shipped_date", str(today))
     sheets.set_setting("shipped_n", str(total))
+    lack = []
+    try:  # кровати уехали — убираем со склада в упаковке (ниже нуля не уходит)
+        need: dict = {}
+        for l in new:
+            need[l["key"]] = need.get(l["key"], 0) + l["qty"]
+        for key, before, after in sheets.pack_add([(k, -n) for k, n in need.items()]):
+            if before < need[key]:
+                lack.append(f"{logic.pack_name(key)} (нужно {need[key]}, в упаковке было {before})")
+    except Exception:
+        log.exception("Не смог списать отгруженные кровати со склада в упаковке")
     notify_managers(f"✅ Кроватей сегодня отгружено {total} шт." + (f" (отметил(а): {who})" if who else ""), skip_uid)
-    return f"✅ Кроватей сегодня отгружено {total} шт.\nОтгрузки на сегодня обнулены."
+    text = f"✅ Кроватей сегодня отгружено {total} шт.\nЗаписано в таблицу отгрузки, отгрузки на сегодня обнулены."
+    if lack:
+        text += "\n⚠️ В упаковке было меньше, чем отгрузили: " + ", ".join(lack)
+    return text
 
 
 def production_shipped(ctx: Ctx) -> None:

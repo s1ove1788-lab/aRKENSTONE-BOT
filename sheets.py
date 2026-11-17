@@ -4,7 +4,7 @@ import json
 import logging
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import gspread
@@ -981,25 +981,88 @@ def _cell(values: list, r: int, c: int) -> str:
     return values[r - 1][c].strip() if r - 1 < len(values) and c < len(values[r - 1]) else ""
 
 
+LONG_HEADERS = ["Деталь", "Количество"]
+
+
+def _long_seed() -> dict:
+    """Сколько длинных деталей уже лежит на листе «Заготовки» по размерам (сумма) — чтобы не потерять остатки при переходе
+    на общий счёт длинных заготовок."""
+    try:
+        values = _blanks_ws().get_all_values()
+        lay = _blanks_layout(values)
+        return {n: sum(_num(_cell(values, r, lay["per"][n])) for r in lay["sizes"].values())
+                for n in logic.LONG_PARTS if n in lay["per"]}
+    except Exception:
+        log.exception("Длинные заготовки: не смог посчитать остатки по размерам")
+        return {}
+
+
+def _long_ws():
+    """Лист «Длинные заготовки»: одна строка на деталь. Нет листа или детали — создаём, начальный остаток = сумма по размерам."""
+    ws = _tab(config.LONG_TAB, LONG_HEADERS)
+    have = {v[0].strip() for v in ws.get_all_values()[1:] if v and v[0].strip()}
+    missing = [n for n in logic.LONG_PARTS if n not in have]
+    if missing:
+        seed = _long_seed()
+        ws.append_rows([[n, seed.get(n, 0)] for n in missing], value_input_option="RAW")
+    return ws
+
+
+def long_get() -> dict:
+    """{деталь: сколько есть} — длинные заготовки, одни на все размеры."""
+    res = {n: 0 for n in logic.LONG_PARTS}
+    for v in _long_ws().get_all_values()[1:]:
+        if v and v[0].strip() in res and len(v) > 1:
+            res[v[0].strip()] = _num(v[1])
+    return res
+
+
+def _long_apply(changes: list) -> dict:
+    """changes: [(деталь, изменение)] -> {(деталь, номер по порядку): (было, стало)}; ниже нуля не уходит."""
+    ws = _long_ws()
+    values = ws.get_all_values(fresh=True)
+    rows = {v[0].strip(): i for i, v in enumerate(values[1:], start=2) if v and v[0].strip()}
+    cur = {n: (_num(values[r - 1][1]) if len(values[r - 1]) > 1 else 0) for n, r in rows.items()}
+    res, updates = [], {}
+    for name, d in changes:
+        if name not in rows:
+            raise ValueError(f"нет строки для «{name}»")
+        before = cur[name]
+        cur[name] = max(0, before + int(d))
+        updates[name] = cur[name]
+        res.append((before, cur[name]))
+    if updates:
+        ws.batch_update([{"range": f"B{rows[n]}", "values": [[v]]} for n, v in updates.items()], value_input_option="RAW")
+    return res
+
+
 def blanks_get() -> dict:
-    """{'per': [детали], 'common': [общие], 'sizes': {ширина: {деталь: число}}, 'common_qty': {общая: число}}."""
+    """{'per': [поперечные детали], 'common': [общие], 'sizes': {ширина: {деталь: число}}, 'common_qty': {общая: число},
+    'long': {длинная деталь: число}}. Длинные детали одни на все размеры и в 'per' / 'sizes' не входят."""
     values = _blanks_ws().get_all_values()
     lay = _blanks_layout(values)
+    per = {n: c for n, c in lay["per"].items() if n not in logic.LONG_PARTS}
     return {
-        "per": list(lay["per"]), "common": list(lay["common"]),
-        "sizes": {w: {n: _num(_cell(values, r, c)) for n, c in lay["per"].items()} for w, r in sorted(lay["sizes"].items())},
+        "per": list(per), "common": list(lay["common"]),
+        "sizes": {w: {n: _num(_cell(values, r, c)) for n, c in per.items()} for w, r in sorted(lay["sizes"].items())},
         "common_qty": {n: _num(_cell(values, 2, c)) for n, c in lay["common"].items()},
+        "long": long_get(),
     }
 
 
 def blanks_add(changes: list) -> list:
     """changes: [(ширина или None для общих, деталь, изменение)]. Ниже нуля не уходит.
-    Возвращает [(ширина, деталь, было, стало)]."""
+    Длинные детали (logic.LONG_PARTS) лежат одной кучей для всех размеров — ширина у них не важна.
+    Возвращает [(ширина, деталь, было, стало)] в том же порядке."""
     ws = _blanks_ws()
     values = ws.get_all_values(fresh=True)
     lay = _blanks_layout(values)
-    cur, res, updates = {}, [], []
+    cur, res, updates, long_idx = {}, [], [], []
     for w, name, d in changes:
+        if name in logic.LONG_PARTS:
+            long_idx.append(len(res))
+            res.append((w, name, None, None))
+            continue
         if w is None:
             r, c = 2, lay["common"].get(name)
         else:
@@ -1010,6 +1073,10 @@ def blanks_add(changes: list) -> list:
         after = max(0, before + int(d))
         cur[(r, c)] = after
         res.append((w, name, before, after))
+    if long_idx:
+        done = _long_apply([(changes[i][1], changes[i][2]) for i in long_idx])
+        for i, (before, after) in zip(long_idx, done):
+            res[i] = (res[i][0], res[i][1], before, after)
     for (r, c), v in cur.items():
         updates.append({"range": f"{_col_letter(c)}{r}", "values": [[v]]})
     if updates:
@@ -1054,8 +1121,9 @@ def blanks_refresh() -> dict:
     ws = _blanks_ws()
     values = ws.get_all_values()
     lay = _blanks_layout(values)
-    data = {w: {n: _num(_cell(values, r, c)) for n, c in lay["per"].items()} for w, r in lay["sizes"].items()}
-    res = {w: logic.blanks_enough(parts) for w, parts in sorted(data.items())}
+    data = {w: {n: _num(_cell(values, r, c)) for n, c in lay["per"].items() if n not in logic.LONG_PARTS}
+            for w, r in lay["sizes"].items()}
+    res = {w: logic.blanks_enough(parts) for w, parts in sorted(data.items())}  # поперечные; длинные — на своём листе
     updates = []
     for w, r in lay["bottom"].items():
         if w in res:
@@ -1185,6 +1253,124 @@ def shipped_on(day) -> dict:
             except ValueError:
                 continue
     return res
+
+
+# ------------------------------------------ упаковочная: склад в упаковке и таблица отгрузки
+PACK_HEADERS = ["Размер", "Ножки", "Цвет", "Количество"]
+PACKSHIP_HEADERS = ["Дата", "Время", "Площадка", "Размер", "Ножки", "Цвет", "Кол-во", "Кто отметил"]
+_COLOR_WORDS = {"04": "чёрная", "06": "белая"}
+
+
+def _color_code(text: str):
+    """«чёрная» / «Черный» / «ч» -> '04'; «белая» / «б» -> '06'; непонятное -> None."""
+    t = (text or "").strip().lower().replace("ё", "е")
+    return "04" if t.startswith("ч") else "06" if t.startswith("б") else None
+
+
+def _pack_key_of(row: list):
+    """Строка листа «Упаковка» -> ключ '140.30.04' или None."""
+    if len(row) < 3 or not row[0].strip().isdigit():
+        return None
+    color, legs = _color_code(row[2]), row[1].strip()
+    return logic.pack_key(int(row[0]), legs, color) if color and legs in logic.LEGS else None
+
+
+def _pack_ws():
+    """Лист «Упаковка»: готовые кровати в упаковке. Нет листа или строки — создаём (все размеры × ножки × цвет, нули)."""
+    ws = _tab(config.PACK_TAB, PACK_HEADERS)
+    have = {_pack_key_of(v) for v in ws.get_all_values()[1:]}
+    missing = [k for k in logic.pack_keys() if k not in have]
+    if missing:
+        rows = []
+        for k in missing:
+            w, l, c = k.split(".")
+            rows.append([int(w), int(l), _COLOR_WORDS[c], 0])
+        ws.append_rows(rows, value_input_option="RAW")
+    return ws
+
+
+def pack_get() -> dict:
+    """{'140.30.04': сколько кроватей в упаковке} — только ненулевые."""
+    res = {}
+    for v in _pack_ws().get_all_values()[1:]:
+        k = _pack_key_of(v)
+        if k and len(v) > 3 and _num(v[3]) > 0:
+            res[k] = res.get(k, 0) + _num(v[3])
+    return res
+
+
+@_locked
+def pack_add(changes: list) -> list:
+    """changes: [(ключ '140.30.04', изменение)] -> [(ключ, было, стало)]. Ниже нуля не уходит."""
+    ws = _pack_ws()
+    values = ws.get_all_values(fresh=True)
+    rows = {}
+    for i, v in enumerate(values[1:], start=2):
+        k = _pack_key_of(v)
+        if k and k not in rows:
+            rows[k] = i
+    cur = {k: (_num(values[r - 1][3]) if len(values[r - 1]) > 3 else 0) for k, r in rows.items()}
+    res, updates = [], {}
+    for k, d in changes:
+        if k not in rows:
+            raise ValueError(f"нет строки для {logic.pack_name(k)}")
+        before = cur[k]
+        cur[k] = max(0, before + int(d))
+        updates[k] = cur[k]
+        res.append((k, before, cur[k]))
+    if updates:
+        ws.batch_update([{"range": f"D{rows[k]}", "values": [[v]]} for k, v in updates.items()], value_input_option="RAW")
+    return res
+
+
+def packship_rows(day) -> dict:
+    """Что за указанный день уже внесено в таблицу отгрузки: {(площадка, ключ): шт.}."""
+    want = day.strftime("%d.%m.%Y")
+    res: dict = {}
+    for v in _tab(config.PACKSHIP_TAB, PACKSHIP_HEADERS).get_all_values()[1:]:
+        if len(v) >= 7 and v[0].strip() == want and v[3].strip().isdigit():
+            color = _color_code(v[5])
+            if color and v[4].strip() in logic.LEGS:
+                k = (v[2].strip(), logic.pack_key(v[3].strip(), v[4].strip(), color))
+                res[k] = res.get(k, 0) + _num(v[6])
+    return res
+
+
+@_locked
+def packship_add(lines: list, who: str, day) -> None:
+    """Дописывает в «Таблицу отгрузки» то, что отгрузили: lines = [{'channel', 'key', 'qty'}]."""
+    if not lines:
+        return
+    now = datetime.now(ZoneInfo(config.TIMEZONE))
+    rows = []
+    for l in lines:
+        w, legs, c = l["key"].split(".")
+        rows.append([day.strftime("%d.%m.%Y"), now.strftime("%H:%M"), l["channel"], int(w), int(legs),
+                     _COLOR_WORDS.get(c, c), l["qty"], who])
+    _tab(config.PACKSHIP_TAB, PACKSHIP_HEADERS).append_rows(rows, value_input_option="RAW")
+
+
+def packship_log(today, days: int = 14, limit: int = 300) -> list:
+    """Последние отгрузки из таблицы, свежие сверху: [{'date','time','channel','name','qty','who'}]."""
+    first = today - timedelta(days=days - 1)
+    res = []
+    for v in _tab(config.PACKSHIP_TAB, PACKSHIP_HEADERS).get_all_values()[1:]:
+        if len(v) < 7 or not v[3].strip().isdigit():
+            continue
+        try:
+            d = datetime.strptime(v[0].strip(), "%d.%m.%Y").date()
+        except ValueError:
+            continue
+        if d < first:
+            continue
+        color = _color_code(v[5]) or ""
+        name = logic.pack_name(logic.pack_key(v[3].strip(), v[4].strip(), color)) if color else f"{v[3]}/{v[4]} {v[5]}"
+        res.append({"day": d, "date": v[0].strip()[:5], "time": v[1].strip(), "channel": v[2].strip(), "name": name,
+                    "qty": _num(v[6]), "who": (v[7] if len(v) > 7 else "").strip()})
+    res.sort(key=lambda x: (x["day"], x["time"]), reverse=True)
+    for x in res:
+        x["day"] = str(x["day"])
+    return res[:limit]
 
 
 # ---------------------------------------------------------------- Маркет
