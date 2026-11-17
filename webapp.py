@@ -890,6 +890,7 @@ def can_assign(my_role: str, role: str) -> bool:
 def manager_data(today: date, pay: bool = False, my_role: str = "manager") -> dict:
     orders = sheets.read_orders()
     open_ = [o for o in orders if not o["status"]]
+    site_new = sum(1 for o in orders if o["channel"] == "САЙТ" and not o.get("processed"))
     links = []
     try:
         links.append({"title": "📦 Таблица остатков в Google", "url": sheets.sheet_url("stock"), "hidden": True})
@@ -906,6 +907,7 @@ def manager_data(today: date, pay: bool = False, my_role: str = "manager") -> di
         "today": max(0, logic.today_total(orders, today) - _shipped_today(today)),
         "open": sum(logic.qty(o) for o in open_),
         "city": sum(logic.qty(o) for o in open_ if logic.is_city(o)),
+        "site_new": site_new,
         "devices": [{"code": c, "name": d["name"], "role": role_of(c, d), "label": ROLE_LABELS[role_of(c, d)],
                      "fixed": c in admin_codes(), "can_remove": can_assign(my_role, role_of(c, d))}
                     for c, d in devices(force=True).items()],
@@ -2901,6 +2903,8 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         return 200, open_orders(today)
     if path == "/api/manager/deliveries" and "manager" in tabs:
         return 200, deliveries_today(today)
+    if path == "/api/manager/site-requests" and "manager" in tabs:
+        return 200, site_requests()
     if path == "/api/manager" and "manager" in tabs:
         return 200, manager_data(today, pay, me["role"])
 
@@ -2929,6 +2933,13 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         except Exception:
             log.exception("Приложение: не смог уведомить менеджеров о переносе")
         return 200, {"ok": True, "message": f"📅 Перенесено на {new}"}
+
+    if method == "POST" and path == "/api/manager/site-requests/done" and "manager" in tabs:
+        order_no = str(body.get("order_no") or "").strip()
+        if not order_no:
+            return 400, {"error": "Не передан номер заявки"}
+        marked = sheets.mark_site_processed([order_no], who)
+        return 200, {"ok": True, "marked": bool(marked)}
 
     # «Доставлен» для заказов по России с экрана «Заказы»: на сегодня и просроченные (отгрузили позже срока).
     # Будущие отгрузки отметить нельзя — как и раньше, только когда день отгрузки наступил.
@@ -3099,19 +3110,53 @@ def site_order(key: str, body: dict) -> tuple:
         extra.append("изголовье X")
     if cfg.get("led"):
         extra.append("подсветка")
+    if cfg.get("interior"):
+        extra.append("хочет увидеть в интерьере")
     notes = "Заявка с сайта: " + name + (" · " + ", ".join(extra) if extra else "") + " · адрес уточнить"
     order_no = "S" + datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%y%m%d%H%M%S")
     o = Order(kind="город", ship_date="", delivery_date="", size=f"{width}×{legs}", color=color,
               order_no=order_no, article=(f"DY.{legs}.{width}.{code}" if code else ""),
               shipment_or_phone=phone, channel="САЙТ", address=notes, qty=1)
     sheets.add_orders([o])
-    text = (f"🌐 Новая заявка с сайта\n\n{name} · {phone}\n{width}×{legs} {color}".rstrip() +
+    text = (f"🆕 Новая заявка с сайта\n\n{name} · {phone}\n{width}×{legs} {color}".rstrip() +
             (("\n" + ", ".join(extra)) if extra else "") + f"\n№ {order_no}\nПерезвоните клиенту и уточните адрес.")
     try:
-        _deps["notify"](text)
+        _deps["notify"](text)  # сообщение менеджерам в MAX
     except Exception:
         log.exception("Заявка с сайта: не смог уведомить менеджеров")
+    try:
+        push_order_text(text)  # тот же колокольчик, что у новых заказов с площадок
+    except Exception:
+        log.exception("Заявка с сайта: не смог поставить уведомление в приложение")
     return 200, {"ok": True, "order_no": order_no}
+
+
+def _site_lead_parts(address: str) -> tuple:
+    """Имя клиента и доп. пожелания из заметки, которую сама же site_order() и записала
+    («Заявка с сайта: Имя · изголовье X, хочет увидеть в интерьере · адрес уточнить»)."""
+    a = address or ""
+    if "Заявка с сайта:" not in a:
+        return "", ""
+    body = a.split("Заявка с сайта:", 1)[1].replace("· адрес уточнить", "").strip(" ·")
+    parts = body.split(" · ", 1)
+    return parts[0].strip(), (parts[1].strip() if len(parts) > 1 else "")
+
+
+def site_requests() -> dict:
+    """Экран «Заявки с сайта»: только необработанные — чтобы не терялись среди обычных заказов на «Заказах»."""
+    rows = []
+    for o in sheets.read_orders():
+        if o["channel"] != "САЙТ" or o.get("processed"):
+            continue
+        name, extra = _site_lead_parts(o["address"])
+        rows.append({
+            "order_no": o["order_no"], "added": o["added"], "name": name,
+            "phone": logic.fmt_phone(o["phone"]), "tel": re.sub(r"[^\d+]", "", (o["phone"] or "").split(",")[0]),
+            "size": o["size"], "color": {"Чёрный": "black", "Белый": "white"}.get(o["color"], ""),
+            "extra": extra,
+        })
+    rows.sort(key=lambda x: x["added"], reverse=True)
+    return {"rows": rows}
 
 
 # Каждое действие (кнопка «Приход», «Добавить трату», «Доставлен»…) телефон помечает своим номером. Связь оборвалась,

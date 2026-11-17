@@ -1307,6 +1307,7 @@ function drawManager(d){
     <div class="stats"><div class="stat tap" onclick="ordersPage(true,{kind:'ru',tab:'today',q:''})"><b>${d.today}</b><small>отгрузить сегодня</small></div>
       <div class="stat tap" onclick="ordersPage(true,{tab:'today',q:''})"><b>${d.open}</b><small>в работе</small></div>
       <div class="stat tap" onclick="ordersPage(true,{kind:'city',tab:'today',q:''})"><b>${d.city}</b><small>по городу</small></div></div>
+    ${d.site_new ? `<button class="btn main big" style="margin:10px 0;display:flex;align-items:center;justify-content:center;gap:8px" onclick="siteRequestsPage()">🌐 Заявки с сайта <span class="badge">${d.site_new}</span></button>` : ""}
     <label class="btn main big" style="margin:10px 0">📄 Загрузить PDF с заказами
       <input type="file" accept="application/pdf,.pdf" hidden onchange="uploadPdf(this)"></label>
     <div class="toolbar"><button class="btn" onclick="ordersPage(true,{q:''})">📊 Заказы</button>
@@ -1573,6 +1574,36 @@ async function deliveriesPage(fresh, tabk){
     ${rows.length ? sect("Город", city) + sect("По России", ru)
       : `<div class="empty">${tabn === "done" ? "Сегодня пока ничего не доставлено" : "На сегодня всё доставлено 🎉"}</div>`}`,
     () => deliveriesPage(true));
+}
+
+async function siteRequestsPage(fresh){
+  const my = ++nav;
+  if (fresh !== false || !window._siteReq) {
+    if (!window._siteReq) page("Заявки с сайта", `<div class="muted">Загрузка…</div>`, () => siteRequestsPage(true));
+    try { window._siteReq = await call("/api/manager/site-requests"); } catch(e) { return toast(e.message); }
+    if (my !== nav) return;
+  }
+  const rows = window._siteReq.rows;
+  const card = r => `<div class="card oc" id="sr-${esc(r.order_no)}">
+      <div class="no">№ ${esc(r.order_no)}<small class="muted"> · ${esc(r.added)}</small></div>
+      <div class="nm">${esc(r.name || "Без имени")}</div>
+      <div class="muted" style="margin-top:4px">${esc(r.size)}${r.color === "black" ? " чёрн." : r.color === "white" ? " бел." : ""}${r.extra ? " · " + esc(r.extra) : ""}</div>
+      <div class="qa">${r.tel ? `<a href="tel:${esc(r.tel)}">📞 ${esc(r.phone)}</a>` : ""}
+        <button class="btn" style="padding:8px 12px" onclick="siteRequestDone('${esc(r.order_no)}',this)">✅ Обработано</button></div>
+    </div>`;
+  page("Заявки с сайта", rows.length ? rows.map(card).join("") : `<div class="empty">Необработанных заявок нет 🎉</div>`,
+    () => siteRequestsPage(true));
+}
+async function siteRequestDone(orderNo, btn){
+  btn.disabled = true;
+  try {
+    await call("/api/manager/site-requests/done", {order_no: orderNo});
+    window._siteReq.rows = window._siteReq.rows.filter(r => r.order_no !== orderNo);
+    const el = $("#sr-" + orderNo); if (el) el.remove();
+    if (window._mgr) window._mgr.site_new = Math.max(0, (window._mgr.site_new || 1) - 1);
+    toast("Отмечено обработанным");
+    if (!window._siteReq.rows.length) siteRequestsPage(false);
+  } catch(e) { toast(e.message); btn.disabled = false; }
 }
 
 async function stockPage(){

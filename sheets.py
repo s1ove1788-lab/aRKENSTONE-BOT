@@ -18,13 +18,13 @@ log = logging.getLogger("orders-bot")
 
 HEADERS = [
     "Добавлен", "Канал", "Тип", "Дата отгрузки", "Дата доставки", "Размер", "Количество",
-    "Цвет", "Номер заказа", "Артикул", "Отгрузка / телефон", "Адрес", "Статус",
+    "Цвет", "Номер заказа", "Артикул", "Отгрузка / телефон", "Адрес", "Статус", "Обработано",
 ]
 # Поле заказа -> название столбца в шапке. Столбцы ищутся ПО НАЗВАНИЮ, поэтому добавлять/двигать их в таблице можно.
 FIELDS = [("added", "Добавлен"), ("channel", "Канал"), ("kind", "Тип"), ("ship", "Дата отгрузки"),
           ("delivery", "Дата доставки"), ("size", "Размер"), ("qty", "Количество"), ("color", "Цвет"),
           ("order_no", "Номер заказа"), ("article", "Артикул"), ("phone", "Отгрузка / телефон"),
-          ("address", "Адрес"), ("status", "Статус")]
+          ("address", "Адрес"), ("status", "Статус"), ("processed", "Обработано")]
 _layout_cache: dict = {}
 
 
@@ -380,7 +380,7 @@ def _parse_orders(values: list) -> list:
             "ship": cell(v, "ship"), "delivery": cell(v, "delivery"), "size": cell(v, "size"), "qty": qty,
             "color": cell(v, "color"), "order_no": cell(v, "order_no"), "article": cell(v, "article"),
             "phone": cell(v, "phone"), "address": cell(v, "address"), "status": raw_status,
-            "has_status": bool(cell(v, "status")),
+            "has_status": bool(cell(v, "status")), "processed": cell(v, "processed"),
             "dup_of": dup_of,
         })
     return rows
@@ -674,6 +674,26 @@ def mark_delivered(order_nos: list) -> list:
         _invalidate()
         safe_sync_colors()
     return marked  # только те, что отмечены сейчас (повторное нажатие ничего не вернёт)
+
+
+@_locked
+def mark_site_processed(order_nos: list, who: str) -> list:
+    """Пишет в столбец «Обработано» отметку, что менеджер связался с клиентом по заявке с сайта.
+    Строка остаётся в общем списке заказов, но пропадает из экрана «Заявки с сайта»."""
+    col = layout().get("processed")
+    if col is None:
+        return []
+    wanted = set(order_nos)
+    marked = [r for r in read_orders(force=True)
+              if r["order_no"] in wanted and r["channel"] == "САЙТ" and not r.get("processed")]
+    rows = [r["row"] for r in marked]
+    if rows:
+        stamp = f"{who} · " + datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m %H:%M")
+        letter = _col_letter(col)
+        orders_ws().batch_update([{"range": f"{letter}{r}", "values": [[stamp]]} for r in rows],
+                                  value_input_option="RAW")
+        _invalidate()
+    return marked
 
 
 # ---------------------------------------------------------- пользователи
