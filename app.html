@@ -1307,12 +1307,12 @@ function drawManager(d){
     <div class="stats"><div class="stat tap" onclick="ordersPage(true,{kind:'ru',tab:'today',q:''})"><b>${d.today}</b><small>отгрузить сегодня</small></div>
       <div class="stat tap" onclick="ordersPage(true,{tab:'today',q:''})"><b>${d.open}</b><small>в работе</small></div>
       <div class="stat tap" onclick="ordersPage(true,{kind:'city',tab:'today',q:''})"><b>${d.city}</b><small>по городу</small></div></div>
-    ${d.site_new ? `<button class="btn main big" style="margin:10px 0;display:flex;align-items:center;justify-content:center;gap:8px" onclick="siteRequestsPage()">🌐 Заявки с сайта <span class="badge">${d.site_new}</span></button>` : ""}
-    <label class="btn main big" style="margin:10px 0">📄 Загрузить PDF с заказами
-      <input type="file" accept="application/pdf,.pdf" hidden onchange="uploadPdf(this)"></label>
     <div class="toolbar"><button class="btn" onclick="ordersPage(true,{q:''})">📊 Заказы</button>
       <button class="btn" onclick="deliveriesPage()">🚚 Доставки</button>
       <button class="btn" onclick="stockPage()">📦 Остатки</button></div>
+    ${d.site_new ? `<button class="btn big" style="width:100%;margin-top:8px;display:flex;align-items:center;justify-content:center;gap:8px" onclick="siteRequestsPage()">🌐 Заявки с сайта <span class="badge">${d.site_new}</span></button>` : ""}
+    <label class="btn big" style="width:100%;margin-top:8px;display:block;text-align:center">📄 Загрузить PDF с заказами
+      <input type="file" accept="application/pdf,.pdf" hidden onchange="uploadPdf(this)"></label>
     ${d.links.filter(l => !l.hidden).map(l => `<a class="btn" style="margin-top:8px" target="_blank" href="${esc(l.url)}">${esc(l.title)}</a>`).join("")}
     <button class="btn" style="width:100%;margin-top:8px" onclick="staffPage()">👥 Сотрудники · ${d.devices.length}</button>`;
   window._mgr = d;
