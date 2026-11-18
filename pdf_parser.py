@@ -62,6 +62,7 @@ class Order:
     channel: str
     address: str
     qty: int = 1         # сколько кроватей в заказе
+    int_no: str = ""     # внутренний номер AR-0001 (даёт таблица при добавлении)
 
 
 def _clean(cell) -> str:

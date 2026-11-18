@@ -1316,8 +1316,7 @@ function drawManager(d){
       <button class="btn" onclick="deliveriesPage()">🚚 Доставки</button>
       <button class="btn" onclick="stockPage()">📦 Остатки</button></div>
     ${d.site_new ? `<button class="btn big" style="width:100%;margin-top:8px;display:flex;align-items:center;justify-content:center;gap:8px" onclick="siteRequestsPage()">🌐 Заявки с сайта <span class="badge">${d.site_new}</span></button>` : ""}
-    <label class="btn big" style="width:100%;margin-top:8px;display:block;text-align:center">📄 Загрузить PDF с заказами
-      <input type="file" accept="application/pdf,.pdf" hidden onchange="uploadPdf(this)"></label>
+    <button class="btn main big" style="width:100%;margin-top:8px" onclick="addOrderMenu()">➕ Добавить заказ</button>
     ${d.links.filter(l => !l.hidden).map(l => `<a class="btn" style="margin-top:8px" target="_blank" href="${esc(l.url)}">${esc(l.title)}</a>`).join("")}
     <button class="btn" style="width:100%;margin-top:8px" onclick="staffPage()">👥 Сотрудники · ${d.devices.length}</button>`;
   window._mgr = d;
@@ -1405,13 +1404,14 @@ function plateHtml(r, small){
   const cls = r.color || "none";
   return `<div class="plate ${cls}">${r.width || "?"}<small>${r.color === "black" ? "чёрн." : r.color === "white" ? "бел." : ""}</small>${r.qty > 1 ? `<i>×${r.qty}</i>` : ""}</div>`;
 }
+const noLabel = r => (r.int_no && r.int_no !== r.order_no ? `<b>${esc(r.int_no)}</b> · ` : "") + `№ ${esc(r.order_no)}`;
 function obCard(r){
   const i = window._orders.rows.indexOf(r), kind = r.city ? "city" : "ru";
   const [ad, at] = (r.added || "").split(" ");
   const status = r.status && (r.tab === "done" || r.tab === "cancel") ? r.status : OB_ST[kind][r.tab];
   return `<div class="card tap oc" onclick="orderView(${i})">
     ${plateHtml(r)}
-    <div><div class="no">№ ${esc(r.order_no)}</div>
+    <div><div class="no">${noLabel(r)}</div>
       <div class="nm">Кровать ${esc(r.title)}${r.qty > 1 ? ` ×${r.qty}` : ""}</div>
       ${r.article ? `<div class="art">${esc(r.article)}</div>` : ""}</div>
     <div class="kv">
@@ -1473,7 +1473,7 @@ function obFill(){
   if (!$("#ob-body")) return;
   const kindRows = d.rows.filter(r => r.city === (st.kind === "city"));
   const q = st.q.trim().toLowerCase();
-  const rows = q ? kindRows.filter(r => [r.order_no, r.article, r.address, r.shipment, r.title, r.phone].join(" ").toLowerCase().includes(q))
+  const rows = q ? kindRows.filter(r => [r.order_no, r.int_no, r.article, r.address, r.shipment, r.title, r.phone].join(" ").toLowerCase().includes(q))
                  : kindRows.filter(r => r.tab === st.tab);
   if (st.tab === "done" || st.tab === "cancel") rows.sort((a, b) => (b.end || "").localeCompare(a.end || "") || b.id - a.id);
   const count = t => kindRows.filter(r => r.tab === t).length;
@@ -1515,7 +1515,7 @@ function orderView(i){
   const kind = r.city ? "city" : "ru";
   const status = r.status && (r.tab === "done" || r.tab === "cancel") ? r.status : OB_ST[kind][r.tab];
   const where = r.city ? r.address : (r.shipment ? `Отгрузка № ${r.shipment}` : "");
-  sheet(`<h3>№ ${esc(r.order_no)}</h3><div class="muted">${esc(r.channel)} · ${esc(status)}</div>
+  sheet(`<h3>${noLabel(r)}</h3><div class="muted">${esc(r.channel)} · ${esc(status)}</div>
     <table><tr><td>Кровать</td><td>${esc(r.title)} ×${r.qty}</td></tr>
     ${r.article ? `<tr><td>Артикул</td><td>${esc(r.article)}</td></tr>` : ""}
     ${where ? `<tr><td>${r.city ? "Адрес" : "Куда"}</td><td>${esc(where)}</td></tr>` : ""}
@@ -1593,7 +1593,7 @@ async function siteRequestsPage(fresh){
       onmousedown="lpStart('${esc(r.order_no)}')" ontouchstart="lpStart('${esc(r.order_no)}')"
       onmouseup="lpEnd()" onmouseleave="lpEnd()" ontouchend="lpEnd()" ontouchmove="lpEnd()">
       <button class="del-x" onclick="event.stopPropagation();siteRequestDelete('${esc(r.order_no)}',this)" aria-label="Удалить">✕</button>
-      <div class="no">№ ${esc(r.order_no)}<small class="muted"> · ${esc(r.added)}</small></div>
+      <div class="no">${noLabel(r)}<small class="muted"> · ${esc(r.added)}</small></div>
       <div class="nm">${esc(r.name || "Без имени")}</div>
       <div class="muted" style="margin-top:4px">${esc(r.size)}${r.color === "black" ? " чёрн." : r.color === "white" ? " бел." : ""}${r.extra ? " · " + esc(r.extra) : ""}</div>
       <div class="qa">${r.tel ? `<a href="tel:${esc(r.tel)}">📞 ${esc(r.phone)}</a>` : ""}
@@ -1657,6 +1657,41 @@ async function stockPage(){
     <h2>Сваренные каркасы</h2><div class="card" style="padding:6px 10px"><table>
       <tr><th>Размер</th><th class="n">Есть</th></tr>${d.frames.map(f => `<tr><td>${f.width}</td><td class="n">${f.n}</td></tr>`).join("")}</table></div>
     <div class="muted" style="margin:8px 4px">Внести покраску и каркасы — во вкладке «Производство».</div>`);
+}
+
+function addOrderMenu(){
+  sheet(`<h3>➕ Добавить заказ</h3>
+    <label class="btn big" style="width:100%;display:block;text-align:center;margin-top:8px">📄 Загрузить PDF с заказами
+      <input type="file" accept="application/pdf,.pdf" hidden onchange="uploadPdf(this)"></label>
+    <button class="btn big" style="width:100%;margin-top:8px" onclick="manualOrderForm()">✍️ Записать заказ вручную</button>`);
+}
+
+function manualOrderForm(){
+  sheet(`<h3>✍️ Заказ вручную</h3><div class="muted">Номер AR-… присвоится сам. Поля со звёздочкой обязательны.</div>
+    <label class="l">Куда доставка</label>${seg("m-kind", {city: "По городу", ru: "По России"}, "city")}
+    <label class="l">Откуда заказ</label><select id="m-channel">${["Вручную","ЯМ ГОРОД","ЯМ СГТ","ОЗ","WB ГОРОД","WB СГТ","ПЭК","Авито"].map(c => `<option>${c}</option>`).join("")}</select>
+    <label class="l">Номер заказа площадки (если есть)</label><input id="m-no" placeholder="необязательно" autocomplete="off">
+    <label class="l">Размер *</label>${seg("m-width", {"120":"120","140":"140","160":"160","180":"180","200":"200"}, "160")}
+    <label class="l">Ножки, см *</label>${seg("m-legs", {"25":"25","30":"30","35":"35"}, "30")}
+    <label class="l">Цвет *</label>${seg("m-color", {white: "Белый", black: "Чёрный"}, "white")}
+    <label class="l">Количество кроватей *</label>${stepper("m-qty", 1)}
+    <label class="l">Адрес *</label><input id="m-address" placeholder="Город, улица, дом, квартира" autocomplete="off">
+    <label class="l">Телефон *</label><input id="m-phone" type="tel" inputmode="tel" placeholder="+7 ___ ___ __ __" autocomplete="off">
+    <label class="l">Имя клиента</label><input id="m-name" placeholder="необязательно" autocomplete="off">
+    <label class="l">Дата: доставки (город) или отгрузки (по России)</label><input id="m-date" type="date">
+    <label class="l">Комментарий</label><input id="m-comment" placeholder="необязательно" autocomplete="off">
+    <button class="btn main big" style="width:100%;margin-top:8px" onclick="manualOrderSave(this)">Сохранить заказ</button>`);
+}
+
+async function manualOrderSave(btn){
+  const v = id => document.getElementById(id).value, d = id => document.getElementById(id).dataset.v;
+  const body = {kind: d("m-kind"), channel: v("m-channel"), order_no: v("m-no"), width: d("m-width"), legs: d("m-legs"),
+    color: d("m-color"), qty: num("m-qty"), address: v("m-address"), phone: v("m-phone"), name: v("m-name"),
+    date: v("m-date"), comment: v("m-comment")};
+  if (body.address.trim().length < 5) return toast("Впишите адрес");
+  if (body.phone.replace(/\D/g, "").length < 10) return toast("Впишите телефон");
+  if (body.qty < 1) return toast("Количество — хотя бы 1");
+  await act(btn, "/api/manager/order/add", body);
 }
 
 async function uploadPdf(input){

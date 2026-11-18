@@ -2,6 +2,7 @@
 import base64
 import json
 import logging
+import re
 import threading
 import time
 from datetime import datetime, timedelta
@@ -18,20 +19,22 @@ log = logging.getLogger("orders-bot")
 
 HEADERS = [
     "Добавлен", "Канал", "Тип", "Дата отгрузки", "Дата доставки", "Размер", "Количество",
-    "Цвет", "Номер заказа", "Артикул", "Отгрузка / телефон", "Адрес", "Статус", "Обработано",
+    "Цвет", "Номер заказа", "Артикул", "Отгрузка / телефон", "Адрес", "Статус", "Обработано", "Внутренний номер",
 ]
 # Поле заказа -> название столбца в шапке. Столбцы ищутся ПО НАЗВАНИЮ, поэтому добавлять/двигать их в таблице можно.
 FIELDS = [("added", "Добавлен"), ("channel", "Канал"), ("kind", "Тип"), ("ship", "Дата отгрузки"),
           ("delivery", "Дата доставки"), ("size", "Размер"), ("qty", "Количество"), ("color", "Цвет"),
           ("order_no", "Номер заказа"), ("article", "Артикул"), ("phone", "Отгрузка / телефон"),
-          ("address", "Адрес"), ("status", "Статус"), ("processed", "Обработано")]
+          ("address", "Адрес"), ("status", "Статус"), ("processed", "Обработано"),
+          ("int_no", "Внутренний номер")]
 _layout_cache: dict = {}
 
 
 def _set_layout(header_row: list) -> dict:
     """{поле: номер столбца с 0}. Не нашли название — берём место из стандартной шапки (для «Количества» — нет столбца)."""
     names = [(h or "").strip().lower() for h in header_row]
-    default = [k for k, _ in FIELDS if k != "qty" or "количество" in names]
+    default = [k for k, _ in FIELDS if (k != "qty" or "количество" in names)
+               and (k != "int_no" or "внутренний номер" in names)]  # столбца с внутренним номером нет — не гадаем, где он
     lay = {}
     for key, title in FIELDS:
         if title.lower() in names:
@@ -380,7 +383,7 @@ def _parse_orders(values: list) -> list:
             "ship": cell(v, "ship"), "delivery": cell(v, "delivery"), "size": cell(v, "size"), "qty": qty,
             "color": cell(v, "color"), "order_no": cell(v, "order_no"), "article": cell(v, "article"),
             "phone": cell(v, "phone"), "address": cell(v, "address"), "status": raw_status,
-            "has_status": bool(cell(v, "status")), "processed": cell(v, "processed"),
+            "has_status": bool(cell(v, "status")), "processed": cell(v, "processed"), "int_no": cell(v, "int_no"),
             "dup_of": dup_of,
         })
     return rows
@@ -603,12 +606,77 @@ def _order_event(kind: str, data) -> None:
             log.exception("Уведомления о заказах: обработчик упал")
 
 
+def _int_num(s) -> "int | None":
+    m = re.fullmatch(r"AR-(\d+)", (s or "").strip().upper())
+    return int(m.group(1)) if m else None
+
+
+def _ensure_int_col() -> dict:
+    """Столбец «Внутренний номер» в таблице заказов: если его нет в шапке — дописываем справа от последнего."""
+    ws = orders_ws()
+    row1 = ws.row_values(1)
+    lay = _set_layout(row1)  # шапку читаем заново: столбец мог уже появиться
+    if "int_no" in lay:
+        return lay
+    ws.update_cell(1, len(row1) + 1, "Внутренний номер")
+    return _set_layout(ws.row_values(1))
+
+
+@_locked
+def number_orders() -> int:
+    """Проставляет внутренние номера AR-0001, AR-0002… всем заказам, у которых их ещё нет — по порядку даты
+    добавления (старые заказы получают номера задним числом, один раз). Возвращает, сколько номеров проставила."""
+    lay = _ensure_int_col()
+    ws = orders_ws()
+    values = ws.get_all_values(fresh=True)
+    ic, oc, ac = lay["int_no"], lay["order_no"], lay.get("added")
+    width = max(lay.values()) + 1
+    body = [list(v) + [""] * (width - len(v)) for v in values[1:]]
+    nxt = max((n for v in body if (n := _int_num(v[ic])) is not None), default=0) + 1
+    todo = [i for i, v in enumerate(body) if v[oc].strip() and not v[ic].strip()]
+    if not todo:
+        return 0
+
+    def when(i):
+        try:
+            return datetime.strptime(body[i][ac].strip(), "%d.%m.%Y %H:%M") if ac is not None else datetime.min
+        except ValueError:
+            return datetime.min
+    for i in sorted(todo, key=lambda i: (when(i), i)):
+        body[i][ic] = f"AR-{nxt:04d}"
+        nxt += 1
+    if ws.get_all_values(fresh=True) != values:
+        log.info("Внутренние номера: таблицу только что поменяли, проставлю в следующий раз")
+        return 0
+    col = _col_letter(ic)
+    ws.update(range_name=f"{col}2:{col}{len(body) + 1}", values=[[v[ic]] for v in body], value_input_option="RAW")
+    _invalidate()
+    log.info("Внутренние номера: проставлено %d", len(todo))
+    return len(todo)
+
+
+def safe_number_orders() -> int:
+    try:
+        return number_orders()
+    except Exception:
+        log.exception("Внутренние номера: не смог проставить")
+        return 0
+
+
 @_locked
 def add_orders(orders: list) -> list:
-    """Добавляет только новые заказы (по номеру). Возвращает добавленные."""
+    """Добавляет только новые заказы (по номеру) и даёт каждому внутренний номер AR-0001… Возвращает добавленные."""
     existing = {r["order_no"] for r in read_orders(force=True)}
     new = [o for o in orders if o.order_no not in existing]
     if new:
+        number_orders()  # заодно заводит столбец «Внутренний номер» и нумерует старые заказы
+        nxt = max((n for r in read_orders(force=True) if (n := _int_num(r.get("int_no"))) is not None), default=0) + 1
+        for o in new:
+            if not getattr(o, "int_no", ""):
+                o.int_no = f"AR-{nxt:04d}"
+                nxt += 1
+            if not o.order_no:
+                o.order_no = o.int_no  # заказ записан вручную без номера площадки — его номером служит внутренний
         now = _now_str()
         lay = layout()
         width = max(lay.values(), default=0) + 1
@@ -617,7 +685,8 @@ def add_orders(orders: list) -> list:
             vals = {"added": now, "channel": o.channel, "kind": o.kind, "ship": o.ship_date,
                     "delivery": o.delivery_date, "size": o.size, "qty": getattr(o, "qty", 1) or 1,
                     "color": o.color, "order_no": o.order_no, "article": o.article,
-                    "phone": o.shipment_or_phone, "address": o.address, "status": STATUS_OPEN}
+                    "phone": o.shipment_or_phone, "address": o.address, "status": STATUS_OPEN,
+                    "int_no": o.int_no}
             row = [""] * width
             for key, val in vals.items():
                 if key in lay:

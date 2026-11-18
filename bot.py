@@ -934,7 +934,8 @@ def format_order(o, with_address: bool = True) -> str:
     what = " ".join(x for x in (o.size, o.color) if x)
     where = f" · {o.address}" if with_address and o.address else ""
     return (f"• {o.channel} · {what}{where}\n"
-            f"  отгрузка {o.ship_date}, доставка {o.delivery_date} · № {o.order_no}")
+            f"  отгрузка {o.ship_date}, доставка {o.delivery_date} · "
+            + (f"{o.int_no} · " if getattr(o, "int_no", "") and o.int_no != o.order_no else "") + f"№ {o.order_no}")
 
 
 def clear_all() -> tuple:

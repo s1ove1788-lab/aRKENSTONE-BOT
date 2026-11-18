@@ -845,6 +845,7 @@ def board_item(o: dict, today: date) -> dict:
     color = (a["color_code"] if a else {"чёрный": "04", "черный": "04", "белый": "06"}.get(o["color"].lower(), ""))
     return {
         "id": o["row"], "tab": _board_tab(o, r, today), "city": city, "channel": o["channel"], "order_no": o["order_no"],
+        "int_no": o.get("int_no", ""),
         "title": logic.article_name(o["article"], logic.item_line(o)), "qty": logic.qty(o),
         "width": width, "color": {"04": "black", "06": "white"}.get(color, ""), "article": o["article"],
         "added": o["added"], "ship": o["ship"], "delivery": o["delivery"],
@@ -2727,6 +2728,55 @@ def token_ok(token: str) -> bool:
     return bool(re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token or "")) and code_for(token) in devices()
 
 
+MANUAL_CHANNELS = ["Вручную", "ЯМ ГОРОД", "ЯМ СГТ", "ОЗ", "WB ГОРОД", "WB СГТ", "ПЭК", "Авито"]
+
+
+def add_manual_order(who: str, body: dict) -> tuple:
+    """«Добавить заказ → Записать вручную»: менеджер вносит заказ в приложении, он сразу попадает в таблицу
+    с внутренним номером AR-0001. Обязательны: адрес, телефон, размер, ножки, цвет, количество."""
+    from pdf_parser import Order
+    clean = lambda k, n: re.sub(r"\s+", " ", str(body.get(k) or "")).strip()[:n]
+    city = str(body.get("kind") or "city") != "ru"
+    try:
+        width, legs, qty = int(body.get("width")), int(body.get("legs")), int(float(body.get("qty")))
+    except (TypeError, ValueError):
+        return 422, {"error": "Укажите размер, высоту ножек и количество"}
+    color = {"white": "Белый", "black": "Чёрный"}.get(str(body.get("color")), "")
+    address, phone = clean("address", 300), re.sub(r"[^\d+()\- ,]", "", str(body.get("phone") or "")).strip()[:40]
+    if width not in (120, 140, 160, 180, 200) or legs not in (25, 30, 35):
+        return 422, {"error": "Выберите размер и высоту ножек"}
+    if not color:
+        return 422, {"error": "Выберите цвет"}
+    if not 1 <= qty <= 50:
+        return 422, {"error": "Количество — от 1 до 50"}
+    if len(address) < 5:
+        return 422, {"error": "Впишите адрес"}
+    if len(re.sub(r"\D", "", phone)) < 10:
+        return 422, {"error": "Впишите телефон"}
+    day = str(body.get("date") or "").strip()
+    m = re.fullmatch(r"(\d{4})-(\d{2})-(\d{2})", day)
+    day = f"{m.group(3)}.{m.group(2)}.{m.group(1)}" if m else ""
+    channel = str(body.get("channel") or "")
+    channel = channel if channel in MANUAL_CHANNELS else "Вручную"
+    name, comment, market_no = clean("name", 80), clean("comment", 200), clean("order_no", 40)
+    note = " · ".join(x for x in (address, name, comment) if x)
+    code = {"Белый": "06", "Чёрный": "04"}[color]
+    o = Order(kind="город" if city else "картон", ship_date="" if city else day, delivery_date=day if city else "",
+              size=f"{width}×{legs}", color=color, order_no=market_no, article=f"DY.{legs}.{width}.{code}",
+              shipment_or_phone=phone, channel=channel, address=note, qty=qty)
+    added = sheets.add_orders([o])
+    if not added:
+        return 409, {"error": f"Заказ с номером {market_no} уже есть в таблице"}
+    text = (f"🆕 Новый заказ {o.int_no} (добавил(а): {who})\n• {channel} · {width}×{legs} {color}"
+            f"{f' ×{qty}' if qty > 1 else ''} · {note}\n  " + (f"доставка {day} · " if day and city else "")
+            + (f"отгрузка {day} · " if day and not city else "") + f"{phone}")
+    try:
+        _deps["notify"](text)  # менеджерам в MAX
+    except Exception:
+        log.exception("Ручной заказ: не смог уведомить менеджеров")
+    return 200, {"ok": True, "int_no": o.int_no, "message": f"✅ Заказ {o.int_no} добавлен"}
+
+
 def upload_pdf(token: str, filename: str, data: bytes) -> tuple:
     me = devices().get(code_for(token)) if re.fullmatch(r"[A-Za-z0-9_-]{32,128}", token or "") else None
     if not me or "manager" not in ROLE_TABS.get(role_of(code_for(token), me), []):
@@ -2998,6 +3048,9 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
             log.exception("Приложение: не смог уведомить менеджеров о переносе")
         return 200, {"ok": True, "message": f"📅 Перенесено на {new}"}
 
+    if method == "POST" and path == "/api/manager/order/add" and "manager" in tabs:
+        return add_manual_order(who, body)
+
     if method == "POST" and path == "/api/manager/site-requests/done" and "manager" in tabs:
         order_no = str(body.get("order_no") or "").strip()
         if not order_no:
@@ -3221,7 +3274,7 @@ def site_requests() -> dict:
             continue
         name, extra = _site_lead_parts(o["address"])
         rows.append({
-            "order_no": o["order_no"], "added": o["added"], "name": name,
+            "order_no": o["order_no"], "int_no": o.get("int_no", ""), "added": o["added"], "name": name,
             "phone": logic.fmt_phone(o["phone"]), "tel": re.sub(r"[^\d+]", "", (o["phone"] or "").split(",")[0]),
             "size": o["size"], "color": {"Чёрный": "black", "Белый": "white"}.get(o["color"], ""),
             "extra": extra,
@@ -3473,6 +3526,7 @@ def start(**hooks) -> None:
         sheets.start_warmer()  # таблица в памяти сервера: кнопки не ждут Google
     except Exception:
         log.exception("Таблица: не смог запустить фоновое обновление")
+    threading.Thread(target=sheets.safe_number_orders, daemon=True).start()  # внутренние номера AR-0001 старым заказам
     threading.Thread(target=_prewarm, daemon=True).start()
     if _feed_hook not in sheets.order_hooks:
         sheets.order_hooks.append(_feed_hook)
