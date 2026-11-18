@@ -20,13 +20,16 @@ log = logging.getLogger("orders-bot")
 HEADERS = [
     "Добавлен", "Канал", "Тип", "Дата отгрузки", "Дата доставки", "Размер", "Количество",
     "Цвет", "Номер заказа", "Артикул", "Отгрузка / телефон", "Адрес", "Статус", "Обработано", "Внутренний номер",
+    "Имя клиента", "Комментарий",
 ]
 # Поле заказа -> название столбца в шапке. Столбцы ищутся ПО НАЗВАНИЮ, поэтому добавлять/двигать их в таблице можно.
 FIELDS = [("added", "Добавлен"), ("channel", "Канал"), ("kind", "Тип"), ("ship", "Дата отгрузки"),
           ("delivery", "Дата доставки"), ("size", "Размер"), ("qty", "Количество"), ("color", "Цвет"),
           ("order_no", "Номер заказа"), ("article", "Артикул"), ("phone", "Отгрузка / телефон"),
           ("address", "Адрес"), ("status", "Статус"), ("processed", "Обработано"),
-          ("int_no", "Внутренний номер")]
+          ("int_no", "Внутренний номер"), ("client", "Имя клиента"), ("comment", "Комментарий")]
+# Столбцы, которых в старой таблице может не быть: их заводим сами и не гадаем, где они стоят
+OPTIONAL_COLS = {"int_no": "внутренний номер", "client": "имя клиента", "comment": "комментарий"}
 _layout_cache: dict = {}
 
 
@@ -34,7 +37,7 @@ def _set_layout(header_row: list) -> dict:
     """{поле: номер столбца с 0}. Не нашли название — берём место из стандартной шапки (для «Количества» — нет столбца)."""
     names = [(h or "").strip().lower() for h in header_row]
     default = [k for k, _ in FIELDS if (k != "qty" or "количество" in names)
-               and (k != "int_no" or "внутренний номер" in names)]  # столбца с внутренним номером нет — не гадаем, где он
+               and (k not in OPTIONAL_COLS or OPTIONAL_COLS[k] in names)]
     lay = {}
     for key, title in FIELDS:
         if title.lower() in names:
@@ -384,6 +387,7 @@ def _parse_orders(values: list) -> list:
             "color": cell(v, "color"), "order_no": cell(v, "order_no"), "article": cell(v, "article"),
             "phone": cell(v, "phone"), "address": cell(v, "address"), "status": raw_status,
             "has_status": bool(cell(v, "status")), "processed": cell(v, "processed"), "int_no": cell(v, "int_no"),
+            "client": cell(v, "client"), "comment": cell(v, "comment"),
             "dup_of": dup_of,
         })
     return rows
@@ -615,10 +619,13 @@ def _ensure_int_col() -> dict:
     """Столбец «Внутренний номер» в таблице заказов: если его нет в шапке — дописываем справа от последнего."""
     ws = orders_ws()
     row1 = ws.row_values(1)
-    lay = _set_layout(row1)  # шапку читаем заново: столбец мог уже появиться
-    if "int_no" in lay:
+    lay = _set_layout(row1)  # шапку читаем заново: столбцы могли уже появиться
+    missing = [k for k in OPTIONAL_COLS if k not in lay]
+    if not missing:
         return lay
-    ws.update_cell(1, len(row1) + 1, "Внутренний номер")
+    titles = dict(FIELDS)
+    ws.update(range_name=f"{_col_letter(len(row1))}1:{_col_letter(len(row1) + len(missing) - 1)}1",
+              values=[[titles[k] for k in missing]], value_input_option="RAW")
     return _set_layout(ws.row_values(1))
 
 
@@ -686,7 +693,7 @@ def add_orders(orders: list) -> list:
                     "delivery": o.delivery_date, "size": o.size, "qty": getattr(o, "qty", 1) or 1,
                     "color": o.color, "order_no": o.order_no, "article": o.article,
                     "phone": o.shipment_or_phone, "address": o.address, "status": STATUS_OPEN,
-                    "int_no": o.int_no}
+                    "int_no": o.int_no, "client": getattr(o, "client", ""), "comment": getattr(o, "comment", "")}
             row = [""] * width
             for key, val in vals.items():
                 if key in lay:

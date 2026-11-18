@@ -1521,7 +1521,9 @@ function orderView(i){
     ${where ? `<tr><td>${r.city ? "Адрес" : "Куда"}</td><td>${esc(where)}</td></tr>` : ""}
     ${r.ship ? `<tr><td>Отгрузка</td><td>${esc(r.ship)}</td></tr>` : ""}
     ${r.delivery ? `<tr><td>Доставка</td><td>${esc(r.delivery)}</td></tr>` : ""}
-    ${r.phone ? `<tr><td>Телефон</td><td>${esc(r.phone)}</td></tr>` : ""}</table>
+    ${r.client ? `<tr><td>Клиент</td><td>${esc(r.client)}</td></tr>` : ""}
+    ${r.phone ? `<tr><td>Телефон</td><td>${esc(r.phone)}</td></tr>` : ""}
+    ${r.comment ? `<tr><td>Комментарий</td><td>${esc(r.comment)}</td></tr>` : ""}</table>
     <div class="actions">${r.tel ? `<a class="btn" href="tel:${esc(r.tel)}">📞 Позвонить</a>` : ""}
     ${r.city && r.address ? `<a class="btn" target="_blank" href="${esc(mapUrl(r.address))}">🗺 Карта</a>` : ""}
     ${r.city && ["today", "ahead", "late"].includes(r.tab) && me && me.tabs.includes("courier")

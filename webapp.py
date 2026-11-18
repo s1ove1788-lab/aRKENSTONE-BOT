@@ -845,7 +845,7 @@ def board_item(o: dict, today: date) -> dict:
     color = (a["color_code"] if a else {"чёрный": "04", "черный": "04", "белый": "06"}.get(o["color"].lower(), ""))
     return {
         "id": o["row"], "tab": _board_tab(o, r, today), "city": city, "channel": o["channel"], "order_no": o["order_no"],
-        "int_no": o.get("int_no", ""),
+        "int_no": o.get("int_no", ""), "client": o.get("client", ""), "comment": o.get("comment", ""),
         "title": logic.article_name(o["article"], logic.item_line(o)), "qty": logic.qty(o),
         "width": width, "color": {"04": "black", "06": "white"}.get(color, ""), "article": o["article"],
         "added": o["added"], "ship": o["ship"], "delivery": o["delivery"],
@@ -2759,16 +2759,15 @@ def add_manual_order(who: str, body: dict) -> tuple:
     channel = str(body.get("channel") or "")
     channel = channel if channel in MANUAL_CHANNELS else "Вручную"
     name, comment, market_no = clean("name", 80), clean("comment", 200), clean("order_no", 40)
-    note = " · ".join(x for x in (address, name, comment) if x)
     code = {"Белый": "06", "Чёрный": "04"}[color]
     o = Order(kind="город" if city else "картон", ship_date="" if city else day, delivery_date=day if city else "",
               size=f"{width}×{legs}", color=color, order_no=market_no, article=f"DY.{legs}.{width}.{code}",
-              shipment_or_phone=phone, channel=channel, address=note, qty=qty)
+              shipment_or_phone=phone, channel=channel, address=address, qty=qty, client=name, comment=comment)
     added = sheets.add_orders([o])
     if not added:
         return 409, {"error": f"Заказ с номером {market_no} уже есть в таблице"}
     text = (f"🆕 Новый заказ {o.int_no} (добавил(а): {who})\n• {channel} · {width}×{legs} {color}"
-            f"{f' ×{qty}' if qty > 1 else ''} · {note}\n  " + (f"доставка {day} · " if day and city else "")
+            f"{f' ×{qty}' if qty > 1 else ''} · {address}" + (f" · {name}" if name else "") + (f" · {comment}" if comment else "") + "\n  " + (f"доставка {day} · " if day and city else "")
             + (f"отгрузка {day} · " if day and not city else "") + f"{phone}")
     try:
         _deps["notify"](text)  # менеджерам в MAX
