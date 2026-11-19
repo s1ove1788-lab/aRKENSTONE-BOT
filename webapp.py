@@ -820,6 +820,78 @@ def keeper_data() -> dict:
     return res
 
 
+REVISION_AREAS = {"raw": "Сырьё", "tmc": "ТМЦ", "weld": "Сварочный цех", "paint": "Малярный цех",
+                   "blanks": "Заготовочный цех", "pack": "Упаковочная"}
+
+
+def revision_items(today: date) -> list:
+    """Плоский список всех позиций склада и производства для ревизии: площадка, ключ, название, единица, остаток по системе."""
+    items = []
+    for kind in ("raw", "tmc"):
+        try:
+            for i in sheets.inv_get(kind):
+                items.append({"area": kind, "area_label": REVISION_AREAS[kind], "key": i["name"], "name": i["name"],
+                              "unit": i["unit"] or "шт", "qty": i["qty"]})
+        except Exception:
+            log.exception("Ревизия: склад %s", kind)
+    pd = prod_data(today)
+    for w in pd["weld"]:
+        items.append({"area": "weld", "area_label": REVISION_AREAS["weld"], "key": str(w["width"]),
+                      "name": f"Каркас {w['width']}", "unit": "шт", "qty": w["frames"]})
+    for l in pd["legs"]:
+        items.append({"area": "weld", "area_label": REVISION_AREAS["weld"], "key": f"legs:{l['height']}",
+                      "name": f"Ножки {l['height']} (сварены)", "unit": "шт", "qty": l.get("n", 0)})
+    for x in pd["stock"]:
+        items.append({"area": "paint", "area_label": REVISION_AREAS["paint"], "key": x["code"], "name": x["name"],
+                      "unit": "шт", "qty": x["have"] or 0})
+    for l in pd["legs_painted"]:
+        items.append({"area": "paint", "area_label": REVISION_AREAS["paint"], "key": f"legs:{l['height']}:black",
+                      "name": f"Ножки {l['height']} чёрные (окрашены)", "unit": "шт", "qty": l.get("black", 0)})
+        items.append({"area": "paint", "area_label": REVISION_AREAS["paint"], "key": f"legs:{l['height']}:white",
+                      "name": f"Ножки {l['height']} белые (окрашены)", "unit": "шт", "qty": l.get("white", 0)})
+    b = pd["blanks"]
+    if b.get("ok"):
+        for n in b["long"]["names"]:
+            items.append({"area": "blanks", "area_label": REVISION_AREAS["blanks"], "key": f"long:{n}", "name": n,
+                          "unit": "шт", "qty": b["long"]["qty"].get(n, 0)})
+        for w, parts in b["sizes"].items():
+            for n, q in parts.items():
+                items.append({"area": "blanks", "area_label": REVISION_AREAS["blanks"], "key": f"{w}:{n}",
+                              "name": f"{n} {w}", "unit": "шт", "qty": q})
+        for n in b["common"]:
+            items.append({"area": "blanks", "area_label": REVISION_AREAS["blanks"], "key": f"common:{n}", "name": n,
+                          "unit": "шт", "qty": b["common_qty"].get(n, 0)})
+    p = pd["pack"]
+    if p.get("ok"):
+        for x in p["stock"]:
+            items.append({"area": "pack", "area_label": REVISION_AREAS["pack"], "key": x["key"], "name": x["name"],
+                          "unit": "шт", "qty": x["qty"]})
+    return items
+
+
+def revision_areas_for(role: str, shop: str) -> set:
+    """Какие площадки ревизии видит и может вносить эта роль (и выбранный цех производства)."""
+    if role in ("techdir", "gendir", "admin"):
+        return set(REVISION_AREAS)
+    if role == "keeper":
+        return {"raw", "tmc"}
+    if role == "prod" and shop in ("weld", "paint", "blanks", "pack"):
+        return {shop}
+    return set()
+
+
+def revision_view(revision_id: str, areas: set) -> dict:
+    rows = sheets.revision_get(revision_id)
+    if areas is not None:
+        rows = [r for r in rows if r["area"] in areas]
+    grouped = {}
+    for r in rows:
+        g = grouped.setdefault(r["area"], {"area": r["area"], "label": r["area_label"], "items": []})
+        g["items"].append({"key": r["key"], "name": r["name"], "unit": r["unit"], "qty": r["system_qty"],
+                           "counted": r["counted"], "counted_by": r["counted_by"], "counted_at": r["counted_at"]})
+    return {"areas": list(grouped.values())}
+
+
 BOARD_CLOSED_MAX = 150  # сколько доставленных и отменённых отдаём в каждую вкладку (самые свежие)
 
 
@@ -3012,6 +3084,46 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         return 200, prod_data(today)
     if path == "/api/keeper" and "keeper" in tabs:
         return 200, keeper_data()
+    if path == "/api/revision" and ({"prod", "keeper", "tech", "reports"} & set(tabs)):
+        areas = revision_areas_for(me["role"], str(body.get("shop") or ""))
+        can_manage = me["role"] in ("techdir", "gendir", "admin")
+        if not areas:
+            return 200, {"active": False, "no_area": True}
+        rev = sheets.revision_active()
+        if not rev:
+            return 200, {"active": False, "can_start": can_manage}
+        view = revision_view(rev["id"], areas)
+        return 200, {"active": True, "id": rev["id"], "started": rev["started"], "started_by": rev["started_by"],
+                     "can_send": me["role"] in ("techdir", "admin"), "can_view_all": can_manage, **view}
+    if path == "/api/revision/history" and me["role"] in ("techdir", "gendir", "admin"):
+        return 200, {"rows": sheets.revision_history()}
+    if path == "/api/revision/view" and me["role"] in ("techdir", "gendir", "admin"):
+        rid = str(body.get("id") or "")
+        if not rid:
+            return 400, {"error": "Не передан номер ревизии"}
+        view = revision_view(rid, None)
+        if not view["areas"]:
+            return 404, {"error": "Ревизия не найдена"}
+        return 200, {"id": rid, **view}
+    if path == "/api/revision/export" and me["role"] in ("techdir", "gendir", "admin"):
+        rid = str(body.get("id") or "")
+        rows = sheets.revision_get(rid) if rid else (sheets.revision_active() or {}).get("rows", [])
+        if not rows:
+            return 404, {"error": "Ревизия не найдена"}
+        import csv
+        import io
+        buf = io.StringIO()
+        wr = csv.writer(buf, delimiter=";")
+        wr.writerow(["Площадка", "Название", "Единица", "По системе", "Факт", "Разница", "Внёс", "Когда"])
+        for r in rows:
+            diff_s = ""
+            if r["counted"] != "":
+                try:
+                    diff_s = logic.fmt_qty(float(r["counted"].replace(",", ".")) - float((r["system_qty"] or "0").replace(",", ".")))
+                except ValueError:
+                    pass
+            wr.writerow([r["area_label"], r["name"], r["unit"], r["system_qty"], r["counted"], diff_s, r["counted_by"], r["counted_at"]])
+        return 200, {"csv": buf.getvalue(), "filename": f"revision_{rid or 'all'}.csv"}
     if path == "/api/manager/orders" and ({"manager", "courier"} & set(tabs)):  # курьеру — тот же список заказов, что у менеджера
         return 200, open_orders(today)
     if path == "/api/manager/deliveries" and "manager" in tabs:
@@ -3158,6 +3270,42 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
                     return 409, {"error": "Список поменялся, обновите экран"}
                 done, low = _deps["inv_apply"](kind, [(item, n)], 1 if body.get("sign") == "in" else -1)
                 return 200, {"ok": True, "message": "✅ " + "\n".join(done + low)}
+
+    if method == "POST" and path == "/api/revision/start" and me["role"] in ("techdir", "gendir", "admin"):
+        with _lock:
+            if sheets.revision_active():
+                return 409, {"error": "Ревизия уже идёт"}
+            items = revision_items(today)
+            if not items:
+                return 400, {"error": "Нечего ревизовать — остатки пусты"}
+            rid = "R" + datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%Y%m%d%H%M%S")
+            sheets.revision_start(rid, who, items)
+        return 200, {"ok": True, "id": rid, "message": f"✅ Ревизия начата — {len(items)} позиций"}
+    if method == "POST" and path == "/api/revision/count" and ({"prod", "keeper", "tech", "reports"} & set(tabs)):
+        area = str(body.get("area") or "")
+        shop = str(body.get("shop") or "")
+        allowed = revision_areas_for(me["role"], shop)
+        if area not in allowed:
+            return 403, {"error": "Нет доступа к этой площадке"}
+        rev = sheets.revision_active()
+        if not rev:
+            return 409, {"error": "Ревизия не идёт"}
+        entries = [{"key": str(e.get("key")), "counted": _num(e.get("counted"))} for e in (body.get("items") or [])
+                   if str(e.get("key") or "").strip()]
+        if not entries:
+            return 400, {"error": "Нет позиций для сохранения"}
+        with _lock:
+            n = sheets.revision_save_counts(rev["id"], area, entries, who)
+        return 200, {"ok": True, "saved": n, "message": f"✅ Сохранено: {n}"}
+    if method == "POST" and path == "/api/revision/send" and me["role"] in ("techdir", "admin"):
+        with _lock:
+            rev = sheets.revision_active()
+            if not rev:
+                return 409, {"error": "Активной ревизии нет"}
+            n = sheets.revision_send(rev["id"], who)
+        push_safe("revision", "📋 Ревизия отправлена", f"{who} отправил(а) ревизию склада на проверку",
+                  _codes({"gendir"}), "keeper", group="revision")
+        return 200, {"ok": True, "message": f"✅ Ревизия отправлена ген. директору — {n} позиций"}
 
     if method == "POST" and path == "/api/manager/device" and "manager" in tabs:
         new_code, role = norm_code(body.get("code")), body.get("role")

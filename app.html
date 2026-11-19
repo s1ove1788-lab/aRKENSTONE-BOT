@@ -1022,7 +1022,8 @@ function drawProd(d){
   window._prod = d;
   let k = null; try { k = localStorage.getItem("ark_shop"); } catch(e) {}
   if (!SHOPS[k]) return drawShops(d);
-  const back = `<button class="btn" style="margin-bottom:10px" onclick="shop()">← Цеха</button><h2 style="margin-top:0">${SHOPS[k][0]} ${SHOPS[k][1]}</h2>`;
+  const back = `<div class="row" style="margin-bottom:10px"><button class="btn" style="flex:1" onclick="shop()">← Цеха</button>
+      <button class="btn" style="flex:1" onclick="revisionPage()">📋 Ревизия</button></div><h2 style="margin-top:0">${SHOPS[k][0]} ${SHOPS[k][1]}</h2>`;
   $("#main").innerHTML = back + ({weld: drawWeld, paint: drawPaint, blanks: drawBlanks, pack: drawPack})[k](d);
 }
 
@@ -1285,7 +1286,7 @@ function drawKeeper(d){
     ? `<table>${d[kind].map((i, n) => `<tr class="tap ${i.low ? "short" : ""}" onclick="invForm('${kind}',${n})"><td>${esc(i.name)}${i.low ? " · заканчивается" : ""}</td><td class="n">${esc(i.qty)} ${esc(i.unit)}</td></tr>`).join("")}</table>`
     : `<div class="muted">Пока пусто</div>`) +
     `<button class="btn" style="width:100%;margin-top:10px" onclick="invNew('${kind}')">🆕 Новая позиция</button></div>`;
-  $("#main").innerHTML = list("raw") + list("tmc");
+  $("#main").innerHTML = `<button class="btn main big" style="width:100%;margin-bottom:10px" onclick="revisionPage()">📋 Ревизия склада</button>` + list("raw") + list("tmc");
 }
 
 function invForm(kind, n){
@@ -1304,6 +1305,96 @@ function invNew(kind){
     <label class="l">Минимум (предупредим, когда меньше)</label><input id="n-min" type="number" inputmode="decimal" placeholder="необязательно">
     <button class="btn main big" style="width:100%" onclick="act(this,'/api/keeper/new',{kind:'${kind}',name:document.getElementById('n-name').value,
       unit:document.getElementById('n-unit').value,min:document.getElementById('n-min').value})">Добавить</button>`);
+}
+
+/* ------------------------------ ревизия склада и производства */
+function revisionShop(){ try { return localStorage.getItem("ark_shop") || ""; } catch(e) { return ""; } }
+
+async function revisionPage(){
+  const shop = revisionShop();
+  page("📋 Ревизия", `<div class="muted">Загрузка…</div>`, revisionPage);
+  let r;
+  try { r = await call("/api/revision" + (shop ? "?shop=" + encodeURIComponent(shop) : "")); }
+  catch(e) { return page("📋 Ревизия", `<div class="card muted">${esc(e.message)}</div>`, revisionPage); }
+  if (r.no_area) {
+    return page("📋 Ревизия", `<div class="card muted">Ревизия недоступна здесь${shop ? "" : " — откройте свой цех в «Производстве» и зайдите в ревизию оттуда"}.</div>`, revisionPage);
+  }
+  const hist = r.can_view_all ? `<button class="btn" style="width:100%;margin-top:10px" onclick="revisionHistoryPage()">📜 Прошлые ревизии</button>` : "";
+  if (!r.active) {
+    return page("📋 Ревизия", `<div class="card muted" style="text-align:center">Сейчас ревизия не идёт.</div>`
+      + (r.can_start ? `<button class="btn main big" style="width:100%;margin-top:10px" onclick="revisionStart()">▶️ Начать ревизию</button>` : "")
+      + hist, revisionPage);
+  }
+  const body = r.areas.map(a => revisionAreaBlock(a)).join("");
+  const send = r.can_send ? `<button class="btn main big" style="width:100%;margin-top:14px" onclick="revisionSend()">📤 Отправить ревизию ген. директору</button>` : "";
+  page("📋 Ревизия", `<div class="muted" style="margin-bottom:6px">Начата ${esc(r.started)} · ${esc(r.started_by)}</div>` + body + send + hist, revisionPage);
+}
+
+function revisionAreaBlock(a){
+  const rows = a.items.map(it => `<tr><td>${esc(it.name)}</td><td class="n muted">${esc(it.qty)} ${esc(it.unit)}</td>
+      <td style="width:92px"><input class="rv-n" data-area="${esc(a.area)}" data-key="${esc(it.key)}" type="number" inputmode="decimal" min="0"
+        placeholder="${esc(it.qty)}" value="${it.counted !== "" ? esc(it.counted) : ""}"></td></tr>`).join("");
+  return `<h2>${esc(a.label)}</h2><div class="card" style="padding:6px 10px"><table class="bf">
+      <tr><th>Деталь</th><th class="n">По системе</th><th>Факт</th></tr>${rows}</table>
+      <button class="btn main" style="width:100%;margin-top:8px" onclick="revisionSave(this,'${esc(a.area)}')">💾 Сохранить «${esc(a.label)}»</button></div>`;
+}
+
+async function revisionSave(btn, area){
+  const list = [...document.querySelectorAll(`.rv-n[data-area="${area}"]`)]
+    .filter(i => i.value !== "").map(i => ({key: i.dataset.key, counted: i.value}));
+  if (!list.length) return toast("Впишите хотя бы одно значение");
+  btn.disabled = true;
+  try {
+    const r = await call("/api/revision/count", {area, shop: revisionShop(), items: list});
+    toast(r.message.split("\n")[0]);
+    revisionPage();
+  } catch(e) { toast(e.message); btn.disabled = false; }
+}
+
+async function revisionStart(){
+  if (!confirm("Начать новую ревизию? Система зафиксирует текущие остатки по всем площадкам.")) return;
+  try { await call("/api/revision/start", {}); toast("✅ Ревизия начата"); revisionPage(); }
+  catch(e) { toast(e.message); }
+}
+
+async function revisionSend(){
+  if (!confirm("Отправить ревизию ген. директору? После отправки её нельзя будет изменить.")) return;
+  try { const r = await call("/api/revision/send", {}); toast(r.message.split("\n")[0]); revisionPage(); }
+  catch(e) { toast(e.message); }
+}
+
+async function revisionHistoryPage(){
+  page("📜 Прошлые ревизии", `<div class="muted">Загрузка…</div>`, revisionHistoryPage);
+  let r;
+  try { r = await call("/api/revision/history"); } catch(e) { return toast(e.message); }
+  const rows = r.rows;
+  page("📜 Прошлые ревизии", rows.length ? rows.map(x => `<div class="card tap" onclick="revisionViewPage('${esc(x.id)}')"><div class="top">
+      <div class="title">${esc(x.sent)} · ${x.items} поз.${x.diffs ? ` · ⚠️ расхождений: ${x.diffs}` : ""}</div></div>
+      <div class="sub">Начал ${esc(x.started_by)} ${esc(x.started)} → отправил ${esc(x.sent_by)}</div></div>`).join("")
+    : `<div class="card muted">Отправленных ревизий ещё нет.</div>`, revisionHistoryPage);
+}
+
+async function revisionViewPage(id){
+  page("📋 Ревизия", `<div class="muted">Загрузка…</div>`, () => revisionViewPage(id));
+  let r;
+  try { r = await call("/api/revision/view?id=" + encodeURIComponent(id)); } catch(e) { return toast(e.message); }
+  const body = r.areas.map(a => `<h2>${esc(a.label)}</h2><div class="card" style="padding:6px 10px;overflow-x:auto"><table class="bt">
+      <tr><th>Деталь</th><th class="n">Система</th><th class="n">Факт</th><th>Внёс</th></tr>
+      ${a.items.map(it => `<tr class="${it.counted !== "" && it.counted !== it.qty ? "short" : ""}"><td>${esc(it.name)}</td>
+        <td class="n">${esc(it.qty)}</td><td class="n">${esc(it.counted || "—")}</td><td style="font-size:13px">${esc(it.counted_by || "")}</td></tr>`).join("")}
+    </table></div>`).join("");
+  page("📋 Ревизия", body + `<button class="btn main big" style="width:100%;margin-top:10px" onclick="revisionDownload('${esc(id)}')">⬇️ Выгрузить CSV</button>`,
+    () => revisionViewPage(id));
+}
+
+async function revisionDownload(id){
+  try {
+    const r = await call("/api/revision/export" + (id ? "?id=" + encodeURIComponent(id) : ""));
+    const blob = new Blob(["﻿" + r.csv], {type: "text/csv;charset=utf-8"});
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = r.filename || "revision.csv";
+    document.body.appendChild(a); a.click(); a.remove();
+  } catch(e) { toast(e.message); }
 }
 
 /* ------------------------------ менеджер */

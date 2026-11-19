@@ -784,6 +784,107 @@ def delete_site_request(order_no: str) -> bool:
     return True
 
 
+# ---------------------------------------------------------- ревизия склада и производства
+REVISION_HEADERS = ["Ревизия", "Начата", "Начал", "Площадка", "Раздел", "Ключ", "Название", "Ед.",
+                     "По системе", "Факт", "Внёс", "Когда", "Отправлена", "Отправил"]
+_REV_COLS = {h: i for i, h in enumerate(REVISION_HEADERS)}  # 0-based
+
+
+def _revision_ws():
+    return _tab(config.REVISION_TAB, REVISION_HEADERS)
+
+
+def _revision_rows(fresh: bool = False) -> list:
+    """Все строки ревизий как список словарей (ключи — заголовки), плюс номер строки в таблице."""
+    values = _revision_ws().get_all_values()
+    out = []
+    for i, v in enumerate(values[1:], start=2):
+        if len(v) <= _REV_COLS["Ревизия"] or not v[_REV_COLS["Ревизия"]].strip():
+            continue
+        g = lambda k: (v[_REV_COLS[k]].strip() if _REV_COLS[k] < len(v) else "")
+        out.append({"row": i, "id": g("Ревизия"), "started": g("Начата"), "started_by": g("Начал"),
+                    "area": g("Площадка"), "area_label": g("Раздел"), "key": g("Ключ"), "name": g("Название"),
+                    "unit": g("Ед."), "system_qty": g("По системе"), "counted": g("Факт"),
+                    "counted_by": g("Внёс"), "counted_at": g("Когда"), "sent": g("Отправлена"), "sent_by": g("Отправил")})
+    return out
+
+
+def revision_active() -> dict:
+    """Текущая незавершённая ревизия (последняя по ID, у которой строки ещё не отправлены), или None."""
+    rows = _revision_rows()
+    if not rows:
+        return None
+    last_id = rows[-1]["id"]
+    group = [r for r in rows if r["id"] == last_id]
+    if group[0]["sent"]:
+        return None
+    return {"id": last_id, "started": group[0]["started"], "started_by": group[0]["started_by"], "rows": group}
+
+
+def revision_start(revision_id: str, who: str, items: list) -> None:
+    """Начинает новую ревизию: по одной строке на каждую позицию с остатком по системе, факт пока пуст."""
+    stamp = datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m %H:%M")
+    rows = [[revision_id, stamp, who, it["area"], it["area_label"], it["key"], it["name"], it["unit"],
+            it["qty"], "", "", "", "", ""] for it in items]
+    if rows:
+        _revision_ws().append_rows(rows, value_input_option="RAW")
+    _invalidate()
+
+
+def revision_get(revision_id: str) -> list:
+    return [r for r in _revision_rows(fresh=True) if r["id"] == revision_id]
+
+
+def revision_save_counts(revision_id: str, area: str, entries: list, who: str) -> int:
+    """entries: [{'key', 'counted'}] — вписывает факт по позициям площадки area этой ревизии. Возвращает, сколько записал."""
+    rows = {r["key"]: r["row"] for r in _revision_rows(fresh=True) if r["id"] == revision_id and r["area"] == area}
+    stamp = datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m %H:%M")
+    updates = []
+    n = 0
+    for e in entries:
+        r = rows.get(str(e.get("key")))
+        if r is None:
+            continue
+        updates.append({"range": f"{_col_letter(_REV_COLS['Факт'])}{r}:{_col_letter(_REV_COLS['Когда'])}{r}",
+                        "values": [[logic.fmt_qty(e["counted"]), who, stamp]]})
+        n += 1
+    if updates:
+        _revision_ws().batch_update(updates, value_input_option="RAW")
+        _invalidate()
+    return n
+
+
+def revision_send(revision_id: str, who: str) -> int:
+    """Отмечает ревизию отправленной ген. директору. Возвращает число строк."""
+    rows = [r["row"] for r in _revision_rows(fresh=True) if r["id"] == revision_id]
+    if not rows:
+        return 0
+    stamp = datetime.now(ZoneInfo(config.TIMEZONE)).strftime("%d.%m %H:%M")
+    updates = [{"range": f"{_col_letter(_REV_COLS['Отправлена'])}{r}:{_col_letter(_REV_COLS['Отправил'])}{r}",
+               "values": [[stamp, who]]} for r in rows]
+    _revision_ws().batch_update(updates, value_input_option="RAW")
+    _invalidate()
+    return len(rows)
+
+
+def revision_history(limit: int = 20) -> list:
+    """Сводка по отправленным ревизиям — самые свежие первыми."""
+    rows = _revision_rows()
+    groups = {}
+    for r in rows:
+        if not r["sent"]:
+            continue
+        g = groups.setdefault(r["id"], {"id": r["id"], "started": r["started"], "started_by": r["started_by"],
+                                        "sent": r["sent"], "sent_by": r["sent_by"], "items": 0, "diffs": 0})
+        g["items"] += 1
+        try:
+            if r["counted"] != "" and float(r["counted"].replace(",", ".")) != float((r["system_qty"] or "0").replace(",", ".")):
+                g["diffs"] += 1
+        except ValueError:
+            pass
+    return list(groups.values())[::-1][:limit]
+
+
 # ---------------------------------------------------------- пользователи
 _LABEL_TO_KEY = {v.lower(): k for k, v in config.ROLE_LABELS.items()}
 
