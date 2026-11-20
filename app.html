@@ -1617,10 +1617,28 @@ function orderView(i){
     ${r.comment ? `<tr><td>Комментарий</td><td>${esc(r.comment)}</td></tr>` : ""}</table>
     <div class="actions">${r.tel ? `<a class="btn" href="tel:${esc(r.tel)}">📞 Позвонить</a>` : ""}
     ${r.city && r.address ? `<a class="btn" target="_blank" href="${esc(mapUrl(r.address))}">🗺 Карта</a>` : ""}
+    ${r.channel === "ЯМ СГТ" ? `<button class="btn" id="lbl-${esc(r.order_no)}" onclick="orderLabel('${esc(r.order_no)}',this)">🏷 Ярлык</button>` : ""}
     ${r.city && ["today", "ahead", "late"].includes(r.tab) && me && me.tabs.includes("courier")
       ? `<button class="btn main wide" onclick="obDone(this, ${i})">✅ Доставлен${r.tab === "ahead" ? " раньше срока" : ""}</button>` : ""}
     ${!r.city && ["today", "late"].includes(r.tab) && me && me.tabs.includes("courier")
       ? `<button class="btn main wide" onclick="obDoneRu(this, [${i}])">✅ Доставлен${r.tab === "late" ? " (просрочен)" : ""}</button>` : ""}</div>`);
+}
+async function orderLabel(orderNo, btn){
+  const old = btn.textContent;
+  btn.disabled = true; btn.textContent = "…";
+  try {
+    const r = await call("/api/manager/order/label?order=" + encodeURIComponent(orderNo));
+    const bin = atob(r.pdf);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    const blob = new Blob([bytes], {type: "application/pdf"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = r.filename || "yarlyk.pdf";
+    document.body.appendChild(a); a.click(); a.remove();
+    window.open(url, "_blank");
+  } catch(e) { toast(e.message); }
+  btn.disabled = false; btn.textContent = old;
 }
 /* «Доставлен» прямо из экрана «Заказы». Только город: заказы по России отмечаются день в день во вкладке «Курьер» */
 /* По России: сегодняшние и просроченные отгрузки можно отметить и с экрана «Заказы» — по одному заказу или всю отгрузку */

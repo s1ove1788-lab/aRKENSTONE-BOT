@@ -3126,6 +3126,22 @@ def api(method: str, path: str, token: str, body: dict) -> tuple:
         return 200, {"csv": buf.getvalue(), "filename": f"revision_{rid or 'all'}.csv"}
     if path == "/api/manager/orders" and ({"manager", "courier"} & set(tabs)):  # курьеру — тот же список заказов, что у менеджера
         return 200, open_orders(today)
+    if path == "/api/manager/order/label" and ({"manager", "courier"} & set(tabs)):
+        order_no = str(body.get("order") or "").strip()
+        if not order_no:
+            return 400, {"error": "Не передан номер заказа"}
+        row = next((o for o in sheets.read_orders() if o["order_no"] == order_no), None)
+        if not row:
+            return 404, {"error": "Заказ не найден"}
+        if row["channel"] != "ЯМ СГТ":
+            return 400, {"error": "Ярлык через API доступен только для заказов «ЯМ СГТ»"}
+        try:
+            import ym_watch
+            pdf = ym_watch.order_label_pdf(order_no)
+        except Exception as e:
+            log.warning("Ярлык Маркета: заказ %s — %s", order_no, e)
+            return 502, {"error": f"Яндекс Маркет: {e}"}
+        return 200, {"pdf": base64.b64encode(pdf).decode("ascii"), "filename": f"yarlyk_{order_no}.pdf"}
     if path == "/api/manager/deliveries" and "manager" in tabs:
         return 200, deliveries_today(today)
     if path == "/api/manager/site-requests" and "manager" in tabs:

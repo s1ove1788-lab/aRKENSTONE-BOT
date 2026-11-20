@@ -138,6 +138,38 @@ def channel_guess(delivery: dict) -> str:
     return {"YANDEX_MARKET": "ЯМ СГТ", "SHOP": "ЯМ ГОРОД"}.get((delivery or {}).get("deliveryPartnerType"), "ЯМ")
 
 
+def order_label_pdf(order_id: str, fmt: str = "A4") -> bytes:
+    """Готовый PDF-ярлык (наклейка на коробку) для заказа Яндекс Маркета — чтобы не заходить в личный
+    кабинет и не печатать вручную. Перебирает кампании продавца, пока не найдёт нужный заказ.
+    Нужен токен с доступом inventory-and-order-processing (или all-methods) — обычный read-only
+    токен для этого метода не подходит."""
+    last_err = None
+    found_order = False
+    for c in campaigns():
+        cid = c.get("id")
+        try:
+            r = _get(f"/v2/campaigns/{cid}/orders/{order_id}/delivery/labels", {"format": fmt})
+        except requests.RequestException as e:
+            last_err = e
+            continue
+        if r.status_code == 200 and "pdf" in (r.headers.get("Content-Type") or "").lower():
+            return r.content
+        if r.status_code == 404:
+            continue  # заказ не в этой кампании
+        found_order = True
+        if r.status_code in (401, 403):
+            last_err = RuntimeError("у токена нет доступа к ярлыкам (нужен доступ inventory-and-order-processing или all-methods — попросите расширить токен)")
+        else:
+            try:
+                msg = r.json()
+            except ValueError:
+                msg = r.text[:300]
+            last_err = RuntimeError(f"Маркет ответил {r.status_code}: {msg}")
+    if last_err:
+        raise last_err
+    raise RuntimeError("заказ не найден ни в одной кампании Маркета" if not found_order else "ярлык недоступен")
+
+
 def format_order(o: dict) -> str:
     d = o.get("delivery") or {}
     items = []
