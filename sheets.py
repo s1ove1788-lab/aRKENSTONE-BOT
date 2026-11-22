@@ -362,7 +362,7 @@ def _parse_orders(values: list) -> list:
 
     def cell(v, key):
         i = lay.get(key)
-        return v[i].strip() if i is not None and i < len(v) else ""
+        return str(v[i]).strip() if i is not None and i < len(v) else ""
 
     rows = []
     seen: dict = {}
@@ -1466,7 +1466,44 @@ def shipped_on(day) -> dict:
 
 # ------------------------------------------ упаковочная: склад в упаковке и таблица отгрузки
 PACK_HEADERS = ["Размер", "Ножки", "Цвет", "Количество"]
-PACKSHIP_HEADERS = ["Дата", "Время", "Площадка", "Размер", "Ножки", "Цвет", "Кол-во", "Кто отметил"]
+PACKSHIP_HEADERS = ["Дата", "Размер", "Цвет", "Тип доставки", "Комментарий", "Кол-во", "Ножки", "Номер заказа", "Время",
+                    "Кто отметил"]
+# Столбцы «Таблицы отгрузки» ищем по названию (в старой таблице «Тип доставки» назывался «Площадка»; недостающих столбцов не было)
+_PS_NAMES = {"date": ("дата",), "size": ("размер",), "color": ("цвет",), "type": ("тип доставки", "площадка"),
+             "comment": ("комментарий",), "qty": ("кол-во", "количество"), "legs": ("ножки",),
+             "order": ("номер заказа",), "time": ("время",), "who": ("кто отметил",)}
+_PS_TITLES = dict(zip(_PS_NAMES, PACKSHIP_HEADERS))
+
+
+def _ps_cols(header: list) -> dict:
+    names = [(h or "").strip().lower() for h in header]
+    return {k: next((names.index(n) for n in alts if n in names), None) for k, alts in _PS_NAMES.items()}
+
+
+def _packship_ws():
+    """Лист «Таблица отгрузки» и его столбцы {поле: номер с 0}. Нет листа — создаётся; в старой таблице недостающие столбцы
+    дописываются справа в шапку."""
+    ws = _tab(config.PACKSHIP_TAB, PACKSHIP_HEADERS)
+    header = ws.row_values(1)
+    cols = _ps_cols(header)
+    missing = [k for k, i in cols.items() if i is None]
+    if missing:
+        titles = [_PS_TITLES[k] for k in missing]
+        start = len(header) + 1
+        if start + len(titles) - 1 > ws.col_count:  # в старой таблице столбцов ровно по шапке — добавляем место справа
+            ws.add_cols(start + len(titles) - 1 - ws.col_count)
+        ws.update(values=[titles], range_name=f"{gspread.utils.rowcol_to_a1(1, start)}", value_input_option="RAW")
+        header = header + titles
+        cols = _ps_cols(header)
+    cols["_width"] = len(header)
+    return ws, cols
+
+
+def _ps_get(v: list, cols: dict, key: str) -> str:
+    i = cols.get(key)
+    return str(v[i]).strip() if i is not None and i < len(v) else ""
+
+
 _COLOR_WORDS = {"04": "чёрная", "06": "белая"}
 
 
@@ -1533,49 +1570,64 @@ def pack_add(changes: list) -> list:
 
 
 def packship_rows(day) -> dict:
-    """Что за указанный день уже внесено в таблицу отгрузки: {(площадка, ключ): шт.}."""
+    """Что за указанный день уже внесено в таблицу отгрузки: {(тип доставки, ключ): шт.}."""
     want = day.strftime("%d.%m.%Y")
+    values = _tab(config.PACKSHIP_TAB, PACKSHIP_HEADERS).get_all_values()
+    cols = _ps_cols(values[0] if values else [])
     res: dict = {}
-    for v in _tab(config.PACKSHIP_TAB, PACKSHIP_HEADERS).get_all_values()[1:]:
-        if len(v) >= 7 and v[0].strip() == want and v[3].strip().isdigit():
-            color = _color_code(v[5])
-            if color and v[4].strip() in logic.LEGS:
-                k = (v[2].strip(), logic.pack_key(v[3].strip(), v[4].strip(), color))
-                res[k] = res.get(k, 0) + _num(v[6])
+    for v in values[1:]:
+        g = lambda k: _ps_get(v, cols, k)
+        if g("date") == want and g("size").isdigit():
+            color = _color_code(g("color"))
+            if color and g("legs") in logic.LEGS:
+                k = (g("type"), logic.pack_key(g("size"), g("legs"), color))
+                res[k] = res.get(k, 0) + _num(g("qty"))
     return res
 
 
 @_locked
 def packship_add(lines: list, who: str, day) -> None:
-    """Дописывает в «Таблицу отгрузки» то, что отгрузили: lines = [{'channel', 'key', 'qty'}]."""
+    """Дописывает в «Таблицу отгрузки» то, что отгрузили: lines = [{'channel', 'key', 'qty', 'comment', 'order_no'}],
+    по строке на заказ."""
     if not lines:
         return
+    ws, cols = _packship_ws()
     now = datetime.now(ZoneInfo(config.TIMEZONE))
     rows = []
     for l in lines:
         w, legs, c = l["key"].split(".")
-        rows.append([day.strftime("%d.%m.%Y"), now.strftime("%H:%M"), l["channel"], int(w), int(legs),
-                     _COLOR_WORDS.get(c, c), l["qty"], who])
-    _tab(config.PACKSHIP_TAB, PACKSHIP_HEADERS).append_rows(rows, value_input_option="RAW")
+        vals = {"date": day.strftime("%d.%m.%Y"), "size": int(w), "color": _COLOR_WORDS.get(c, c), "type": l["channel"],
+                "comment": l.get("comment", ""), "qty": l["qty"], "legs": int(legs), "order": l.get("order_no", ""),
+                "time": now.strftime("%H:%M"), "who": who}
+        row = [""] * cols["_width"]
+        for k, v in vals.items():
+            row[cols[k]] = v
+        rows.append(row)
+    ws.append_rows(rows, value_input_option="RAW")
 
 
 def packship_log(today, days: int = 14, limit: int = 300) -> list:
-    """Последние отгрузки из таблицы, свежие сверху: [{'date','time','channel','name','qty','who'}]."""
+    """Последние отгрузки из таблицы, свежие сверху:
+    [{'date','time','channel','name','qty','comment','order_no','who'}]."""
     first = today - timedelta(days=days - 1)
     res = []
-    for v in _tab(config.PACKSHIP_TAB, PACKSHIP_HEADERS).get_all_values()[1:]:
-        if len(v) < 7 or not v[3].strip().isdigit():
+    values = _tab(config.PACKSHIP_TAB, PACKSHIP_HEADERS).get_all_values()
+    cols = _ps_cols(values[0] if values else [])
+    for v in values[1:]:
+        g = lambda k: _ps_get(v, cols, k)
+        if not g("size").isdigit():
             continue
         try:
-            d = datetime.strptime(v[0].strip(), "%d.%m.%Y").date()
+            d = datetime.strptime(g("date"), "%d.%m.%Y").date()
         except ValueError:
             continue
         if d < first:
             continue
-        color = _color_code(v[5]) or ""
-        name = logic.pack_name(logic.pack_key(v[3].strip(), v[4].strip(), color)) if color else f"{v[3]}/{v[4]} {v[5]}"
-        res.append({"day": d, "date": v[0].strip()[:5], "time": v[1].strip(), "channel": v[2].strip(), "name": name,
-                    "qty": _num(v[6]), "who": (v[7] if len(v) > 7 else "").strip()})
+        color = _color_code(g("color")) or ""
+        legs = g("legs") if g("legs") in logic.LEGS else "30"
+        name = logic.pack_name(logic.pack_key(g("size"), legs, color)) if color else f"{g('size')}/{legs} {g('color')}"
+        res.append({"day": d, "date": g("date")[:5], "time": g("time"), "channel": g("type"), "name": name,
+                    "qty": _num(g("qty")), "comment": g("comment"), "order_no": g("order"), "who": g("who")})
     res.sort(key=lambda x: (x["day"], x["time"]), reverse=True)
     for x in res:
         x["day"] = str(x["day"])

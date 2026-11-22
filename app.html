@@ -1242,8 +1242,9 @@ function shipLog(){
   const body = Object.keys(days).length ? Object.values(days).map(list => `
     <h2>${esc(list[0].date)} · ${list.reduce((a, x) => a + x.qty, 0)} шт.</h2>
     <div class="card" style="padding:6px 10px;overflow-x:auto"><table>
-      <tr><th>Время</th><th>Площадка</th><th>Кровать</th><th class="n">Шт</th><th>Кто</th></tr>
+      <tr><th>Время</th><th>Тип доставки</th><th>Кровать</th><th class="n">Шт</th><th>Комментарий</th><th>Кто</th></tr>
       ${list.map(x => `<tr><td>${esc(x.time)}</td><td>${esc(x.channel)}</td><td>${esc(x.name)}</td><td class="n">${x.qty}</td>
+        <td style="font-size:13px">${esc(x.comment || "")}</td>
         <td style="font-size:13px">${esc((x.who || "").replace(" (приложение)", ""))}</td></tr>`).join("")}
     </table></div>`).join("") : `<div class="card muted">За две недели отгрузок ещё нет. Они появятся здесь после нажатия «Кровати отгружены».</div>`;
   page("📋 Таблица отгрузки", `<div class="muted" style="margin-bottom:6px">Последние две недели. Полная таблица — на листе «Таблица отгрузки» в Google Таблице.</div>` + body);

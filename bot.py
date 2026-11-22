@@ -614,7 +614,7 @@ def mark_shipped(who: str, skip_uid=None) -> str:
     done = shipped_done(today)
     if total - done <= 0:
         return f"Сегодня уже отмечено: отгружено {done} шт. Новых отгрузок на сегодня нет."
-    new = logic.minus_logged(logic.ship_lines(orders, today), sheets.packship_rows(today))
+    new = logic.minus_logged_orders(logic.ship_order_lines(orders, today), sheets.packship_rows(today))
     sheets.packship_add(new, who, today)  # сначала таблица: не записалась — ничего не отмечаем, можно нажать ещё раз
     sheets.set_setting("shipped_date", str(today))
     sheets.set_setting("shipped_n", str(total))

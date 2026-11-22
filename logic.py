@@ -395,6 +395,34 @@ def ship_lines(orders: list, today: date) -> list:
             for (ch, k), n in sorted(agg.items(), key=lambda kv: (kv[0][0], int(kv[0][1].split(".")[0]), kv[0][1]))]
 
 
+def ship_order_lines(orders: list, today: date) -> list:
+    """То же, что ship_lines, но по заказам (одна строка на заказ — с комментарием и номером заказа), для «Таблицы отгрузки»:
+    [{'channel': 'ПЭК', 'key': '140.30.04', 'name': '140/30 ч', 'qty': 1, 'comment': '...', 'order_no': '...'}]."""
+    res = []
+    for o, code in _ship_orders(orders, today):
+        width, color = code.split(".")
+        k = pack_key(width, order_legs(o), color)
+        res.append({"channel": (o["channel"] or "").strip() or "—", "key": k, "name": pack_name(k), "qty": qty(o),
+                    "comment": (o.get("comment") or "").strip(), "order_no": (o.get("order_no") or "").strip()})
+    res.sort(key=lambda l: (l["channel"], int(l["key"].split(".")[0]), l["key"], l["order_no"]))
+    return res
+
+
+def minus_logged_orders(lines: list, logged: dict) -> list:
+    """Как minus_logged, но для строк по заказам: уже внесённые в таблицу штуки (по площадке и кровати) снимаем с первых заказов,
+    так что повторное нажатие «Кровати отгружены» допишет только новые заказы (или недостающие штуки заказа)."""
+    left = dict(logged)
+    rest = []
+    for l in lines:
+        k = (l["channel"], l["key"])
+        have = min(left.get(k, 0), l["qty"])
+        if have:
+            left[k] -= have
+        if l["qty"] - have > 0:
+            rest.append({**l, "qty": l["qty"] - have})
+    return rest
+
+
 def minus_logged(lines: list, logged: dict) -> list:
     """Вычитает то, что уже внесено в таблицу отгрузки сегодня ({(площадка, ключ): шт.}); остаток — что ещё не отгружено."""
     rest = []
